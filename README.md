@@ -1,4 +1,4 @@
-# Multimodal Drone Controller (working title)
+# Multimodal drone controller (internal working title)
 
 Our goal is to build the shortest path from human thought to coordinated drone actions in low/zero-connectivity, high-stakes environments.
 
