@@ -10,7 +10,16 @@ Three self-contained browser simulators of a 3-drone security swarm on the same 
 
 ## Run
 
-Open `swarm-mind/index.html` (or the others) in a browser. The only external dependency is three.js r128 from cdnjs and Google Fonts; everything else is inline.
+From the repo root, Python 3 only:
+
+```
+python main.py            # Swarm Mind, served on http://127.0.0.1:8000 and opened in your browser
+python main.py seek       # Swarm Seek
+python main.py guard      # Swarm Guard
+python main.py mind --headless 300   # physics only, no browser, 300 simulated seconds (needs node)
+```
+
+Or open any `index.html` directly in a browser. The only external dependency is three.js r128 from cdnjs and Google Fonts; everything else is inline.
 
 Headless smoke test of the physics, no browser needed:
 
