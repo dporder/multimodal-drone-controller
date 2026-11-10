@@ -1,0 +1,930 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Swarm Seek — 3 drones lift, search and zero in on an unseen intruder</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root{--bg:#0b0f17;--panel:#0f1521;--line:#1f2937;--text:#e5e7eb;--muted:#9ca3af;--d1:#38bdf8;--d2:#a3e635;--d3:#f472b6;--red:#f87171;--amber:#fbbf24;--green:#34d399;--cyan:#22d3ee}
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font-family:Inter,system-ui,sans-serif;font-size:13px}
+  #app{display:grid;grid-template-rows:auto 1fr;grid-template-columns:1fr 372px;height:100%}
+  header{grid-column:1/3;display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding:8px 12px;border-bottom:1px solid var(--line);background:var(--panel)}
+  .brand{font-weight:700;font-size:15px;margin-right:6px}
+  .brand .muted{font-weight:400;font-size:12px;margin-left:6px}
+  .muted{color:var(--muted)}
+  button,select{background:#161e2e;color:var(--text);border:1px solid #2b3648;border-radius:8px;padding:6px 10px;font:inherit;cursor:pointer}
+  button:hover{background:#1c2638}
+  button.on{background:#2563eb;border-color:#3b82f6}
+  button.danger{border-color:#7f1d1d}
+  .seg{display:inline-flex;border-radius:8px;overflow:hidden}
+  .seg button{border-radius:0;border-right-width:0}
+  .seg button:first-child{border-radius:8px 0 0 8px}
+  .seg button:last-child{border-radius:0 8px 8px 0;border-right-width:1px}
+  #view{position:relative;overflow:hidden;min-height:320px}
+  #view canvas{display:block;width:100%;height:100%}
+  .overlay{position:absolute;background:rgba(10,14,22,.72);border:1px solid rgba(255,255,255,.08);border-radius:10px;padding:8px 10px;backdrop-filter:blur(6px);pointer-events:none;max-width:min(600px,72%)}
+  #objectives{top:10px;left:10px}
+  #status{bottom:10px;left:10px;font-size:13px;line-height:1.4}
+  #hint{bottom:10px;right:10px;font-size:11px;color:var(--muted)}
+  .legend{display:flex;gap:10px;flex-wrap:wrap;margin-top:4px;font-size:11px;color:var(--muted)}
+  .legend i{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:4px;vertical-align:middle}
+  #panel{border-left:1px solid var(--line);overflow:auto;padding:10px;display:flex;flex-direction:column;gap:12px;background:var(--panel)}
+  h3{margin:0 0 6px;font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);font-weight:600}
+  .metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}
+  .m{background:#121a28;border:1px solid var(--line);border-radius:8px;padding:6px 8px}
+  .m b{display:block;font-size:15px;font-weight:600}
+  .m span{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+  .card{border:1px solid var(--line);border-left:3px solid var(--c);border-radius:8px;padding:8px 10px;margin-bottom:6px;background:#121a28}
+  .card.down{opacity:.55}
+  .card-h{display:flex;align-items:center;gap:8px}
+  .card-h b{font-size:14px}
+  .dot{width:10px;height:10px;border-radius:50%;background:var(--c)}
+  .chip{margin-left:auto;font-size:10px;padding:2px 7px;border-radius:999px;background:#1f2937;color:var(--text);text-transform:uppercase;letter-spacing:.05em}
+  .chip.track{background:#7f1d1d;color:#fecaca}
+  .chip.zero{background:#164e63;color:var(--cyan)}
+  .chip.down{background:#7f1d1d;color:#fecaca}
+  .task{font-weight:600;margin-top:4px;font-size:13px}
+  .sub{font-size:11px;color:var(--muted);margin-top:2px}
+  .bids{font-family:"JetBrains Mono",ui-monospace,monospace;font-size:10.5px;color:var(--muted);margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .bids .pick{color:var(--text);background:#1f2937;border-radius:4px;padding:0 4px}
+  .bar{height:4px;background:#1f2937;border-radius:2px;margin-top:6px;overflow:hidden}
+  .bar i{display:block;height:100%;background:var(--c)}
+  #mini{width:100%;height:auto;border-radius:8px;border:1px solid var(--line);background:#121826}
+  .log{font-family:"JetBrains Mono",ui-monospace,monospace;font-size:10.5px;line-height:1.45;max-height:220px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:6px 8px;background:#0b1018}
+  .log div{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .log .t{color:#4b5563;margin-right:6px}
+  .log .alert{color:var(--red)} .log .good{color:var(--green)} .log .warn{color:var(--amber)} .log .drop{color:#6b7280} .log .claim{color:#c7d2fe} .log .sight{color:#fda4af}
+  .law{border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin-bottom:6px;background:#121a28}
+  .law b{display:block;font-size:12px;margin-bottom:2px}
+  .law .f{font-family:"JetBrains Mono",ui-monospace,monospace;font-size:11px;color:#c7d2fe;margin:3px 0;white-space:pre-wrap}
+  .law p{margin:3px 0;font-size:11.5px;color:var(--muted);line-height:1.45}
+  .row{display:flex;align-items:center;gap:8px;margin:3px 0;font-size:11.5px}
+  .row span:first-child{width:62px;color:var(--text)}
+  .row input[type=range]{flex:1;min-width:60px}
+  .row .v{width:58px;text-align:right;font-family:"JetBrains Mono",ui-monospace,monospace;font-size:10.5px}
+  details{border:1px solid var(--line);border-radius:8px;padding:6px 10px;font-size:12px;line-height:1.5}
+  summary{cursor:pointer;font-weight:600}
+  details p{margin:6px 0}
+  .err{padding:20px;color:var(--red)}
+  #view canvas{cursor:grab}
+  @media (max-width:900px){
+    #app{grid-template-columns:1fr;grid-template-rows:auto 58vh 1fr}
+    header{grid-column:1}
+    #panel{border-left:none;border-top:1px solid var(--line)}
+    .overlay{max-width:86%}
+    #hint{display:none}
+    #objectives .muted{display:none}
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <div class="brand">Swarm Seek <span class="muted">3 drones · no position feed · lift, search, zero in</span></div>
+    <select id="scenario"></select>
+    <button id="play">Pause</button>
+    <button id="reset">Reset</button>
+    <div class="seg" id="speed"><button data-s="1" class="on">1×</button><button data-s="2">2×</button><button data-s="4">4×</button></div>
+    <button id="spawn">Spawn intruder</button>
+    <button id="manual">Control intruder</button>
+    <button id="follow">Follow</button>
+    <button id="fail" class="danger">Fail a drone</button>
+    <button id="revive">Revive all</button>
+    <div class="seg"><button id="orbit" class="on">Orbit</button><button id="top">Top</button></div>
+  </header>
+  <div id="view">
+    <div class="overlay" id="objectives"></div>
+    <div class="overlay" id="status"></div>
+    <div class="overlay" id="hint">click the ground to send the intruder · drag orbit · wheel zoom · p pause · c control · f fail · r reset</div>
+    
+  </div>
+  <aside id="panel">
+    <section><div class="metrics" id="metrics"></div></section>
+    <section><h3>Drones</h3><div id="cards"></div></section>
+    <section><h3>Shared belief map <span class="muted" style="text-transform:none;letter-spacing:0">· where the drones think the person is · hollow red = truth</span></h3><canvas id="mini" width="480" height="440"></canvas></section>
+    <section><h3>Radio log</h3><div id="log" class="log"></div></section>
+    <section><h3>The laws <span class="muted" style="text-transform:none;letter-spacing:0">· every rule the simulator applies, live</span></h3><div id="laws"></div></section>
+    <details>
+      <summary>What is different from Swarm Guard</summary>
+      <p>Over many runs with the 8 m alarm the drones turn away about 3 intruders in 4, with a vague alarm about 2 in 3, and in silent patrol about 1 in 3: 3 cameras cannot watch 100 m of fence at once. Every number comes from the laws below, so change a slider and watch the outcome move.</p>
+      <p><b>Take the keys:</b> press Control intruder (or c), then click or tap any spot on the ground, a staircase or the dock: he runs there on the shortest walkable route, stairs and doors included. A yellow ring marks the goal and a yellow line the route. Dragging still orbits the camera. The arrow keys also walk him (relative to the camera, hold space for stairs). You run at 80 % of the drones\' top speed, set by the slider in law L7. The p key pauses. Inside the building no camera from outside can see you, so the drones must come in through a door, at 2.2 m, and search room by room. Follow keeps the camera on you.</p>
+      <p>Nobody sends the drones a position. The fence sensor says only "something crossed this segment". The drones lift off their pads, climb to a height chosen from how uncertain they are, and scan with their own cameras. Each drone keeps a probability map of where the person could be, moves the mass at walking speed, and lowers it wherever a camera saw nothing.</p>
+      <p>The first camera to detect the person broadcasts the sighting. The others drop their search, one tracks from 4 m above, two take flank positions 3 m ahead of the person. Two drones within 4.5 m for 6 s and the person gives up. If the person hides under a tree, the track is lost, the belief re-spreads from the last sighting and the search starts again, locally.</p>
+    </details>
+  </aside>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script id="sim-core">
+'use strict';
+// ============================================================
+//  SIMULATION CORE (no DOM, no THREE)
+// ============================================================
+const W=48, H=44, CELL=0.5, GX=96, GZ=88, COV=2, CX=24, CZ=22, NC=CX*CZ;
+const BLD={x0:6,z0:3,x1:42,z1:19};
+const WALL_H=4.0, WALL_T=0.3, RACK_H=1.8, PLAT_H=1.4, TREE_TOP=5.6, HIGH_BAND=6.2;
+const DOORS=[
+  {id:'A',name:'Main door',x:24,z:19,w:3,h:0,side:'S'},
+  {id:'B',name:'Side door',x:42,z:11,w:3,h:0,side:'E'},
+  {id:'C',name:'Dock door',x:10,z:19,w:3,h:PLAT_H,side:'S'}
+];
+const WINDOWS=[
+  {side:'S',c:17,w:2.4},{side:'S',c:29,w:2.4},{side:'S',c:34,w:2.4},{side:'S',c:39,w:2.4},
+  {side:'N',c:10,w:2.4},{side:'N',c:16,w:2.4},{side:'N',c:22,w:2.4},{side:'N',c:28,w:2.4},{side:'N',c:34,w:2.4},{side:'N',c:40,w:2.4},
+  {side:'E',c:6,w:2.4},{side:'E',c:16,w:2.4},{side:'W',c:7,w:2.4},{side:'W',c:12,w:2.4}
+];
+const WALLS=[{side:'S',z:19,x0:6,x1:42},{side:'N',z:3,x0:6,x1:42},{side:'W',x:6,z0:3,z1:19},{side:'E',x:42,z0:3,z1:19}];
+const racks=[
+  {x0:9,z0:7,x1:17,z1:8.2},{x0:20,z0:7,x1:28,z1:8.2},{x0:31,z0:7,x1:39,z1:8.2},
+  {x0:9,z0:12,x1:17,z1:13.2},{x0:20,z0:12,x1:28,z1:13.2},{x0:31,z0:12,x1:39,z1:13.2}
+];
+const TREES=[{x:3.5,z:30},{x:14,z:31.5},{x:22,z:25.5},{x:31,z:24},{x:44.5,z:27.5},{x:36,z:33.5},{x:5,z:36.5},{x:45,z:21},{x:12,z:40.5},{x:30,z:39.5},{x:41,z:38}];
+const TREE_R=2.2, TRUNK_R=0.3;
+const CONTAINERS=[{x0:33,z0:29,x1:39,z1:31.4,c:0},{x0:22,z0:28,x1:28,z1:30.4,c:1},{x0:18,z0:36,x1:24,z1:38.4,c:0}];
+const PLATFORMS=[{x0:6,z0:15,x1:16,z1:24}];
+const STAIRS=[{x0:8,z0:24,x1:12,z1:27,axis:'z',hi:24,lo:27},{x0:16,z0:20,x1:19,z1:23,axis:'x',hi:16,lo:19},{x0:16,z0:16,x1:19,z1:19,axis:'x',hi:16,lo:19}];
+const DOCK=[{x:38,z:22.5},{x:41,z:22.5},{x:44,z:22.5}];
+const COLORS=['#38bdf8','#a3e635','#f472b6'];
+const SCENARIOS={
+  alarm8:{label:'Fence alarm, 8 m segment (default)',alarmLen:8,silent:false,first:4,gap:22,loss:0.1,failAt:null,obj:'A fence sensor trips. Lift, find the person, zero in before a door is reached.'},
+  vague:{label:'Vague alarm: a whole fence side',alarmLen:48,silent:false,first:4,gap:22,loss:0.1,failAt:null,obj:'The alarm only names the side. Find the person with the cameras alone.'},
+  silent:{label:'Silent intrusion: no alarm, drones patrol',alarmLen:8,silent:true,first:12,gap:24,loss:0.1,failAt:null,obj:'No alarm at all. The drones patrol at height and must detect the person themselves.'},
+  stress:{label:'Stress: 30 % packet loss + drone failure',alarmLen:8,silent:false,first:4,gap:22,loss:0.3,failAt:30,obj:'Fence alarm, bad radio, and 1 drone fails at 30 s.'}
+};
+const settings={vmax:6,amax:9,vz:2.5,theta:35,p0:1.2,h0:6,canopy:0.15,hmin:3,hmax:12,alarmLen:8,loss:0.1,range:36,vwalk:1.0,dhide:9,tchal:6,wval:10,youSpeed:0.8};
+const LAWS=[
+  {title:'L1 · Motion',f:'v ← v + a·dt   |a| ≤ a_max   |v| ≤ v_max   |v_z| ≤ v_z,max\nv_xy,allowed = v_max · clamp((h − 0.5)/1.5, 0.05, 1)',text:'Integrated 60 times per second. The last line makes a drone lift before it moves.',params:[['vmax','v_max',3,10,0.5,'m/s'],['amax','a_max',3,15,0.5,'m/s²'],['vz','v_z,max',1,5,0.5,'m/s']]},
+  {title:'L2 · Camera',f:'r = h·tan θ\nλ = p₀ · vis · (1 − ρ/r) · min(1, h₀/h)\nP(detect in dt) = 1 − e^(−λ·dt)',text:'h is height above ground, ρ the horizontal distance to the person. Higher means a wider view but a weaker one.',params:[['theta','θ',20,60,1,'°'],['p0','p₀',0.3,3,0.1,'/s'],['h0','h₀',3,12,0.5,'m']]},
+  {title:'L3 · Visibility',f:'vis = 1 in the open · c under a tree canopy · 0 under a roof',text:'Trees are the only cover in the yard. The canopy factor c also applies to the belief update, so mass stays under trees.',params:[['canopy','c',0,0.6,0.05,'']]},
+  {title:'L4 · Belief',f:'alarm:  P = 0.9 on the segment, 0.1 on the rest\nevery 0.5 s:  a = v_w·0.5/2 of the mass in each cell steps toward the nearest door, k = 0.15 diffuses\n(doors are the only links through the walls; at a door the mass steps inside; inside it only diffuses)\nseen empty:  P ← P·(1 − λ_cell·dt)\nsighting:  P ← N(x_s, 1.5 m)   lost:  P ← N(x_last, 2.5 m)\npatrol (no alarm):  4 % of the mass returns to the fence strip every 0.5 s',text:'An intruder wants a door, so the map carries the mass that way. Each drone keeps its own map over 2 m cells and shares what its camera saw empty. The segment length is what the fence sensor can resolve. In patrol mode intruders can only come from the fence, so the map leaks mass back to it.',params:[['alarmLen','segment',4,48,4,'m']]},
+  {title:'L5 · Altitude',f:'spread = e^H / N,  H = −Σ P·ln P\nh* = h_min + (h_max − h_min)·√spread\ntracking: 4 m above the person, 6.6 m over a canopy; a locked camera tilts, so r grows ×1.6',text:'Uncertain means high and wide. Certain means low and sharp. Above 6.2 m a drone flies over trees and the roof, below it routes around them.',params:[['hmin','h_min',2,6,0.5,'m'],['hmax','h_max',6,20,1,'m']]},
+  {title:'L6 · Radio',f:'P(lost) = p,  or lost if distance > R,  delay 0.1 to 0.3 s',text:'Lost claims are how 2 drones end up on the same task. The loser yields when it hears the lower claim.',params:[['loss','p',0,0.6,0.05,''],['range','R',10,70,2,'m']]},
+  {title:'L7 · Intruder',f:'walks at v_w on the shortest walkable path to the nearest door\nhides under a tree ≤ 7 m away when a drone is within d_hide, up to 6 s\ngives up after T_c s with 2 drones within 4.5 m\nyou: a click sets the goal, shortest route at v_you = f · v_max; arrows walk, space held climbs',text:'Walls, racks, trunks and containers block the person. Stairs are used, doors can be walked through. Reaching a door counts as a breach. Under your control the script is off: you run at f times the drones\' top speed, stairs only take you while space is held, and the drones can follow through the doors (they must drop to 2.2 m to pass).',params:[['vwalk','v_w',0.8,2.5,0.1,'m/s'],['dhide','d_hide',0,15,1,'m'],['tchal','T_c',2,12,1,'s'],['youSpeed','f (you)',0.2,1,0.05,'× v_max']]},
+  {title:'L8 · Decision',f:'every 0.5 s:  tasks = TRACK, FLANK×2, LOOK×6, LAND\ncost(LOOK) = ETA − w·mass under the footprint\nallocate greedily: priority, then lowest cost; yield to a lower claim',text:'Same rule, same data, same answer on every drone. No leader.',params:[['wval','w',0,20,1,'s']]}
+];
+let simT=0;
+const metrics={sent:0,dropped:0,replans:0,conflicts:0,deterred:0,breached:0,intruders:0,alarmAt:null,sightAt:null,zeroAt:null,hides:0,lost:0,sightTimes:[],zeroTimes:[]};
+const log=[]; let logVer=0;
+function logLine(text,kind){ log.push({t:simT,text,kind:kind||'info'}); if(log.length>90)log.shift(); logVer++; }
+const clamp=(v,a,b)=>v<a?a:v>b?b:v;
+const dist2=(ax,az,bx,bz)=>Math.hypot(ax-bx,az-bz);
+const tanTheta=()=>Math.tan(settings.theta*Math.PI/180);
+
+// ---------- terrain ----------
+function hAt(x,z){
+  for(const p of PLATFORMS)if(x>=p.x0&&x<=p.x1&&z>=p.z0&&z<=p.z1)return PLAT_H;
+  for(const s of STAIRS){ if(x>=s.x0&&x<=s.x1&&z>=s.z0&&z<=s.z1){ const c=s.axis==='z'?z:x; return PLAT_H*(s.lo-c)/(s.lo-s.hi); } }
+  return 0;
+}
+function insideB(x,z){ return x>BLD.x0&&x<BLD.x1&&z>BLD.z0&&z<BLD.z1; }
+function underCanopy(x,z){ for(const t of TREES)if(dist2(x,z,t.x,t.z)<TREE_R)return true; return false; }
+function wallBlocked(cx,cz,inf){
+  for(const w of WALLS){
+    if(w.side==='S'||w.side==='N'){ if(Math.abs(cz-w.z)<WALL_T/2+inf&&cx>w.x0-inf&&cx<w.x1+inf){ if(DOORS.some(d=>d.side===w.side&&Math.abs(cx-d.x)<d.w/2-inf))continue; return true; } }
+    else{ if(Math.abs(cx-w.x)<WALL_T/2+inf&&cz>w.z0-inf&&cz<w.z1+inf){ if(DOORS.some(d=>d.side===w.side&&Math.abs(cz-d.z)<d.w/2-inf))continue; return true; } }
+  }
+  return false;
+}
+const inBox=(x,z,b,inf)=>x>b.x0-inf&&x<b.x1+inf&&z>b.z0-inf&&z<b.z1+inf;
+
+// ---------- grids ----------
+const NB=[[1,0],[-1,0],[0,1],[0,-1]];
+const pgrid=new Uint8Array(GX*GZ);   // person
+const dLow=new Uint8Array(GX*GZ);    // drone below the high band
+const dHigh=new Uint8Array(GX*GZ);   // drone in the high band
+const hmap=new Float32Array(GX*GZ);
+const wk=new Uint8Array(NC);         // belief cell walkable (yard or building floor)
+const canopyCell=new Uint8Array(NC);
+const insideCell=new Uint8Array(NC);
+const fenceCell=new Uint8Array(NC);
+const doorDist=new Int16Array(NC);
+const NBR=[];                        // door-aware 4-neighbours per cell
+const cellX=new Float32Array(NC), cellZ=new Float32Array(NC);
+let NWALK=0;
+function cellOf(x,z){ return [clamp(Math.floor(x/CELL),0,GX-1),clamp(Math.floor(z/CELL),0,GZ-1)]; }
+function buildGrids(){
+  for(let j=0;j<GZ;j++)for(let i=0;i<GX;i++){
+    const cx=(i+0.5)*CELL, cz=(j+0.5)*CELL; const k=j*GX+i; hmap[k]=hAt(cx,cz);
+    let b=cx<0.75||cx>W-0.75||cz<0.75||cz>H-0.75;
+    if(!b)b=wallBlocked(cx,cz,0.45);
+    if(!b)for(const r of racks){ if(inBox(cx,cz,r,0.45)){b=true;break;} }
+    if(!b)for(const t of TREES){ if(dist2(cx,cz,t.x,t.z)<TRUNK_R+0.45){b=true;break;} }
+    if(!b)for(const c of CONTAINERS){ if(inBox(cx,cz,c,0.45)){b=true;break;} }
+    pgrid[k]=b?1:0;
+    const edge=cx<0.9||cx>W-0.9||cz<0.9||cz>H-0.9;
+    let bl=edge||wallBlocked(cx,cz,0.6);
+    if(!bl)for(const t of TREES){ if(dist2(cx,cz,t.x,t.z)<TREE_R+0.6){bl=true;break;} }
+    if(!bl)for(const c of CONTAINERS){ if(inBox(cx,cz,c,0.6)){bl=true;break;} }
+    dLow[k]=bl?1:0; dHigh[k]=edge?1:0;
+  }
+  NWALK=0;
+  for(let c=0;c<NC;c++){
+    const cx=c%CX, cz=(c-cx)/CX; const x=(cx+0.5)*COV, z=(cz+0.5)*COV; cellX[c]=x; cellZ[c]=z;
+    let ok=!wallBlocked(x,z,0.05);
+    if(ok){ ok=false; for(let sj=0;sj<4&&!ok;sj++)for(let si=0;si<4&&!ok;si++){ const gi=cx*4+si, gj=cz*4+sj; if(!pgrid[gj*GX+gi])ok=true; } }
+    wk[c]=ok?1:0; if(ok)NWALK++; insideCell[c]=insideB(x,z)?1:0; canopyCell[c]=(!insideCell[c]&&underCanopy(x,z))?1:0; fenceCell[c]=(ok&&!insideCell[c]&&(x<4.5||x>W-4.5||z>H-4.5))?1:0;
+  }
+  for(let c=0;c<NC;c++){ const cx=c%CX,cz=(c-cx)/CX; const lst=[]; if(wk[c])for(const nb of NB){ const nx=cx+nb[0],nz=cz+nb[1]; if(nx<0||nz<0||nx>=CX||nz>=CZ)continue; const j=nz*CX+nx; if(!wk[j]||wallCross(cellX[c],cellZ[c],cellX[j],cellZ[j]))continue; lst.push(j); } NBR.push(lst); }
+  doorDist.fill(9999); const q=[]; for(let c=0;c<NC;c++){ if(!wk[c]||insideCell[c])continue; for(const d of DOORS)if(dist2(cellX[c],cellZ[c],d.x,d.z)<1.6){ doorDist[c]=0; q.push(c); break; } }
+  while(q.length){ const c=q.shift(); for(const j of NBR[c]){ if(insideCell[j])continue; if(doorDist[j]>doorDist[c]+1){ doorDist[j]=doorDist[c]+1; q.push(j); } } }
+}
+function wallCross(ax,az,bx,bz){ for(let i=0;i<=10;i++){ const t=i/10; if(wallBlocked(ax+(bx-ax)*t,az+(bz-az)*t,0.05))return true; } return false; }
+function visCell(c){ return canopyCell[c]?settings.canopy:1; }
+
+// ---------- A* ----------
+function astar(grid,sx,sz,gx,gz,extra,useH){
+  const N=GX*GZ; const g=new Float32Array(N).fill(Infinity); const came=new Int32Array(N).fill(-1); const closed=new Uint8Array(N);
+  const heap=[];
+  const push=(f,i)=>{ heap.push([f,i]); let k=heap.length-1; while(k>0){ const p=(k-1)>>1; if(heap[p][0]<=heap[k][0])break; const t=heap[p];heap[p]=heap[k];heap[k]=t; k=p; } };
+  const pop=()=>{ const top=heap[0]; const last=heap.pop(); if(heap.length){ heap[0]=last; let k=0; for(;;){ const l=2*k+1,r=l+1; let m=k; if(l<heap.length&&heap[l][0]<heap[m][0])m=l; if(r<heap.length&&heap[r][0]<heap[m][0])m=r; if(m===k)break; const t=heap[m];heap[m]=heap[k];heap[k]=t; k=m; } } return top; };
+  const h=(i,j)=>{ const dx=Math.abs(i-gx),dz=Math.abs(j-gz); return Math.max(dx,dz)+0.414*Math.min(dx,dz); };
+  const blocked=(i,j)=>grid[j*GX+i]===1||(extra!==null&&!(i===gx&&j===gz)&&extra(i,j));
+  const s=sz*GX+sx, goal=gz*GX+gx;
+  if(grid[goal]===1)return null;
+  g[s]=0; push(h(sx,sz),s); let exp=0;
+  while(heap.length){
+    const top=pop(); const cur=top[1]; if(closed[cur])continue; closed[cur]=1; if(cur===goal)break; if(++exp>40000)return null;
+    const ci=cur%GX, cj=(cur-ci)/GX;
+    for(let dj=-1;dj<=1;dj++)for(let di=-1;di<=1;di++){
+      if(!di&&!dj)continue; const ni=ci+di,nj=cj+dj; if(ni<0||nj<0||ni>=GX||nj>=GZ)continue;
+      if(blocked(ni,nj))continue; if(di&&dj&&(blocked(ci+di,cj)||blocked(ci,cj+dj)))continue;
+      const n=nj*GX+ni; if(closed[n])continue; if(useH&&Math.abs(hmap[n]-hmap[cur])>0.45)continue;
+      const ng=g[cur]+((di&&dj)?1.414:1);
+      if(ng<g[n]){ g[n]=ng; came[n]=cur; push(ng+h(ni,nj),n); }
+    }
+  }
+  if(came[goal]<0&&goal!==s)return null;
+  const cells=[]; let c=goal; while(c!==-1){ cells.push(c); c=came[c]; } cells.reverse();
+  return cells.map(c=>{ const i=c%GX; return {x:(i+0.5)*CELL,z:((c-i)/GX+0.5)*CELL}; });
+}
+function los(grid,ax,az,bx,bz,extra,useH){
+  const L=Math.hypot(bx-ax,bz-az); const n=Math.max(1,Math.ceil(L/0.2)); let ph=useH?hAt(ax,az):0;
+  for(let k=0;k<=n;k++){ const t=k/n; const x=ax+(bx-ax)*t,z=az+(bz-az)*t; const c=cellOf(x,z); if(grid[c[1]*GX+c[0]]||(extra!==null&&extra(c[0],c[1])))return false; if(useH){ const hh=hAt(x,z); if(Math.abs(hh-ph)>0.35)return false; ph=hh; } }
+  return true;
+}
+function simplify(grid,pts,extra,useH){ if(!pts||pts.length<3)return pts; const out=[pts[0]]; let a=0; while(a<pts.length-1){ let b=pts.length-1; while(b>a+1&&!los(grid,pts[a].x,pts[a].z,pts[b].x,pts[b].z,extra,useH))b--; out.push(pts[b]); a=b; } return out; }
+function planPath(grid,from,to,extra,useH){
+  const s=cellOf(from.x,from.z), g=cellOf(to.x,to.z);
+  const cells=astar(grid,s[0],s[1],g[0],g[1],extra,useH); if(!cells)return null;
+  let pts=simplify(grid,cells,extra,useH);
+  if(pts.length&&Math.hypot(pts[0].x-from.x,pts[0].z-from.z)<0.6)pts=pts.slice(1);
+  pts.push({x:to.x,z:to.z}); return pts;
+}
+function nearestFree(grid,x,z,maxCells){
+  x=clamp(x,0.9,W-0.9); z=clamp(z,0.9,H-0.9); const c=cellOf(x,z); if(!grid[c[1]*GX+c[0]])return {x,z};
+  let best=null,bd=Infinity;
+  for(let dj=-maxCells;dj<=maxCells;dj++)for(let di=-maxCells;di<=maxCells;di++){ const ni=c[0]+di,nj=c[1]+dj; if(ni<0||nj<0||ni>=GX||nj>=GZ||grid[nj*GX+ni])continue; const d=di*di+dj*dj; if(d<bd){bd=d;best={x:(ni+0.5)*CELL,z:(nj+0.5)*CELL};} }
+  return best||{x,z};
+}
+const planPathP=(from,to,extra)=>planPath(pgrid,from,to,extra,true);
+function planPathD(grid,from,to){
+  const c=cellOf(to.x,to.z); const goal=grid[c[1]*GX+c[0]]?nearestFree(grid,to.x,to.z,8):to;
+  const s=cellOf(from.x,from.z); const start=grid[s[1]*GX+s[0]]?nearestFree(grid,from.x,from.z,8):from;
+  const p=planPath(grid,start,goal,null,false); if(!p)return [{x:to.x,z:to.z}];
+  if(start!==from)p.unshift({x:start.x,z:start.z});
+  if(goal!==to)p.push({x:to.x,z:to.z}); return p;
+}
+function pathLength(pts,from){ let L=0,px=from.x,pz=from.z; for(const p of pts){ L+=Math.hypot(p.x-px,p.z-pz); px=p.x;pz=p.z; } return L; }
+
+// ---------- belief ----------
+function uniformB(B){ let n=0; for(let k=0;k<NC;k++)if(wk[k]&&!insideCell[k])n++; for(let k=0;k<NC;k++)B[k]=(wk[k]&&!insideCell[k])?1/n:0; }
+function normalizeB(B){ let s=0; for(let k=0;k<NC;k++)s+=B[k]; if(!(s>1e-12)){ uniformB(B); return; } for(let k=0;k<NC;k++)B[k]/=s; }
+function gaussianB(B,x,z,sig){ for(let k=0;k<NC;k++){ if(!wk[k]){B[k]=0;continue;} const d2=(cellX[k]-x)**2+(cellZ[k]-z)**2; B[k]=Math.exp(-d2/(2*sig*sig))+1e-5; } normalizeB(B); }
+function alarmB(B,al){
+  const inSeg=k=>{ const x=cellX[k],z=cellZ[k]; if(al.side==='S')return z>H-5.5&&Math.abs(x-al.c)<=al.len/2+0.5; if(al.side==='E')return x>W-5.5&&Math.abs(z-al.c)<=al.len/2+0.5; return x<5.5&&Math.abs(z-al.c)<=al.len/2+0.5; };
+  let n1=0,n0=0; for(let k=0;k<NC;k++){ if(!wk[k]||insideCell[k])continue; if(inSeg(k))n1++; else n0++; }
+  for(let k=0;k<NC;k++){ if(!wk[k]||insideCell[k]){B[k]=0;continue;} B[k]=inSeg(k)?(n1?0.9/n1:0):(n0?0.1/n0:0); } normalizeB(B);
+}
+const scratch=new Float32Array(NC);
+function diffuseB(B){
+  const a=clamp(settings.vwalk*0.5/COV,0.05,0.5), k=0.15;
+  scratch.fill(0);
+  for(let c=0;c<NC;c++){ if(!wk[c]||B[c]<=0)continue; const nb=NBR[c]; const p=B[c]; let to=null;
+    if(!insideCell[c]){ if(doorDist[c]===0){ const ins=nb.filter(j=>insideCell[j]); if(ins.length)to=ins; } else { let bd=doorDist[c]; for(const j of nb)if(doorDist[j]<bd){ bd=doorDist[j]; to=[j]; } } }
+    const kk=nb.length?k:0, aa=to?a:0;
+    scratch[c]+=p*(1-kk-aa); for(const j of nb)scratch[j]+=p*kk/nb.length; if(to)for(const j of to)scratch[j]+=p*aa/to.length; }
+  B.set(scratch); normalizeB(B);
+}
+function perimeterSource(B,f){ let n=0; for(let k=0;k<NC;k++)if(fenceCell[k])n++; if(!n)return; for(let k=0;k<NC;k++){ B[k]*=(1-f); if(fenceCell[k])B[k]+=f/n; } }
+function spreadB(B){ let Hh=0; for(let k=0;k<NC;k++){ const p=B[k]; if(p>1e-9)Hh-=p*Math.log(p); } return Math.exp(Hh)/NWALK; }
+function searchHeight(B){ return clamp(settings.hmin+(settings.hmax-settings.hmin)*Math.sqrt(spreadB(B)),settings.hmin,settings.hmax); }
+// top viewpoints by belief mass under a footprint of radius r
+function candidates(B,r,n){
+  const rc=Math.ceil(r/COV); const offs=[]; for(let dj=-rc;dj<=rc;dj++)for(let di=-rc;di<=rc;di++)if(Math.hypot(di,dj)*COV<=r)offs.push([di,dj]);
+  const mass=new Float32Array(NC);
+  for(let c=0;c<NC;c++){ if(!wk[c])continue; const cx=c%CX,cz=(c-cx)/CX; let s=0; for(const o of offs){ const nx=cx+o[0],nz=cz+o[1]; if(nx<0||nz<0||nx>=CX||nz>=CZ)continue; s+=B[nz*CX+nx]; } mass[c]=s; }
+  const out=[]; const sup=new Uint8Array(NC);
+  for(let it=0;it<n;it++){ let best=-1,bm=0.0; for(let c=0;c<NC;c++){ if(sup[c]||!wk[c])continue; if(mass[c]>bm){bm=mass[c];best=c;} } if(best<0||bm<0.01)break; out.push({c:best,x:cellX[best],z:cellZ[best],mass:bm});
+    for(let c=0;c<NC;c++)if(dist2(cellX[c],cellZ[c],cellX[best],cellZ[best])<r*1.1)sup[c]=1; }
+  return out;
+}
+function massAt(B,c,r){ let s=0; for(let k=0;k<NC;k++)if(dist2(cellX[k],cellZ[k],cellX[c],cellZ[c])<=r)s+=B[k]; return s; }
+function labelId(id){ if(id==='LAND')return 'LAND'; if(id==='TRACK')return 'TRACK'; if(id[0]==='F')return 'FLANK '+(id==='F0'?'left':'right'); if(id.slice(0,2)==='L:')return 'LOOK cell '+id.slice(2); return id; }
+function taskLabel(d){ const t=d.task; if(!d.alive)return 'DOWN · '+d.downReason; if(!t)return 'IDLE'; if(t.type==='LAND')return d.state==='landed'?'LANDED · on pad, waiting for an alarm':'RETURN · to pad'; if(t.type==='LOOK')return 'LOOK · ('+t.x.toFixed(0)+', '+t.z.toFixed(0)+') at '+d.altTarget.toFixed(1)+' m · '+(100*t.mass).toFixed(0)+' % of the mass'; if(t.type==='TRACK')return 'TRACK · 4 m above the person'; if(t.type==='FLANK')return 'FLANK · '+(t.slot===0?'left':'right')+' of the person, 3 m ahead'; return t.id; }
+function shortLabel(d){ if(!d.alive)return 'DOWN'; const t=d.task; if(!t)return 'IDLE'; if(t.type==='LAND')return d.state==='landed'?'LANDED':'RETURN'; if(t.type==='LOOK')return 'LOOK '+d.altTarget.toFixed(0)+' m'; if(t.type==='TRACK')return 'TRACK'; if(t.type==='FLANK')return 'FLANK '+(t.slot===0?'L':'R'); return t.id; }
+
+// ---------- radio ----------
+const bus={
+  q:[],
+  send(from,msg){
+    const fromName=from?from.name:'SITE'; msg.from=from?from.id:'SITE'; msg.t=simT;
+    for(const d of world.drones){
+      if(from&&d===from)continue; if(!d.alive)continue; metrics.sent++;
+      let ok=true,why='';
+      if(from){ const r=dist2(from.pos.x,from.pos.z,d.pos.x,d.pos.z); if(r>settings.range){ok=false;why='out of range, '+r.toFixed(0)+' m';} }
+      if(ok&&Math.random()<settings.loss){ok=false;why='packet lost';}
+      if(ok)this.q.push({at:simT+0.1+Math.random()*0.2,to:d,msg});
+      else{ metrics.dropped++; if(msg.important)logLine('✕ '+d.name+' missed '+fromName+"'s "+msg.type+' ('+why+')','drop'); }
+    }
+  },
+  step(){ if(!this.q.length)return; const due=[]; this.q=this.q.filter(e=>{ if(e.at<=simT){due.push(e);return false;} return true; }); for(const e of due)e.to.inbox.push(e.msg); },
+  clear(){ this.q.length=0; }
+};
+
+// ---------- allocation (same rule in every drone) ----------
+function allocate(tasks,bidsBy,alive,claims,myId){
+  const result={}; const takenD=new Set(); const takenT=new Set();
+  const myBids=(bidsBy[myId]&&bidsBy[myId].bids)||{};
+  for(const tid in claims){
+    const cl=claims[tid]; if(cl.drone===myId||simT-cl.t>1.6||alive.indexOf(cl.drone)<0||takenD.has(cl.drone))continue;
+    if(!tasks.some(t=>t.id===tid))continue; const mine=myBids[tid];
+    if(mine===undefined||cl.cost<mine-1e-6||(Math.abs(cl.cost-mine)<1e-6&&cl.drone<myId)){ result[cl.drone]=tid; takenD.add(cl.drone); takenT.add(tid); }
+  }
+  const prios=Array.from(new Set(tasks.map(t=>t.prio))).sort((a,b)=>a-b);
+  for(const p of prios){
+    const lt=tasks.filter(t=>t.prio===p);
+    for(;;){
+      let best=null;
+      for(const t of lt){ if(takenT.has(t.id)&&!t.shared)continue;
+        for(const d of alive){ if(takenD.has(d))continue; const b=bidsBy[d]; if(!b||simT-b.t>2.0)continue; const c=b.bids[t.id]; if(c===undefined)continue;
+          if(!best||c<best.c-1e-9||(Math.abs(c-best.c)<1e-9&&(d<best.d||(d===best.d&&t.id<best.t.id))))best={d,c,t}; } }
+      if(!best)break; result[best.d]=best.t.id; takenD.add(best.d); if(!best.t.shared)takenT.add(best.t.id);
+    }
+  }
+  return result;
+}
+
+// ---------- intruder ----------
+class Intruder{
+  constructor(side,c){
+    let x,z; if(side==='S'){x=c;z=H-0.9;} else if(side==='E'){x=W-0.9;z=c;} else {x=0.9;z=c;}
+    const f=nearestFree(pgrid,x,z,6); x=f.x; z=f.z;
+    this.x=x;this.z=z;this.sx=x;this.sz=z;this.y=hAt(x,z);this.side=side;this.state='approach';this.path=[];this.replanT=0;this.t=0;this.heading=Math.PI;this.walk=0;this.goneT=2.5;
+    this.door=this.chooseDoor();this.hiding=false;this.hideT=0;this.hideCd=3;this.hidePt=null;this.chal=0;this.visible=1;this.tracked=false;this.inside=false;this.doorFlag=-1;this.needClimb=false;this.mtarget=null;
+  }
+  chooseDoor(){ let best=0,bl=Infinity; DOORS.forEach((d,i)=>{ const p=planPathP(this,d,null); const L=p?pathLength(p,this):Infinity; if(L<bl){bl=L;best=i;} }); return best; }
+  tryMove(dx,dz){ const nx=clamp(this.x+dx,0.8,W-0.8), nz=clamp(this.z+dz,0.8,H-0.8); const c=cellOf(nx,nz); if(pgrid[c[1]*GX+c[0]])return false; const dh=Math.abs(hAt(nx,nz)-hAt(this.x,this.z)); if(dh>0.45)return false; if(dh>0.02&&!world.climb){ this.needClimb=true; return false; } this.x=nx; this.z=nz; return true; }
+  manualStep(dt,drones){
+    const m=world.manualDir; const sp=settings.vmax*settings.youSpeed; const L=Math.hypot(m.x,m.z); this.needClimb=false;
+    if(L>0.05){ const ux=m.x/L,uz=m.z/L; const k=Math.min(1,L); this.heading=Math.atan2(ux,uz); this.tryMove(ux*sp*k*dt,0); this.tryMove(0,uz*sp*k*dt); this.walk+=sp*k*dt; this.path=[]; this.mtarget=null; }
+    else if(this.path.length){ this.follow(dt,sp); if(!this.path.length)this.mtarget=null; }
+    this.hiding=false; this.state='approach';
+    let atDoor=-1,nd=Infinity; DOORS.forEach((d,i)=>{ const dd=dist2(this.x,this.z,d.x,d.z); if(dd<nd)nd=dd; if(dd<1.4)atDoor=i; });
+    if(atDoor>=0&&this.doorFlag!==atDoor){ this.doorFlag=atDoor; this.door=atDoor; metrics.breached++; logLine('BREACH — the person is at the '+DOORS[atDoor].name+(this.tracked?' (tracked).':' (unseen).'),'alert'); }
+    else if(atDoor<0&&nd>3)this.doorFlag=-1;
+    const close=drones.filter(d=>d.alive&&dist2(d.pos.x,d.pos.z,this.x,this.z)<4.5&&d.pos.y-this.y<7.5).length;
+    if(close>=2){ this.chal+=dt; if(metrics.zeroAt===null){ metrics.zeroAt=simT; logLine('Zeroed in: 2 drones within 4.5 m of the person.','good'); } } else this.chal=Math.max(0,this.chal-dt*0.5);
+    if(this.chal>=settings.tchal){ metrics.deterred++; logLine('Challenge complete: a scripted intruder would give up now. You keep the keys.','good'); this.chal=0; }
+  }
+  update(dt,drones){
+    this.t+=dt; const goal=DOORS[this.door];
+    if(world.manual){ this.manualStep(dt,drones); }
+    else if(this.state==='approach'){
+      const near=drones.filter(d=>d.alive&&d.pos.y>1.0&&dist2(d.pos.x,d.pos.z,this.x,this.z)<settings.dhide);
+      this.hideCd-=dt;
+      if(!this.hiding&&this.hideCd<=0&&near.length&&!underCanopy(this.x,this.z)){
+        let bt=null,bd=7; for(const t of TREES){ const d=dist2(t.x,t.z,this.x,this.z); if(d<bd){bd=d;bt=t;} }
+        if(bt){ const dx=this.x-bt.x,dz=this.z-bt.z; const L=Math.hypot(dx,dz)||1; const pt=nearestFree(pgrid,bt.x+dx/L*1.0,bt.z+dz/L*1.0,4); const p=planPathP(this,pt,null); if(p&&pathLength(p,this)<9){ this.hiding=true; this.hideT=0; this.hidePt=pt; this.path=p; metrics.hides++; logLine('Intruder ducks under a tree.','warn'); } else this.hideCd=2; }
+        else this.hideCd=2;
+      }
+      if(this.hiding){
+        this.hideT+=dt; const at=dist2(this.x,this.z,this.hidePt.x,this.hidePt.z)<0.6;
+        if(!at)this.follow(dt,settings.vwalk*1.3);
+        if((at&&(!near.length||this.hideT>6))||(!at&&this.hideT>5)){ this.hiding=false; this.hideCd=8; this.replanT=0; }
+      }else{
+        this.replanT-=dt; if(this.replanT<=0){ this.replanT=0.8; this.path=planPathP(this,goal,null)||[]; }
+        if(this.path.length)this.follow(dt,settings.vwalk);
+      }
+      for(let i=0;i<DOORS.length;i++){ if(dist2(this.x,this.z,DOORS[i].x,DOORS[i].z)<1.4){ this.door=i; this.state='breached'; return; } }
+      const close=drones.filter(d=>d.alive&&dist2(d.pos.x,d.pos.z,this.x,this.z)<4.5&&d.pos.y-this.y<7.5).length;
+      if(close>=2){ this.chal+=dt; if(metrics.zeroAt===null){ metrics.zeroAt=simT; logLine('Zeroed in: 2 drones within 4 m of the person.','good'); } } else this.chal=Math.max(0,this.chal-dt*0.5);
+      if(this.chal>=settings.tchal){ this.state='retreat'; this.path=planPathP(this,{x:this.sx,z:this.sz},null)||[]; return; }
+    }else if(this.state==='retreat'){
+      if(this.path.length)this.follow(dt,settings.vwalk*1.4);
+      if(dist2(this.x,this.z,this.sx,this.sz)<0.8||!this.path.length)this.state='gone';
+    }
+    this.y=hAt(this.x,this.z); this.inside=insideB(this.x,this.z); this.visible=(!this.inside&&underCanopy(this.x,this.z))?settings.canopy:1;
+  }
+  follow(dt,speed){
+    let rem=speed*dt;
+    while(rem>0&&this.path.length){ const w=this.path[0]; const dx=w.x-this.x,dz=w.z-this.z; const L=Math.hypot(dx,dz); if(L<1e-6){this.path.shift();continue;} this.heading=Math.atan2(dx,dz); if(L<=rem){this.x=w.x;this.z=w.z;rem-=L;this.path.shift();}else{this.x+=dx/L*rem;this.z+=dz/L*rem;rem=0;} }
+    this.walk+=speed*dt;
+  }
+}
+
+// ---------- drone ----------
+class Drone{
+  constructor(id){ this.id=id; this.name='D'+(id+1); this.color=COLORS[id]; this.reset(); }
+  reset(){
+    const d=DOCK[this.id]; this.pos={x:d.x,y:0.2,z:d.z}; this.vel={x:0,y:0,z:0}; this.alive=true; this.battery=100; this.task=null;
+    this.target={x:d.x,z:d.z}; this.altTarget=0.2; this.state='landed'; this.heading=0; this.band='low';
+    this.B=new Float32Array(NC); uniformB(this.B);
+    this.belief={alert:false,alarmId:-1,target:null,bids:{},hb:{},claims:{},hstar:settings.hmin,patrol:false};
+    this.inbox=[]; this.planT=0.3+this.id*0.2; this.hbT=0; this.obsT=0.5+this.id*0.3; this.obs=new Float32Array(NC).fill(1); this.diffT=0.5;
+    this.myBids={}; this.track=null; this.sightT=0; this.sightRepeat=0; this.replans=0; this.downReason=''; this.yielded={}; this.lastLook=null;
+    this.dpath=[]; this.dpathGoal=null; this.dpathT=0; this.dpathBand='low'; this.footR=0; this.spread=1; this.inside=false; this.overRoof=false;
+  }
+  aliveSet(){ const s=[this.id]; for(const d of world.drones){ if(d.id===this.id)continue; const t=this.belief.hb[d.id]; if(t!==undefined&&simT-t<2.6)s.push(d.id); } return s.sort((a,b)=>a-b); }
+  targetFresh(){ const t=this.belief.target; return !!(t&&simT-t.t<2.5); }
+  predicted(){ const t=this.belief.target; const a=clamp(simT-t.t,0,2); return {x:clamp(t.x+t.vx*a,1,W-1),z:clamp(t.z+t.vz*a,1,H-1)}; }
+  buildTasks(){
+    const b=this.belief; const tasks=[]; const alive=this.aliveSet();
+    if(this.targetFresh()){
+      const t=b.target; const p=this.predicted();
+      tasks.push({id:'TRACK',type:'TRACK',prio:0,x:p.x,z:p.z});
+      let hx=t.vx,hz=t.vz; if(Math.hypot(hx,hz)<0.3){ let bd=Infinity; for(const d of DOORS){ const dd=dist2(d.x,d.z,p.x,p.z); if(dd<bd){bd=dd;hx=d.x-p.x;hz=d.z-p.z;} } }
+      const L=Math.hypot(hx,hz)||1; hx/=L; hz/=L; const px=-hz,pz=hx;
+      [[-1,0],[1,1]].forEach(s=>{ const f=nearestFree(dLow,p.x+hx*3+px*2.2*s[0],p.z+hz*3+pz*2.2*s[0],6); tasks.push({id:'F'+s[1],type:'FLANK',prio:1,x:f.x,z:f.z,slot:s[1]}); });
+      if(alive.length>1)return tasks;
+    }
+    if(b.alert){
+      const hs=searchHeight(this.B); b.hstar=hs; const r=hs*tanTheta();
+      const cands=candidates(this.B,r,6); const top=cands.length?cands[0].mass:0;
+      if(this.task&&this.task.type==='LOOK'&&this.task.cell>=0&&!cands.some(c=>c.c===this.task.cell)){ const cur=massAt(this.B,this.task.cell,r); if(cur>=0.3*top)cands.push({c:this.task.cell,x:cellX[this.task.cell],z:cellZ[this.task.cell],mass:cur}); }
+      for(const c of cands)tasks.push({id:'L:'+c.c,type:'LOOK',prio:2,x:c.x,z:c.z,mass:c.mass,cell:c.c});
+      tasks.push({id:'HOLD',type:'LOOK',prio:3,x:this.pos.x,z:this.pos.z,mass:0,cell:-1,shared:true});
+    }else tasks.push({id:'LAND',type:'LAND',prio:9,shared:true});
+    return tasks;
+  }
+  eta(x,z,alt){ const d=Math.hypot(x-this.pos.x,z-this.pos.z); const dh=Math.abs((alt===undefined?this.altTarget:alt)-this.pos.y); return d/settings.vmax+dh/settings.vz; }
+  cost(t){
+    let c;
+    if(t.type==='TRACK')c=(this.track&&simT-this.track.t<2.5)?0:this.eta(t.x,t.z,hAt(t.x,t.z)+4)+3;
+    else if(t.type==='FLANK')c=this.eta(t.x,t.z,hAt(t.x,t.z)+3)+0.5;
+    else if(t.type==='LOOK'){ const hs=this.belief.hstar; c=(t.id==='HOLD')?50:this.eta(t.x,t.z,hs)-settings.wval*t.mass; }
+    else c=0;
+    if(this.task&&this.task.id===t.id&&!(this.yielded[t.id]>simT))c-=(t.type==='LOOK'?2.0:1.0);
+    return Math.round(c*100)/100;
+  }
+  plan(){
+    const tasks=this.buildTasks(); const myBids={}; for(const t of tasks){ if(this.yielded[t.id]>simT)continue; myBids[t.id]=this.cost(t); }
+    this.myBids=myBids; this.belief.bids[this.id]={t:simT,bids:myBids};
+    bus.send(this,{type:'BID',bids:myBids});
+    const alive=this.aliveSet();
+    const alloc=allocate(tasks,this.belief.bids,alive,this.belief.claims,this.id);
+    let tid=alloc[this.id]; if(!tid)tid=this.belief.alert?'HOLD':'LAND';
+    const tobj=tasks.find(t=>t.id===tid)||{id:tid,type:tid==='LAND'?'LAND':'LOOK',prio:9,x:this.pos.x,z:this.pos.z,mass:0,cell:-1};
+    const prev=this.task?this.task.id:null;
+    if(prev!==tid){
+      if(prev!==null){metrics.replans++;this.replans++;}
+      const quiet=tobj.type==='LOOK'&&this.lastLook&&dist2(tobj.x,tobj.z,this.lastLook.x,this.lastLook.z)<4.5;
+      this.task=tobj; if(tobj.type==='LOOK')this.lastLook={x:tobj.x,z:tobj.z};
+      if(!quiet&&tid!=='HOLD'){ const alt=Object.keys(myBids).filter(k=>k!==tid).map(k=>[k,myBids[k]]).sort((a,b)=>a[1]-b[1])[0];
+        logLine(this.name+' → ALL  CLAIM '+labelId(tid)+(myBids[tid]!==undefined?' ('+myBids[tid].toFixed(1)+')':'')+(alt&&alt[0]!=='HOLD'?' over '+labelId(alt[0])+' ('+alt[1].toFixed(1)+')':''),'claim'); }
+    }else this.task=tobj;
+    bus.send(this,{type:'CLAIM',task:tid,cost:myBids[tid]!==undefined?myBids[tid]:99,important:prev!==tid&&tid!=='HOLD'&&tobj.type!=='LOOK'});
+  }
+  receive(m){
+    const b=this.belief;
+    switch(m.type){
+      case 'HB': b.hb[m.from]=simT; break;
+      case 'BID': b.bids[m.from]={t:simT,bids:m.bids}; break;
+      case 'CLAIM':{
+        for(const k in b.claims)if(b.claims[k].drone===m.from&&k!==m.task)delete b.claims[k];
+        b.claims[m.task]={drone:m.from,cost:m.cost,t:simT};
+        if(this.task&&this.task.id===m.task&&m.task!=='LAND'&&m.task!=='HOLD'&&!(this.yielded[m.task]>simT)){
+          const mine=this.myBids[m.task]; const margin=m.task.slice(0,2)==='L:'?0.1:1e-6; const theyWin=mine===undefined||m.cost<mine-margin||(Math.abs(m.cost-mine)<1e-6&&m.from<this.id);
+          if(theyWin){ metrics.conflicts++; this.yielded[m.task]=simT+2.5; logLine(this.name+' yields '+labelId(m.task)+' to D'+(m.from+1)+' ('+m.cost.toFixed(1)+' beats '+(mine===undefined?'?':mine.toFixed(1))+')','warn'); this.planT=0; }
+        } break; }
+      case 'OBS': for(let i=0;i<m.cells.length;i+=2)this.B[m.cells[i]]*=m.cells[i+1]; normalizeB(this.B); break;
+      case 'ALARM': if(b.alarmId!==m.id){ b.alarmId=m.id; b.alert=true; alarmB(this.B,m); this.planT=0.05+this.id*0.2; } break;
+      case 'CLEAR': if(b.alert&&b.alarmId===m.id){ b.alert=false; b.target=null; this.track=null; this.planT=0; } break;
+      case 'SIGHT':{ const own=this.track&&simT-this.track.t<2.5; if(!own){ const fresh=!this.targetFresh(); b.target={x:m.x,z:m.z,vx:m.vx,vz:m.vz,t:simT,by:m.from}; if(fresh||simT-this.sightT>0.8){ gaussianB(this.B,m.x,m.z,1.5); this.sightT=simT; } if(fresh)this.planT=0; } break; }
+      case 'LOST': if(b.target&&b.target.by===m.from&&!(this.track&&simT-this.track.t<2.5)){ b.target=null; gaussianB(this.B,m.x,m.z,2.5); this.planT=0; } break;
+    }
+  }
+  update(dt){
+    if(!this.alive){ const ground=hAt(this.pos.x,this.pos.z)+0.15; this.pos.y=Math.max(ground,this.pos.y-2.5*dt); this.vel.x=0;this.vel.z=0; return; }
+    for(const m of this.inbox)this.receive(m); this.inbox.length=0;
+    if(this.state!=='landed')this.battery=Math.max(0,this.battery-dt*0.15);
+    this.diffT-=dt; if(this.diffT<=0){ this.diffT=0.5; if(this.belief.alert&&!this.targetFresh()){ diffuseB(this.B); if(this.belief.patrol)perimeterSource(this.B,0.04); } this.spread=spreadB(this.B); }
+    this.planT-=dt; if(this.planT<=0){ this.planT=0.5; this.plan(); }
+    this.hbT-=dt; if(this.hbT<=0){ this.hbT=1.0; bus.send(this,{type:'HB'}); }
+    this.obsT-=dt; if(this.obsT<=0){ this.obsT=1.0; const cells=[]; for(let k=0;k<NC;k++){ if(this.obs[k]<0.985){ cells.push(k,Math.round(this.obs[k]*100)/100); } this.obs[k]=1; } if(cells.length)bus.send(this,{type:'OBS',cells}); }
+    this.computeTarget(dt); this.move(dt); this.sense(dt);
+  }
+  computeTarget(dt){
+    const t=this.task; let tx=this.pos.x,tz=this.pos.z,alt=this.altTarget; const gy=hAt(this.pos.x,this.pos.z);
+    if(!t||t.type==='LAND'){ const p=DOCK[this.id]; tx=p.x;tz=p.z; const d=dist2(tx,tz,this.pos.x,this.pos.z); if(d>0.8){ alt=Math.max(2.8,this.pos.y>HIGH_BAND?this.pos.y:2.8); this.state='return'; } else { alt=0.2; this.state=(this.pos.y<0.45)?'landed':'landing'; } }
+    else if(t.type==='LOOK'){ tx=t.x;tz=t.z; alt=this.belief.hstar; this.state='search'; }
+    else if(t.type==='TRACK'){ const p=this.predicted(); tx=p.x;tz=p.z; alt=underCanopy(tx,tz)?TREE_TOP+1:hAt(tx,tz)+4.0; this.state='track'; }
+    else if(t.type==='FLANK'){ tx=t.x;tz=t.z; alt=hAt(tx,tz)+3.0; this.state=dist2(tx,tz,this.pos.x,this.pos.z)<1.5?'zeroed':'flank'; }
+    const inNow=insideB(this.pos.x,this.pos.z); const overRoof=inNow&&this.pos.y>=WALL_H-0.3; const inside=inNow&&!overRoof; const tgtIn=insideB(tx,tz);
+    if(inside||tgtIn)alt=Math.min(alt,3.4);
+    if(overRoof)alt=Math.max(alt,WALL_H+0.8);
+    if(!overRoof&&inside!==tgtIn){ let nd=Infinity; for(const d of DOORS)nd=Math.min(nd,dist2(d.x,d.z,this.pos.x,this.pos.z)); if(nd<5)alt=Math.min(alt,2.2); }
+    if(!inside&&alt<HIGH_BAND&&alt<TREE_TOP+0.5&&underCanopy(this.pos.x,this.pos.z)&&!(t&&t.type==='LAND'))alt=TREE_TOP+1;
+    this.inside=inside; this.overRoof=overRoof;
+    if(t&&t.type==='LOOK'&&this.pos.y-gy<alt-1.5&&Math.hypot(this.vel.x,this.vel.z)<0.5)this.state='lifting';
+    this.target={x:tx,z:tz}; this.altTarget=alt;
+  }
+  nav(dt){
+    let tg=this.target; this.dpathT-=dt;
+    let band=(this.altTarget>=HIGH_BAND&&this.pos.y>=HIGH_BAND-0.6)?'high':'low';
+    if(this.overRoof){ band='roof'; if(insideB(tg.x,tg.z)||this.altTarget<HIGH_BAND){ let best=null,bd=Infinity; for(const d of DOORS){ const ap=d.side==='S'?{x:d.x,z:d.z+3}:{x:d.x+3,z:d.z}; const dd=dist2(ap.x,ap.z,this.pos.x,this.pos.z); if(dd<bd){bd=dd;best=ap;} } tg=best; } }
+    const grid=band==='low'?dLow:dHigh;
+    const stale=!this.dpathGoal||dist2(tg.x,tg.z,this.dpathGoal.x,this.dpathGoal.z)>1.0||this.dpath.length===0||band!==this.dpathBand;
+    if(stale||this.dpathT<=0){
+      this.dpathT=1.5; this.dpathGoal={x:tg.x,z:tg.z}; this.dpathBand=band;
+      if(los(grid,this.pos.x,this.pos.z,tg.x,tg.z,null,false))this.dpath=[{x:tg.x,z:tg.z}]; else this.dpath=planPathD(grid,this.pos,tg);
+    }
+    this.band=band;
+    while(this.dpath.length>1&&dist2(this.pos.x,this.pos.z,this.dpath[0].x,this.dpath[0].z)<0.8)this.dpath.shift();
+    return this.dpath[0]||tg;
+  }
+  move(dt){
+    const wp=this.nav(dt); const last=this.dpath.length<=1; const gy=hAt(this.pos.x,this.pos.z); const h=this.pos.y-gy;
+    const dx=wp.x-this.pos.x,dz=wp.z-this.pos.z; const d=Math.hypot(dx,dz);
+    const vlim=settings.vmax*clamp((h-0.5)/1.5,0.05,1);
+    let vx=0,vz=0; if(d>0.05){ const sp=Math.min(vlim,last?d*1.6:Math.max(2.5,d*1.6)); vx=dx/d*sp; vz=dz/d*sp; }
+    for(const o of world.drones){ if(o===this||!o.alive)continue; const ox=this.pos.x-o.pos.x,oz=this.pos.z-o.pos.z; const od=Math.hypot(ox,oz); if(od<2.2&&od>1e-3&&Math.abs(o.pos.y-this.pos.y)<2){ const f=(2.2-od)*2.5; vx+=ox/od*f; vz+=oz/od*f; } }
+    const ax=vx-this.vel.x,az=vz-this.vel.z; const a=Math.hypot(ax,az); const maxA=settings.amax*dt;
+    if(a>maxA){ this.vel.x+=ax/a*maxA; this.vel.z+=az/a*maxA; }else{ this.vel.x=vx; this.vel.z=vz; }
+    const nx=clamp(this.pos.x+this.vel.x*dt,0.8,W-0.8), nz=clamp(this.pos.z+this.vel.z*dt,0.8,H-0.8);
+    if(insideB(nx,nz)!==insideB(this.pos.x,this.pos.z)&&this.pos.y>2.6&&this.pos.y<WALL_H+0.5){ this.vel.x=0; this.vel.z=0; } else { this.pos.x=nx; this.pos.z=nz; }
+    const dy=this.altTarget-this.pos.y; const vy=clamp(dy*2.0,-settings.vz,settings.vz); this.pos.y+=vy*dt; this.vel.y=vy;
+    const sp=Math.hypot(this.vel.x,this.vel.z); if(sp>0.3)this.heading=Math.atan2(this.vel.x,this.vel.z);
+  }
+  sense(dt){
+    const gy=hAt(this.pos.x,this.pos.z); const h=this.pos.y-gy; this.footR=h>1?h*tanTheta():0;
+    if(h<1)return;
+    const r=this.footR, x=this.pos.x, z=this.pos.z, hf=Math.min(1,settings.h0/h), p0=settings.p0;
+    const cx0=Math.max(0,Math.floor((x-r)/COV)),cx1=Math.min(CX-1,Math.floor((x+r)/COV)),cz0=Math.max(0,Math.floor((z-r)/COV)),cz1=Math.min(CZ-1,Math.floor((z+r)/COV));
+    let changed=false;
+    const dIn=(insideB(x,z)&&this.pos.y<WALL_H-0.3)?1:0;
+    for(let cz=cz0;cz<=cz1;cz++)for(let cx=cx0;cx<=cx1;cx++){ const k=cz*CX+cx; if(!wk[k]||insideCell[k]!==dIn)continue; const rho=dist2(cellX[k],cellZ[k],x,z); if(rho>r)continue; const lam=p0*visCell(k)*(1-rho/r)*hf; const f=1-lam*dt; this.B[k]*=f; this.obs[k]*=f; changed=true; }
+    if(changed)normalizeB(this.B);
+    const it=world.intruder;
+    if(it&&it.state!=='gone'){
+      const rho=dist2(it.x,it.z,x,z); const vis=((it.inside?1:0)===dIn)?it.visible:0; const locked=this.track&&simT-this.track.t<2.5; const rr=locked?r*1.6:r;
+      if(rho<=rr&&vis>0){ let lam=p0*vis*(1-rho/rr)*hf; if(locked)lam*=6;
+        if(Math.random()<1-Math.exp(-lam*dt)){
+          const sx=it.x+(Math.random()-0.5)*0.8, sz=it.z+(Math.random()-0.5)*0.8;
+          if(locked){ const el=Math.max(0.05,simT-this.track.t); const nvx=(sx-this.track.x)/el, nvz=(sz-this.track.z)/el; this.track={x:sx,z:sz,t:simT,vx:0.7*this.track.vx+0.3*clamp(nvx,-3,3),vz:0.7*this.track.vz+0.3*clamp(nvz,-3,3)}; }
+          else{ this.track={x:sx,z:sz,t:simT,vx:0,vz:0}; this.sightRepeat=2; if(metrics.sightAt===null)metrics.sightAt=simT; logLine(this.name+' SIGHTING at ('+sx.toFixed(0)+', '+sz.toFixed(0)+') from '+h.toFixed(1)+' m up'+(vis<1?' (under a canopy)':''),'sight'); this.planT=0; it.tracked=true; }
+          this.belief.target={x:sx,z:sz,vx:this.track.vx,vz:this.track.vz,t:simT,by:this.id};
+          if(simT-this.sightT>0.4){ gaussianB(this.B,sx,sz,1.5); this.sightT=simT; bus.send(this,{type:'SIGHT',x:sx,z:sz,vx:this.track.vx,vz:this.track.vz,important:this.sightRepeat>0}); if(this.sightRepeat>0)this.sightRepeat--; }
+        } }
+    }
+    if(this.track&&simT-this.track.t>2.5){ metrics.lost++; logLine(this.name+' lost the track at ('+this.track.x.toFixed(0)+', '+this.track.z.toFixed(0)+'). Searching from there.','warn'); bus.send(this,{type:'LOST',x:this.track.x,z:this.track.z,important:true}); gaussianB(this.B,this.track.x,this.track.z,2.5); if(this.belief.target&&this.belief.target.by===this.id)this.belief.target=null; this.track=null; this.planT=0; if(it)it.tracked=false; }
+  }
+  fail(reason){ if(!this.alive)return; this.alive=false; this.state='down'; this.downReason=reason; this.task=null; this.track=null; logLine(this.name+' '+reason+' — landing. The others must re-plan.','alert'); }
+}
+
+// ---------- world ----------
+const world={
+  manual:false,manualDir:{x:0,z:0},climb:false,
+  setManualTarget(x,z){ const it=this.intruder; if(!it||!this.manual)return; const goal=nearestFree(pgrid,x,z,8); const p=planPathP(it,goal,null); it.path=p||[]; it.mtarget=it.path.length?goal:null; if(!it.path.length)logLine('No walkable route to that point.','warn'); },
+  setManual(on){ if(on&&!this.intruder)this.spawnIntruder(); this.manual=on; const it=this.intruder; if(it){ if(on){ it.hiding=false; it.path=[]; it.mtarget=null; if(it.state!=='approach'){ it.state='approach'; } logLine('You now control the intruder. Click where he should go. Drones react to what they see.','info'); } else { it.replanT=0; it.doorFlag=-1; it.mtarget=null; logLine('Intruder back under script control.','info'); } } },
+  scen:SCENARIOS.alarm8,scenKey:'alarm8',drones:[],intruder:null,nextIntruderT:Infinity,alarm:null,alarmId:0,alarmRepeat:0,alarmT:0,clearRepeat:0,clearT:0,failed:false,mapVer:0,
+  reset(key){
+    this.scenKey=key||this.scenKey; this.scen=SCENARIOS[this.scenKey]; simT=0; bus.clear(); log.length=0; logVer++;
+    for(const k in metrics)metrics[k]=0; metrics.alarmAt=null; metrics.sightAt=null; metrics.zeroAt=null; metrics.sightTimes=[]; metrics.zeroTimes=[];
+    settings.loss=this.scen.loss; settings.alarmLen=this.scen.alarmLen;
+    if(!this.drones.length)for(let i=0;i<3;i++)this.drones.push(new Drone(i));
+    for(const d of this.drones)d.reset();
+    this.failed=false; this.intruder=null; this.alarm=null; this.alarmRepeat=0; this.clearRepeat=0; this.mapVer++; this.manual=false;
+    this.nextIntruderT=this.scen.first;
+    logLine('Mission start: '+this.scen.obj,'info');
+    if(this.scen.silent){ this.alarmId++; for(const d of this.drones){ d.belief.alert=true; d.belief.patrol=true; d.belief.alarmId=this.alarmId; uniformB(d.B); perimeterSource(d.B,0.5); d.planT=0.05+d.id*0.2; } logLine('Patrol mode: no fence sensor. Drones lift and scan the whole yard.','info'); }
+    else logLine('Drones landed on their pads. Waiting for the fence sensor.','info');
+  },
+  spawnIntruder(){ if(this.intruder)return; const sides=['S','S','E','W']; const side=sides[Math.floor(Math.random()*sides.length)]; const c=side==='S'?2+Math.random()*44:20+Math.random()*(H-22); this.intruder=new Intruder(side,c); metrics.intruders++; metrics.alarmAt=simT; metrics.sightAt=null; metrics.zeroAt=null;
+    const len=settings.alarmLen; const segC=Math.floor(c/len)*len+len/2;
+    if(!this.scen.silent){ this.alarmId++; this.alarm={id:this.alarmId,side,c:clamp(segC,len/2,(side==='S'?W:H)-len/2),len,t:simT}; this.alarmRepeat=3; this.alarmT=0; logLine('FENCE SENSOR: crossing on the '+(side==='S'?'south':side==='E'?'east':'west')+' fence, segment around '+this.alarm.c.toFixed(0)+' m (±'+(len/2)+' m). No position.','alert'); }
+    else logLine('(unseen) someone crosses the '+(side==='S'?'south':side==='E'?'east':'west')+' fence. No alarm.','drop');
+    this.mapVer++; },
+  failDrone(id){ let d; if(id!==undefined)d=this.drones[id]; else{ const c=this.drones.filter(x=>x.alive); if(!c.length)return; d=c[Math.floor(Math.random()*c.length)]; } d.fail('battery fault'); },
+  revive(){ for(const d of this.drones){ if(!d.alive){ d.alive=true; d.battery=100; d.state='landed'; d.task=null; d.planT=0.2; d.belief.bids={}; } } logLine('All drones back online.','good'); },
+  step(dt){
+    simT+=dt; bus.step();
+    if(!this.intruder&&simT>=this.nextIntruderT&&!this.manual)this.spawnIntruder();
+    if(this.scen.failAt!==null&&!this.failed&&simT>=this.scen.failAt){ this.failed=true; this.failDrone(1); }
+    if(this.alarmRepeat>0){ this.alarmT-=dt; if(this.alarmT<=0){ bus.send(null,Object.assign({type:'ALARM',important:true},this.alarm)); this.alarmRepeat--; this.alarmT=0.4; } }
+    if(this.clearRepeat>0){ this.clearT-=dt; if(this.clearT<=0){ bus.send(null,{type:'CLEAR',id:this.alarmId,important:true}); this.clearRepeat--; this.clearT=0.4; } }
+    if(this.intruder){
+      const it=this.intruder; const prev=it.state;
+      if(it.state!=='breached')it.update(dt,this.drones);
+      if(it.state!==prev){
+        if(it.state==='retreat'){ metrics.deterred++; logLine('Intruder gives up: '+settings.tchal+' s with 2 drones on top of them.','good'); }
+        else if(it.state==='breached'){ metrics.breached++; logLine('BREACH — the intruder reached the '+DOORS[it.door].name+(it.tracked?' while tracked.':' unseen.'),'alert'); }
+      }
+      if(it.state==='breached'&&!this.manual)it.goneT-=dt;
+      if(it.state==='gone'||(it.state==='breached'&&it.goneT<=0)){ if(metrics.sightAt!==null)metrics.sightTimes.push(metrics.sightAt-metrics.alarmAt); if(metrics.zeroAt!==null)metrics.zeroTimes.push(metrics.zeroAt-metrics.alarmAt); this.intruder=null; this.nextIntruderT=simT+this.scen.gap; if(!this.scen.silent){ this.clearRepeat=3; this.clearT=0; this.alarm=null; logLine('SITE: all clear. Drones return to their pads.','info'); } }
+    }
+    for(const d of this.drones)d.update(dt);
+  }
+};
+buildGrids();
+if(typeof module!=='undefined')module.exports={world,simT:()=>simT,metrics,log,settings,SCENARIOS,bus,DOORS,hAt,NWALK:()=>NWALK,insideB,wk,insideCell,NBR};
+</script>
+
+<script id="app-ui">
+(function(){
+'use strict';
+const $=s=>document.querySelector(s);
+const view=$('#view');
+if(typeof THREE==='undefined'){ view.innerHTML='<div class="err">The 3D library did not load. Please reload the page.</div>'; return; }
+let running=true,speed=1;
+
+const renderer=new THREE.WebGLRenderer({antialias:true});
+renderer.setPixelRatio(Math.min(2,window.devicePixelRatio||1));
+renderer.shadowMap.enabled=true; renderer.shadowMap.type=THREE.PCFSoftShadowMap; renderer.outputEncoding=THREE.sRGBEncoding;
+view.appendChild(renderer.domElement);
+const scene=new THREE.Scene(); scene.background=new THREE.Color(0x0b0f17); scene.fog=new THREE.Fog(0x0b0f17,110,200);
+const camera=new THREE.PerspectiveCamera(48,1,0.1,500);
+const HOME={theta:0.35,phi:0.95,r:60,tx:24,ty:0,tz:23};
+const cam=Object.assign({},HOME);
+function applyCam(){ camera.position.set(cam.tx+cam.r*Math.sin(cam.phi)*Math.sin(cam.theta),cam.ty+cam.r*Math.cos(cam.phi),cam.tz+cam.r*Math.sin(cam.phi)*Math.cos(cam.theta)); camera.lookAt(cam.tx,cam.ty,cam.tz); }
+function resize(){ const w=view.clientWidth||800,h=view.clientHeight||500; renderer.setSize(w,h,false); camera.aspect=w/h; camera.updateProjectionMatrix(); }
+window.addEventListener('resize',resize); resize(); applyCam();
+const ptrs=new Map(); let lastPinch=0;
+renderer.domElement.addEventListener('pointerdown',e=>{ ptrs.set(e.pointerId,{x:e.clientX,y:e.clientY,b:e.button,sx:e.clientX,sy:e.clientY}); renderer.domElement.setPointerCapture(e.pointerId); });
+renderer.domElement.addEventListener('pointermove',e=>{
+  const p=ptrs.get(e.pointerId); if(!p)return;
+  if(ptrs.size===2){ const a=Array.from(ptrs.values()); const d=Math.hypot(a[0].x-a[1].x,a[0].y-a[1].y); if(lastPinch)cam.r=clamp(cam.r*lastPinch/d,12,120); lastPinch=d; p.x=e.clientX;p.y=e.clientY; applyCam(); return; }
+  const dx=e.clientX-p.x,dy=e.clientY-p.y; p.x=e.clientX;p.y=e.clientY;
+  if(p.b===2||e.shiftKey){ const s=cam.r*0.0015; const fx=Math.sin(cam.theta),fz=Math.cos(cam.theta); cam.tx+=(dx*fz-dy*fx)*s; cam.tz+=(dx*fx+dy*fz)*s; cam.tx=clamp(cam.tx,0,W); cam.tz=clamp(cam.tz,0,H); }
+  else{ cam.theta-=dx*0.005; cam.phi=clamp(cam.phi-dy*0.005,0.08,1.5); }
+  applyCam();
+});
+const ray=new THREE.Raycaster(); const ndc=new THREE.Vector2();
+function clickGround(e){ const r=renderer.domElement.getBoundingClientRect(); ndc.set(((e.clientX-r.left)/r.width)*2-1,-((e.clientY-r.top)/r.height)*2+1); ray.setFromCamera(ndc,camera); const hits=ray.intersectObjects(clickables,false); if(!hits.length)return; const h=hits[0].point; if(h.x<0.5||h.x>W-0.5||h.z<0.5||h.z>H-0.5)return; if(!world.manual)setManual(true); world.setManualTarget(h.x,h.z); }
+const endPtr=e=>{ const p=ptrs.get(e.pointerId); ptrs.delete(e.pointerId); if(ptrs.size<2)lastPinch=0; if(p&&p.b===0&&e.type==='pointerup'&&Math.hypot(e.clientX-p.sx,e.clientY-p.sy)<6&&world.manual)clickGround(e); };
+renderer.domElement.addEventListener('pointerup',endPtr); renderer.domElement.addEventListener('pointercancel',endPtr);
+renderer.domElement.addEventListener('wheel',e=>{ e.preventDefault(); cam.r=clamp(cam.r*(1+e.deltaY*0.001),12,120); applyCam(); },{passive:false});
+renderer.domElement.addEventListener('contextmenu',e=>e.preventDefault());
+
+scene.add(new THREE.HemisphereLight(0xbfd4ff,0x1a1f2a,0.75));
+const sun=new THREE.DirectionalLight(0xffffff,0.85); sun.position.set(40,60,42); sun.target.position.set(24,0,22); scene.add(sun.target); sun.castShadow=true;
+const smap=window.innerWidth<900?1024:2048; sun.shadow.mapSize.set(smap,smap); const sc=sun.shadow.camera; sc.left=-46;sc.right=46;sc.top=46;sc.bottom=-46;sc.near=1;sc.far=170; sun.shadow.bias=-0.0005; scene.add(sun);
+
+const M=(c,o)=>new THREE.MeshStandardMaterial(Object.assign({color:c,roughness:0.85},o||{}));
+function box(sx,sy,sz,x,y,z,mat,shadow){ const m=new THREE.Mesh(new THREE.BoxGeometry(sx,sy,sz),mat); m.position.set(x,y,z); if(shadow!==false){m.castShadow=true;m.receiveShadow=true;} scene.add(m); return m; }
+function edges(sx,sy,sz,x,y,z,color,op){ const e=new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(sx,sy,sz)),new THREE.LineBasicMaterial({color,transparent:true,opacity:op||0.35})); e.position.set(x,y,z); scene.add(e); return e; }
+
+// ---------- static scene ----------
+const ground=new THREE.Mesh(new THREE.PlaneGeometry(500,500),M(0x070a10,{roughness:1})); ground.rotation.x=-Math.PI/2; ground.position.set(24,-0.02,22); ground.receiveShadow=true; scene.add(ground);
+const floorCanvas=document.createElement('canvas'); floorCanvas.width=W*20; floorCanvas.height=H*20; const floorCtx=floorCanvas.getContext('2d');
+const floorTex=new THREE.CanvasTexture(floorCanvas); floorTex.anisotropy=renderer.capabilities.getMaxAnisotropy(); floorTex.encoding=THREE.sRGBEncoding;
+const floor=new THREE.Mesh(new THREE.PlaneGeometry(W,H),M(0xffffff,{map:floorTex,roughness:0.95})); floor.rotation.x=-Math.PI/2; floor.position.set(W/2,0,H/2); floor.receiveShadow=true; scene.add(floor);
+const clickables=[floor];
+const fenceMat=new THREE.MeshStandardMaterial({color:0x94a3b8,transparent:true,opacity:0.22,roughness:0.6,side:THREE.DoubleSide,depthWrite:false});
+const postMat=M(0x64748b);
+box(W,1.5,0.06,W/2,0.75,0.3,fenceMat,false); box(W,1.5,0.06,W/2,0.75,H-0.3,fenceMat,false); box(0.06,1.5,H,0.3,0.75,H/2,fenceMat,false); box(0.06,1.5,H,W-0.3,0.75,H/2,fenceMat,false);
+for(let x=0.3;x<=W-0.3;x+=4){ for(const z of [0.3,H-0.3]){ const p=new THREE.Mesh(new THREE.CylinderGeometry(0.05,0.05,1.6,6),postMat); p.position.set(x,0.8,z); scene.add(p); } }
+for(let z=0.3;z<=H-0.3;z+=4){ for(const x of [0.3,W-0.3]){ const p=new THREE.Mesh(new THREE.CylinderGeometry(0.05,0.05,1.6,6),postMat); p.position.set(x,0.8,z); scene.add(p); } }
+// alarm strip
+const alarmStrip=new THREE.Mesh(new THREE.BoxGeometry(1,1.6,1),new THREE.MeshBasicMaterial({color:0xef4444,transparent:true,opacity:0.35,depthWrite:false})); alarmStrip.visible=false; scene.add(alarmStrip);
+const wallMat=M(0x334155,{roughness:0.9}); const wallTop=M(0x475569);
+const glassMat=new THREE.MeshStandardMaterial({color:0x7dd3fc,transparent:true,opacity:0.28,roughness:0.1,metalness:0.4,emissive:0x1e3a8a,emissiveIntensity:0.25,side:THREE.DoubleSide,depthWrite:false});
+const frameMat=M(0x0f172a,{metalness:0.4,roughness:0.5});
+const doorMat=new THREE.MeshStandardMaterial({color:0x34d399,emissive:0x34d399,emissiveIntensity:0.7,roughness:0.4});
+function wallPiece(w,c0,c1,y0,y1,mat){ const len=c1-c0; if(len<=0.01)return; const h=y1-y0; const mid=(c0+c1)/2, y=(y0+y1)/2; if(w.side==='S'||w.side==='N')box(len,h,WALL_T,mid,y,w.z,mat); else box(WALL_T,h,len,w.x,y,mid,mat); }
+function buildWall(w){
+  const horiz=w.side==='S'||w.side==='N'; const a0=horiz?w.x0:w.z0, a1=horiz?w.x1:w.z1; const ops=[];
+  for(const d of DOORS)if(d.side===w.side)ops.push({c:horiz?d.x:d.z,w:d.w,y0:d.h,y1:d.h+2.5,type:'door',door:d});
+  for(const win of WINDOWS)if(win.side===w.side)ops.push({c:win.c,w:win.w,y0:1.2,y1:2.8,type:'win'});
+  ops.sort((p,q)=>p.c-q.c); let cur=a0;
+  for(const o of ops){ const c0=o.c-o.w/2,c1=o.c+o.w/2; wallPiece(w,cur,c0,0,WALL_H,wallMat); if(o.y0>0)wallPiece(w,c0,c1,0,o.y0,wallMat); wallPiece(w,c0,c1,o.y1,WALL_H,wallMat);
+    if(o.type==='win'){ const len=c1-c0,h=o.y1-o.y0,mid=(c0+c1)/2,y=(o.y0+o.y1)/2; const g=horiz?box(len,h,0.04,mid,y,w.z,glassMat,false):box(0.04,h,len,w.x,y,mid,glassMat,false); g.castShadow=false;
+      if(horiz){ box(len+0.1,0.08,0.12,mid,o.y0,w.z,frameMat);box(len+0.1,0.08,0.12,mid,o.y1,w.z,frameMat);box(0.08,h,0.12,c0,y,w.z,frameMat);box(0.08,h,0.12,c1,y,w.z,frameMat);box(0.05,h,0.1,mid,y,w.z,frameMat); }
+      else{ box(0.12,0.08,len+0.1,w.x,o.y0,mid,frameMat);box(0.12,0.08,len+0.1,w.x,o.y1,mid,frameMat);box(0.12,h,0.08,w.x,y,c0,frameMat);box(0.12,h,0.08,w.x,y,c1,frameMat);box(0.1,h,0.05,w.x,y,mid,frameMat); } }
+    else{ const h=o.y1-o.y0,y=(o.y0+o.y1)/2; if(horiz){ box(0.22,h,0.36,c0,y,w.z,doorMat); box(0.22,h,0.36,c1,y,w.z,doorMat); box(o.w+0.22,0.22,0.36,o.c,o.y1,w.z,doorMat); } else{ box(0.36,h,0.22,w.x,y,c0,doorMat); box(0.36,h,0.22,w.x,y,c1,doorMat); box(0.36,0.22,o.w+0.22,w.x,o.y1,o.c,doorMat); }
+      const pad=new THREE.Mesh(new THREE.PlaneGeometry(horiz?o.w+0.4:2.6,horiz?2.6:o.w+0.4),new THREE.MeshBasicMaterial({color:0x34d399,transparent:true,opacity:0.22,depthWrite:false})); pad.rotation.x=-Math.PI/2; pad.position.set(o.door.x,o.door.h+0.03,o.door.z); scene.add(pad); }
+    cur=c1; }
+  wallPiece(w,cur,a1,0,WALL_H,wallMat);
+  if(horiz)box(a1-a0+WALL_T,0.08,WALL_T+0.1,(a0+a1)/2,WALL_H,w.z,wallTop); else box(WALL_T+0.1,0.08,a1-a0+WALL_T,w.x,WALL_H,(a0+a1)/2,wallTop);
+}
+for(const w of WALLS)buildWall(w);
+for(const [x,z] of [[6,3],[42,3],[6,19],[42,19]])box(0.5,WALL_H+0.1,0.5,x,(WALL_H+0.1)/2,z,M(0x1f2937));
+// roof (semi-transparent so the inside stays readable)
+const roof=box(BLD.x1-BLD.x0,0.12,BLD.z1-BLD.z0,(BLD.x0+BLD.x1)/2,WALL_H+0.06,(BLD.z0+BLD.z1)/2,new THREE.MeshStandardMaterial({color:0x1e293b,transparent:true,opacity:0.45,roughness:0.9,side:THREE.DoubleSide}),false); roof.receiveShadow=true;
+const rackMat=M(0x8a4b1c,{roughness:0.8,metalness:0.1}); const shelfMat=M(0x4b5563,{roughness:0.7,metalness:0.3});
+for(const r of racks){ const sx=r.x1-r.x0,sz=r.z1-r.z0,cx=(r.x0+r.x1)/2,cz=(r.z0+r.z1)/2; box(sx,RACK_H,sz,cx,RACK_H/2,cz,rackMat); for(const y of [0.6,1.2,RACK_H])box(sx+0.08,0.06,sz+0.08,cx,y,cz,shelfMat); edges(sx,RACK_H,sz,cx,RACK_H/2,cz,0xd6a26a,0.3); }
+const concrete=M(0x3b4453,{roughness:0.95}); const concTop=M(0x4b5563,{roughness:0.9});
+for(const p of PLATFORMS){ const sx=p.x1-p.x0,sz=p.z1-p.z0; clickables.push(box(sx,PLAT_H,sz,(p.x0+p.x1)/2,PLAT_H/2,(p.z0+p.z1)/2,concrete)); box(sx,0.05,sz,(p.x0+p.x1)/2,PLAT_H,(p.z0+p.z1)/2,concTop); }
+for(const s of STAIRS){ const n=7; for(let k=1;k<=n;k++){ const hgt=PLAT_H*(n+1-k)/n; if(s.axis==='z'){ const z0=s.hi+(k-1)*(s.lo-s.hi)/n, z1=s.hi+k*(s.lo-s.hi)/n; clickables.push(box(s.x1-s.x0,hgt,Math.abs(z1-z0),(s.x0+s.x1)/2,hgt/2,(z0+z1)/2,k%2?concrete:concTop)); } else { const x0=s.hi+(k-1)*(s.lo-s.hi)/n, x1=s.hi+k*(s.lo-s.hi)/n; clickables.push(box(Math.abs(x1-x0),hgt,s.z1-s.z0,(x0+x1)/2,hgt/2,(s.z0+s.z1)/2,k%2?concrete:concTop)); } } }
+const railMat=M(0xcbd5e1,{metalness:0.6,roughness:0.4});
+function railing(x0,z0,x1,z1,y){ const L=Math.hypot(x1-x0,z1-z0); const mid={x:(x0+x1)/2,z:(z0+z1)/2}; const ang=Math.atan2(-(z1-z0),x1-x0);
+  for(const yy of [y+0.5,y+1.0]){ const r=new THREE.Mesh(new THREE.BoxGeometry(L,0.05,0.05),railMat); r.position.set(mid.x,yy,mid.z); r.rotation.y=ang; scene.add(r); }
+  const n=Math.max(1,Math.round(L/1.5)); for(let k=0;k<=n;k++){ const t=k/n; const p=new THREE.Mesh(new THREE.BoxGeometry(0.06,1.05,0.06),railMat); p.position.set(x0+(x1-x0)*t,y+0.52,z0+(z1-z0)*t); scene.add(p); } }
+railing(6,15,16,15,PLAT_H); railing(16,15,16,16,PLAT_H); railing(6,19,6,24,PLAT_H); railing(6,24,8,24,PLAT_H); railing(12,24,16,24,PLAT_H); railing(16,19,16,20,PLAT_H); railing(16,23,16,24,PLAT_H);
+railing(8,24,8,27,0.7); railing(12,24,12,27,0.7); railing(16,20,19,20,0.7); railing(16,23,19,23,0.7); railing(16,16,19,16,0.7);
+const trunkMat=M(0x6b4423,{roughness:0.9}); const leafMat=M(0x0a3b20,{roughness:1,flatShading:true}); const leafMat2=M(0x0e4a27,{roughness:1,flatShading:true});
+for(const t of TREES){ const tr=new THREE.Mesh(new THREE.CylinderGeometry(0.22,0.32,2.6,7),trunkMat); tr.position.set(t.x,1.3,t.z); tr.castShadow=true; scene.add(tr);
+  const c1=new THREE.Mesh(new THREE.IcosahedronGeometry(TREE_R,1),leafMat); c1.position.set(t.x,3.9,t.z); c1.castShadow=true; scene.add(c1);
+  const c2=new THREE.Mesh(new THREE.IcosahedronGeometry(TREE_R*0.7,1),leafMat2); c2.position.set(t.x+0.9,4.9,t.z-0.5); c2.castShadow=true; scene.add(c2);
+  const c3=new THREE.Mesh(new THREE.IcosahedronGeometry(TREE_R*0.6,1),leafMat2); c3.position.set(t.x-1.0,4.6,t.z+0.7); c3.castShadow=true; scene.add(c3); }
+const contMats=[M(0xb45309,{roughness:0.7,metalness:0.3}),M(0x1d4ed8,{roughness:0.7,metalness:0.3})];
+for(const c of CONTAINERS){ const sx=c.x1-c.x0,sz=c.z1-c.z0,cx=(c.x0+c.x1)/2,cz=(c.z0+c.z1)/2; box(sx,2.6,sz,cx,1.3,cz,contMats[c.c]); edges(sx,2.6,sz,cx,1.3,cz,0xffffff,0.25); for(let k=1;k<Math.floor(sx/0.6);k++)box(0.04,2.5,sz+0.06,c.x0+k*0.6,1.3,cz,contMats[c.c],false); }
+for(const d of DOCK){ const m=new THREE.Mesh(new THREE.RingGeometry(0.55,0.7,24),new THREE.MeshBasicMaterial({color:0x64748b,transparent:true,opacity:0.6,side:THREE.DoubleSide})); m.rotation.x=-Math.PI/2; m.position.set(d.x,0.02,d.z); scene.add(m); }
+
+// ---------- dynamic ----------
+function makeLabel(scale){ const c=document.createElement('canvas'); c.width=512; c.height=96; const tex=new THREE.CanvasTexture(c); tex.minFilter=THREE.LinearFilter; const sp=new THREE.Sprite(new THREE.SpriteMaterial({map:tex,transparent:true,depthTest:false})); sp.scale.set(scale||5.6,(scale||5.6)/5.33,1); scene.add(sp); return {sprite:sp,canvas:c,tex,text:''}; }
+function setLabel(l,text,color){ if(l.text===text)return; l.text=text; const ctx=l.canvas.getContext('2d'); ctx.clearRect(0,0,512,96); ctx.font='600 40px Inter, system-ui, sans-serif'; const w=Math.min(500,ctx.measureText(text).width+40); ctx.fillStyle='rgba(8,12,20,0.8)'; const x=(512-w)/2; ctx.beginPath(); ctx.moveTo(x+14,14); ctx.arcTo(x+w,14,x+w,82,14); ctx.arcTo(x+w,82,x,82,14); ctx.arcTo(x,82,x,14,14); ctx.arcTo(x,14,x+w,14,14); ctx.closePath(); ctx.fill(); ctx.fillStyle=color; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(text,256,48,480); l.tex.needsUpdate=true; }
+function line2(color,n){ const geo=new THREE.BufferGeometry(); geo.setAttribute('position',new THREE.BufferAttribute(new Float32Array(n*3),3)); geo.setDrawRange(0,0); const l=new THREE.Line(geo,new THREE.LineBasicMaterial({color,transparent:true,opacity:0.8})); l.frustumCulled=false; scene.add(l); return l; }
+function setLine(l,pts){ const a=l.geometry.attributes.position; const n=Math.min(pts.length,a.count); for(let i=0;i<n;i++)a.setXYZ(i,pts[i].x,pts[i].y,pts[i].z); a.needsUpdate=true; l.geometry.setDrawRange(0,n); l.visible=n>1; }
+function buildDroneView(d){
+  const col=new THREE.Color(d.color); const g=new THREE.Group();
+  const body=new THREE.Mesh(new THREE.BoxGeometry(0.5,0.16,0.5),M(0x2b3442,{roughness:0.6,metalness:0.3})); body.castShadow=true; g.add(body);
+  const armMat=M(0x1f2937);
+  for(const a of [Math.PI/4,-Math.PI/4]){ const arm=new THREE.Mesh(new THREE.BoxGeometry(1.25,0.06,0.08),armMat); arm.rotation.y=a; arm.castShadow=true; g.add(arm); }
+  const blades=[]; const discMat=new THREE.MeshBasicMaterial({color:col,transparent:true,opacity:0.22,side:THREE.DoubleSide,depthWrite:false});
+  for(const s of [[1,1],[1,-1],[-1,1],[-1,-1]]){ const hub=new THREE.Mesh(new THREE.CylinderGeometry(0.06,0.06,0.1,8),armMat); hub.position.set(s[0]*0.44,0.07,s[1]*0.44); g.add(hub);
+    const disc=new THREE.Mesh(new THREE.CircleGeometry(0.3,18),discMat); disc.rotation.x=-Math.PI/2; disc.position.set(s[0]*0.44,0.12,s[1]*0.44); g.add(disc);
+    const blade=new THREE.Mesh(new THREE.BoxGeometry(0.58,0.015,0.07),new THREE.MeshBasicMaterial({color:0x94a3b8})); blade.position.set(s[0]*0.44,0.13,s[1]*0.44); g.add(blade); blades.push(blade); }
+  const led=new THREE.Mesh(new THREE.SphereGeometry(0.09,10,10),new THREE.MeshBasicMaterial({color:col})); led.position.set(0,0.02,0.3); g.add(led);
+  const cam2=new THREE.Mesh(new THREE.BoxGeometry(0.14,0.1,0.14),M(0x0f172a)); cam2.position.set(0,-0.12,0.1); g.add(cam2);
+  const light=new THREE.PointLight(col,0.5,7); light.position.set(0,-0.3,0); g.add(light);
+  scene.add(g);
+  const ring=new THREE.Mesh(new THREE.RingGeometry(0.96,1,64),new THREE.MeshBasicMaterial({color:col,transparent:true,opacity:0.55,side:THREE.DoubleSide,depthWrite:false})); ring.rotation.x=-Math.PI/2; scene.add(ring);
+  const fill=new THREE.Mesh(new THREE.CircleGeometry(1,64),new THREE.MeshBasicMaterial({color:col,transparent:true,opacity:0.07,side:THREE.DoubleSide,depthWrite:false})); fill.rotation.x=-Math.PI/2; scene.add(fill);
+  const beam=new THREE.Mesh(new THREE.CylinderGeometry(0.02,1,1,32,1,true),new THREE.MeshBasicMaterial({color:col,transparent:true,opacity:0.06,side:THREE.DoubleSide,depthWrite:false})); scene.add(beam);
+  const tline=line2(d.color,24); const label=makeLabel(5.6);
+  return {group:g,blades,led,ring,fill,beam,tline,label,discMat};
+}
+let droneV=[];
+const intrG=new THREE.Group();
+const intrBody=new THREE.Mesh(new THREE.CylinderGeometry(0.2,0.24,1.1,12),M(0xef4444,{roughness:0.6})); intrBody.position.y=0.75; intrBody.castShadow=true; intrG.add(intrBody);
+const intrHead=new THREE.Mesh(new THREE.SphereGeometry(0.17,12,12),M(0xfca5a5,{roughness:0.6})); intrHead.position.y=1.5; intrHead.castShadow=true; intrG.add(intrHead);
+const intrRing=new THREE.Mesh(new THREE.RingGeometry(0.5,0.68,32),new THREE.MeshBasicMaterial({color:0xef4444,transparent:true,opacity:0.7,side:THREE.DoubleSide,depthWrite:false})); intrRing.rotation.x=-Math.PI/2; intrRing.position.y=0.03; intrG.add(intrRing);
+intrG.visible=false; scene.add(intrG);
+const intrLabel=makeLabel(6.4); intrLabel.sprite.visible=false;
+const sightRing=new THREE.Mesh(new THREE.RingGeometry(1.3,1.5,40),new THREE.MeshBasicMaterial({color:0xfda4af,transparent:true,opacity:0.8,side:THREE.DoubleSide,depthWrite:false})); sightRing.rotation.x=-Math.PI/2; sightRing.visible=false; scene.add(sightRing);
+const sightLabel=makeLabel(5.6); sightLabel.sprite.visible=false;
+const moveMarker=new THREE.Mesh(new THREE.RingGeometry(0.5,0.7,32),new THREE.MeshBasicMaterial({color:0xfbbf24,transparent:true,opacity:0.9,side:THREE.DoubleSide,depthWrite:false})); moveMarker.rotation.x=-Math.PI/2; moveMarker.visible=false; scene.add(moveMarker);
+const movePath=line2('#fbbf24',64);
+const slotRings=[0,1].map(()=>{ const m=new THREE.Mesh(new THREE.RingGeometry(0.45,0.6,24),new THREE.MeshBasicMaterial({color:0x22d3ee,transparent:true,opacity:0.8,side:THREE.DoubleSide,depthWrite:false})); m.rotation.x=-Math.PI/2; m.visible=false; scene.add(m); return m; });
+const links=(()=>{ const geo=new THREE.BufferGeometry(); geo.setAttribute('position',new THREE.BufferAttribute(new Float32Array(6*3),3)); geo.setDrawRange(0,0); const l=new THREE.LineSegments(geo,new THREE.LineBasicMaterial({color:0x34d399,transparent:true,opacity:0.35})); l.frustumCulled=false; scene.add(l); return l; })();
+
+// ---------- belief map drawing ----------
+const meanB=new Float32Array(NC); let certainty=0;
+function computeMean(){ meanB.fill(0); let n=0,sp=0; for(const d of world.drones){ if(!d.alive)continue; n++; sp+=d.spread; for(let k=0;k<NC;k++)meanB[k]+=d.B[k]; } if(n){ for(let k=0;k<NC;k++)meanB[k]/=n; certainty=Math.sqrt(clamp(1-sp/n,0,1)); } else certainty=0; }
+function hexA(hex,a){ const n=parseInt(hex.slice(1),16); return 'rgba('+(n>>16)+','+((n>>8)&255)+','+(n&255)+','+a+')'; }
+function drawMap(ctx,s,entities){
+  ctx.fillStyle='#10161f'; ctx.fillRect(0,0,W*s,H*s);
+  ctx.fillStyle='#1a2231'; ctx.fillRect(BLD.x0*s,BLD.z0*s,(BLD.x1-BLD.x0)*s,(BLD.z1-BLD.z0)*s);
+  for(const p of PLATFORMS){ ctx.fillStyle='#232e3f'; ctx.fillRect(p.x0*s,p.z0*s,(p.x1-p.x0)*s,(p.z1-p.z0)*s); }
+  for(const st of STAIRS){ ctx.fillStyle='#2a3648'; ctx.fillRect(st.x0*s,st.z0*s,(st.x1-st.x0)*s,(st.z1-st.z0)*s); }
+  let pmax=1e-9; for(let k=0;k<NC;k++)if(meanB[k]>pmax)pmax=meanB[k];
+  for(let k=0;k<NC;k++){ if(!wk[k])continue; const a=Math.sqrt(meanB[k]/pmax); const cx=k%CX,cz=(k-cx)/CX; ctx.fillStyle='rgba(251,113,60,'+(0.03+0.75*a*certainty).toFixed(3)+')'; ctx.fillRect(cx*COV*s+1,cz*COV*s+1,COV*s-2,COV*s-2); }
+  ctx.strokeStyle='rgba(255,255,255,0.05)'; ctx.lineWidth=1; ctx.beginPath(); for(let x=0;x<=W;x+=2){ctx.moveTo(x*s,0);ctx.lineTo(x*s,H*s);} for(let z=0;z<=H;z+=2){ctx.moveTo(0,z*s);ctx.lineTo(W*s,z*s);} ctx.stroke();
+  ctx.strokeStyle='rgba(148,163,184,0.7)'; ctx.lineWidth=Math.max(1,0.3*s); ctx.strokeRect(BLD.x0*s,BLD.z0*s,(BLD.x1-BLD.x0)*s,(BLD.z1-BLD.z0)*s);
+  for(const d of DOORS){ ctx.fillStyle='rgba(52,211,153,0.45)'; if(d.side==='S'||d.side==='N')ctx.fillRect((d.x-d.w/2)*s,(d.z-1.2)*s,d.w*s,2.4*s); else ctx.fillRect((d.x-1.2)*s,(d.z-d.w/2)*s,2.4*s,d.w*s); ctx.fillStyle='rgba(167,243,208,0.9)'; ctx.font='700 '+Math.round(1.1*s)+'px Inter, system-ui, sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(d.id,d.x*s,d.z*s); }
+  const al=world.alarm; if(al){ ctx.fillStyle='rgba(239,68,68,0.45)'; if(al.side==='S')ctx.fillRect((al.c-al.len/2)*s,(H-1.2)*s,al.len*s,1.2*s); else if(al.side==='E')ctx.fillRect((W-1.2)*s,(al.c-al.len/2)*s,1.2*s,al.len*s); else ctx.fillRect(0,(al.c-al.len/2)*s,1.2*s,al.len*s); }
+  if(entities){
+    ctx.fillStyle='#6b3f1c'; for(const r of racks)ctx.fillRect(r.x0*s,r.z0*s,(r.x1-r.x0)*s,(r.z1-r.z0)*s);
+    for(const c of CONTAINERS){ ctx.fillStyle=c.c?'#1e40af':'#9a3412'; ctx.fillRect(c.x0*s,c.z0*s,(c.x1-c.x0)*s,(c.z1-c.z0)*s); }
+    for(const t of TREES){ ctx.fillStyle='rgba(22,101,52,0.75)'; ctx.beginPath(); ctx.arc(t.x*s,t.z*s,TREE_R*s,0,Math.PI*2); ctx.fill(); ctx.fillStyle='#78350f'; ctx.beginPath(); ctx.arc(t.x*s,t.z*s,0.3*s,0,Math.PI*2); ctx.fill(); }
+    const it=world.intruder;
+    if(it){ ctx.strokeStyle=it.state==='retreat'?'#9ca3af':'#ef4444'; ctx.lineWidth=2; ctx.beginPath(); ctx.arc(it.x*s,it.z*s,0.55*s,0,Math.PI*2); ctx.stroke(); }
+    for(const d of world.drones){ if(!d.alive)continue;
+      if(d.footR>0){ ctx.strokeStyle=hexA(d.color,0.6); ctx.lineWidth=1; ctx.beginPath(); ctx.arc(d.pos.x*s,d.pos.z*s,d.footR*s,0,Math.PI*2); ctx.stroke(); }
+      if(d.task&&(d.task.type==='LOOK'||d.task.type==='FLANK')&&d.task.id!=='HOLD'){ ctx.strokeStyle=hexA(d.color,0.5); ctx.setLineDash([3,3]); ctx.beginPath(); ctx.moveTo(d.pos.x*s,d.pos.z*s); ctx.lineTo(d.target.x*s,d.target.z*s); ctx.stroke(); ctx.setLineDash([]); }
+      const t=d.belief.target; if(t&&simT-t.t<2.5){ ctx.fillStyle='rgba(253,164,175,0.9)'; ctx.beginPath(); ctx.arc(t.x*s,t.z*s,0.35*s,0,Math.PI*2); ctx.fill(); } }
+    for(const d of world.drones){ ctx.fillStyle=d.alive?d.color:'#6b7280'; ctx.beginPath(); ctx.arc(d.pos.x*s,d.pos.z*s,0.65*s,0,Math.PI*2); ctx.fill(); if(d.inside){ ctx.strokeStyle='#fff'; ctx.lineWidth=1; ctx.beginPath(); ctx.arc(d.pos.x*s,d.pos.z*s,0.9*s,0,Math.PI*2); ctx.stroke(); } ctx.fillStyle='#0b0f17'; ctx.font='700 '+Math.round(1.1*s)+'px Inter, system-ui, sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(String(d.id+1),d.pos.x*s,d.pos.z*s+0.05*s); }
+  }
+}
+let floorT=0;
+function updateFloor(dt){ floorT-=dt; if(floorT>0)return; floorT=0.3; drawMap(floorCtx,20,false); floorTex.needsUpdate=true; }
+
+// ---------- render ----------
+function render(dt){
+  if(!droneV.length)droneV=world.drones.map(buildDroneView);
+  computeMean();
+  for(const d of world.drones){
+    const v=droneV[d.id]; v.group.position.set(d.pos.x,d.pos.y,d.pos.z);
+    v.group.rotation.set(clamp(d.vel.z*0.05,-0.35,0.35),0,clamp(-d.vel.x*0.05,-0.35,0.35));
+    const flying=d.alive&&d.state!=='landed'; if(flying)for(const b of v.blades)b.rotation.y+=dt*40; v.discMat.opacity=flying?0.22:0;
+    v.led.material.color.set(d.alive?d.color:'#ef4444');
+    const gy=hAt(d.pos.x,d.pos.z); const up=d.alive&&d.footR>0.3; v.ring.visible=up; v.fill.visible=up; v.beam.visible=up;
+    const r=Math.max(0.3,d.footR); v.ring.position.set(d.pos.x,gy+0.035,d.pos.z); v.ring.scale.set(r,r,1); v.fill.position.set(d.pos.x,gy+0.03,d.pos.z); v.fill.scale.set(r,r,1);
+    const hh=Math.max(0.1,d.pos.y-gy); v.beam.position.set(d.pos.x,gy+hh/2,d.pos.z); v.beam.scale.set(r,hh,r);
+    if(d.alive&&d.task&&d.task.type!=='LAND'&&d.task.id!=='HOLD'&&d.dpath.length){ const pts=[{x:d.pos.x,y:d.pos.y,z:d.pos.z}].concat(d.dpath.map((p,i)=>({x:p.x,y:i===d.dpath.length-1?d.altTarget:d.altTarget,z:p.z}))); setLine(v.tline,pts); } else v.tline.visible=false;
+    setLabel(v.label,d.name+' · '+shortLabel(d),d.alive?d.color:'#f87171'); v.label.sprite.position.set(d.pos.x,d.pos.y+1.05,d.pos.z);
+  }
+  { const a=links.geometry.attributes.position; let n=0; const ds=world.drones; for(let i=0;i<ds.length;i++)for(let j=i+1;j<ds.length;j++){ const p=ds[i],q=ds[j]; if(!p.alive||!q.alive)continue; if(dist2(p.pos.x,p.pos.z,q.pos.x,q.pos.z)>settings.range)continue; a.setXYZ(n++,p.pos.x,p.pos.y,p.pos.z); a.setXYZ(n++,q.pos.x,q.pos.y,q.pos.z); } a.needsUpdate=true; links.geometry.setDrawRange(0,n); }
+  { const fl=world.drones.filter(d=>d.alive&&d.task&&d.task.type==='FLANK'); for(let i=0;i<2;i++){ const d=fl.find(x=>x.task.slot===i); slotRings[i].visible=!!d; if(d)slotRings[i].position.set(d.task.x,hAt(d.task.x,d.task.z)+0.04,d.task.z); } }
+  const al=world.alarm; if(al&&simT-al.t<6){ alarmStrip.visible=true; const pulse=0.2+0.25*Math.abs(Math.sin(simT*5)); alarmStrip.material.opacity=pulse; if(al.side==='S'){ alarmStrip.position.set(al.c,0.8,H-0.3); alarmStrip.scale.set(al.len,1,0.3); } else if(al.side==='E'){ alarmStrip.position.set(W-0.3,0.8,al.c); alarmStrip.scale.set(0.3,1,al.len); } else { alarmStrip.position.set(0.3,0.8,al.c); alarmStrip.scale.set(0.3,1,al.len); } } else alarmStrip.visible=false;
+  const it=world.intruder;
+  if(it){ intrG.visible=true; intrG.position.set(it.x,it.y,it.z); intrG.rotation.y=it.heading; intrBody.position.y=0.75+Math.sin(it.walk*6)*0.04;
+    const tracked=world.drones.some(d=>d.alive&&d.track&&simT-d.track.t<2.5);
+    const col=it.state==='retreat'?0x9ca3af:(it.state==='breached'?0xf59e0b:(tracked?0xef4444:0x7f1d1d)); intrBody.material.color.set(col); intrRing.material.color.set(col); intrRing.material.opacity=tracked?0.5+0.3*Math.sin(simT*8):0.25;
+    const txt=(world.manual?'YOU · ':'')+(it.state==='approach'?(tracked?'TRACKED · '+(it.chal>0?'challenged '+it.chal.toFixed(0)+'/'+settings.tchal+' s':'→ '+DOORS[it.door].name):(it.hiding?'hiding (unseen)':(world.manual&&it.needClimb?'hold SPACE to climb':'unseen · → '+DOORS[it.door].name))):(it.state==='retreat'?'INTRUDER · leaving':'BREACH · '+DOORS[it.door].name));
+    setLabel(intrLabel,txt,tracked?'#fca5a5':'#9ca3af'); intrLabel.sprite.visible=true; intrLabel.sprite.position.set(it.x,it.y+2.3,it.z); }
+  if(it&&world.manual&&it.mtarget&&it.path.length){ moveMarker.visible=true; moveMarker.position.set(it.mtarget.x,hAt(it.mtarget.x,it.mtarget.z)+0.05,it.mtarget.z); const sc=1+0.2*Math.sin(simT*6); moveMarker.scale.set(sc,sc,1); setLine(movePath,[{x:it.x,y:it.y+0.1,z:it.z}].concat(it.path.map(p=>({x:p.x,y:hAt(p.x,p.z)+0.1,z:p.z})))); } else { moveMarker.visible=false; movePath.visible=false; }
+  { let best=null; for(const d of world.drones){ const t=d.belief.target; if(d.alive&&t&&simT-t.t<2.5&&(!best||t.t>best.t))best=t; }
+    if(best){ sightRing.visible=true; sightRing.position.set(best.x,hAt(best.x,best.z)+0.05,best.z); const pulse=1+0.15*Math.sin(simT*6); sightRing.scale.set(pulse,pulse,1); sightLabel.sprite.visible=true; setLabel(sightLabel,'last sighting · D'+(best.by+1),'#fda4af'); sightLabel.sprite.position.set(best.x,hAt(best.x,best.z)+0.9,best.z); }
+    else{ sightRing.visible=false; sightLabel.sprite.visible=false; } }
+  updateFloor(dt);
+  renderer.render(scene,camera);
+}
+
+// ---------- panel ----------
+const el={metrics:$('#metrics'),cards:$('#cards'),log:$('#log'),mini:$('#mini'),status:$('#status'),objectives:$('#objectives'),laws:$('#laws')};
+const miniCtx=el.mini.getContext('2d'); let shownLogVer=-1;
+const fmt=n=>n.toFixed(1);
+function updatePanel(){
+  const sight=metrics.sightAt!==null?(metrics.sightAt-(metrics.alarmAt!==null?metrics.alarmAt:0)).toFixed(1)+' s':'—';
+  const zero=metrics.zeroAt!==null?(metrics.zeroAt-(metrics.alarmAt!==null?metrics.alarmAt:0)).toFixed(1)+' s':'—';
+  el.metrics.innerHTML=[
+    ['Sim time',fmt(simT)+' s'],['Alarm → sighting',sight],['Alarm → zero in',zero],['Deterred / breach',metrics.deterred+' / '+metrics.breached],
+    ['Packets',metrics.sent],['Dropped',metrics.dropped],['Tracks lost',metrics.lost],['Conflicts',metrics.conflicts]
+  ].map(m=>'<div class="m"><b>'+m[1]+'</b><span>'+m[0]+'</span></div>').join('');
+  el.cards.innerHTML=world.drones.map(d=>{
+    const chip=!d.alive?'<span class="chip down">down</span>':'<span class="chip '+(d.state==='track'?'track':(d.state==='zeroed'?'zero':''))+'">'+d.state+'</span>';
+    const sp=Math.hypot(d.vel.x,d.vel.z);
+    const bids=Object.keys(d.myBids).filter(k=>k!=='HOLD').map(k=>[k,d.myBids[k]]).sort((a,b)=>a[1]-b[1]).slice(0,4).map(b=>{ const s=b[0]+' '+b[1].toFixed(1); return d.task&&d.task.id===b[0]?'<span class="pick">'+s+'</span>':s; }).join('  ');
+    return '<div class="card'+(d.alive?'':' down')+'" style="--c:'+d.color+'"><div class="card-h"><span class="dot"></span><b>'+d.name+'</b>'+chip+'</div>'+
+      '<div class="task">'+taskLabel(d)+'</div>'+
+      '<div class="sub">alt '+d.pos.y.toFixed(1)+' m ('+d.band+' band) · footprint r '+d.footR.toFixed(1)+' m · '+sp.toFixed(1)+' m/s · belief spread '+(100*d.spread).toFixed(0)+' % · h* '+d.belief.hstar.toFixed(1)+' m</div>'+
+      '<div class="bids">bids: '+(bids||'—')+'</div>'+
+      '<div class="bar"><i style="width:'+d.battery.toFixed(0)+'%"></i></div><div class="sub">battery '+d.battery.toFixed(0)+' % · re-plans '+d.replans+'</div></div>';
+  }).join('');
+  if(shownLogVer!==logVer){ shownLogVer=logVer; el.log.innerHTML=log.slice().reverse().map(l=>'<div class="'+l.kind+'"><span class="t">'+l.t.toFixed(1).padStart(6)+'</span>'+l.text+'</div>').join(''); }
+  drawMap(miniCtx,10,true);
+  el.objectives.innerHTML='<b>'+world.scen.label+'</b><div class="muted" style="margin-top:2px">'+world.scen.obj+'</div><div class="legend"><span><i style="background:#38bdf8"></i>D1</span><span><i style="background:#a3e635"></i>D2</span><span><i style="background:#f472b6"></i>D3</span><span><i style="background:#7f1d1d"></i>intruder unseen</span><span><i style="background:#ef4444"></i>tracked</span><span><i style="background:#fb713c"></i>belief</span><span><i style="background:#fda4af"></i>sighting</span><span><i style="background:#22d3ee"></i>flank slot</span></div>';
+  el.status.innerHTML=statusText();
+}
+function statusText(){
+  const p=[]; const it=world.intruder; const alive=world.drones.filter(d=>d.alive);
+  const tracked=world.drones.some(d=>d.alive&&d.track&&simT-d.track.t<2.5); const anyTarget=world.drones.some(d=>d.alive&&d.targetFresh());
+  if(it&&it.state==='approach'){
+    if(tracked||anyTarget){ const tr=world.drones.filter(d=>d.alive&&d.task&&d.task.type==='TRACK').map(d=>d.name); const fl=world.drones.filter(d=>d.alive&&d.task&&d.task.type==='FLANK').map(d=>d.name); p.push('<b style="color:#fca5a5">Zeroing in</b> · tracker: '+(tr.join(', ')||'—')+' · flankers: '+(fl.join(', ')||'—')+' · challenge '+it.chal.toFixed(1)+' / '+settings.tchal+' s'); }
+    else{ const sp=alive.length?alive.reduce((a,d)=>a+d.spread,0)/alive.length:0; p.push('<b style="color:#fdba74">Searching</b> · person unseen · belief spread '+(100*sp).toFixed(0)+' % · '+alive.filter(d=>d.state==='lifting').length+' lifting, '+alive.filter(d=>d.state==='search').length+' scanning'); }
+    p.push('<span class="muted">'+(world.manual?'You control the person · '+(it.inside?'inside the building':'in the yard')+' · '+(it.mtarget?'going to ('+it.mtarget.x.toFixed(0)+', '+it.mtarget.z.toFixed(0)+')':'click the ground to move')+' · '+(settings.vmax*settings.youSpeed).toFixed(1)+' m/s · '+(it.tracked?'a drone has you':'no drone sees you'):'Truth (not known to the drones): '+(it.hiding?'hiding under a tree':'walking to the '+DOORS[it.door].name)+', '+dist2(it.x,it.z,DOORS[it.door].x,DOORS[it.door].z).toFixed(0)+' m to go')+'</span>');
+  }else if(it&&it.state==='retreat')p.push('<b style="color:#86efac">Intruder deterred</b> · leaving the site');
+  else if(it&&it.state==='breached')p.push('<b style="color:#fca5a5">Breach at the '+DOORS[it.door].name+'</b>');
+  else if(world.scen.silent)p.push('<b>Patrolling</b> · scanning the yard at height · next crossing in '+Math.max(0,world.nextIntruderT-simT).toFixed(0)+' s');
+  else p.push('<b>Standing by</b> · drones on their pads · next crossing in '+Math.max(0,world.nextIntruderT-simT).toFixed(0)+' s');
+  if(alive.length<3)p.push('<span class="muted">'+alive.length+' of 3 drones online</span>');
+  return p.join('<br>');
+}
+// laws panel
+function buildLaws(){
+  el.laws.innerHTML=LAWS.map(l=>'<div class="law"><b>'+l.title+'</b><div class="f">'+l.f+'</div><p>'+l.text+'</p>'+l.params.map(p=>'<div class="row"><span>'+p[1]+'</span><input type="range" data-k="'+p[0]+'" min="'+p[2]+'" max="'+p[3]+'" step="'+p[4]+'" value="'+settings[p[0]]+'"><span class="v" id="v-'+p[0]+'">'+settings[p[0]]+' '+p[5]+'</span></div>').join('')+'</div>').join('');
+  el.laws.querySelectorAll('input[type=range]').forEach(inp=>{ inp.addEventListener('input',()=>{ const k=inp.dataset.k; settings[k]=parseFloat(inp.value); const p=LAWS.flatMap(l=>l.params).find(q=>q[0]===k); $('#v-'+k).textContent=settings[k]+' '+p[5]; }); });
+}
+function syncLaws(){ el.laws.querySelectorAll('input[type=range]').forEach(inp=>{ const k=inp.dataset.k; inp.value=settings[k]; const p=LAWS.flatMap(l=>l.params).find(q=>q[0]===k); $('#v-'+k).textContent=settings[k]+' '+p[5]; }); }
+buildLaws();
+
+// ---------- controls ----------
+const sel=$('#scenario'); for(const k in SCENARIOS){ const o=document.createElement('option'); o.value=k; o.textContent=SCENARIOS[k].label; sel.appendChild(o); }
+sel.addEventListener('change',()=>{ world.reset(sel.value); syncLaws(); });
+$('#play').addEventListener('click',togglePlay);
+function togglePlay(){ running=!running; $('#play').textContent=running?'Pause':'Play'; }
+$('#reset').addEventListener('click',()=>{ world.reset(); syncLaws(); });
+$('#speed').addEventListener('click',e=>{ const b=e.target.closest('button'); if(!b)return; speed=parseInt(b.dataset.s,10); for(const x of $('#speed').children)x.classList.toggle('on',x===b); });
+$('#spawn').addEventListener('click',()=>world.spawnIntruder());
+let follow=false;
+function setManual(on){ world.setManual(on); $('#manual').textContent=world.manual?'Release intruder':'Control intruder'; $('#manual').classList.toggle('on',world.manual); renderer.domElement.style.cursor=world.manual?'crosshair':'grab'; }
+$('#manual').addEventListener('click',()=>setManual(!world.manual));
+$('#follow').addEventListener('click',()=>{ follow=!follow; $('#follow').classList.toggle('on',follow); if(follow){ cam.r=Math.min(cam.r,34); applyCam(); } });
+// keys and joystick → camera-relative walking direction
+const keys={};
+window.addEventListener('keydown',e=>{ if(e.target.tagName==='INPUT'||e.target.tagName==='SELECT')return; const k=e.key.toLowerCase(); if(['w','a','s','d','arrowup','arrowdown','arrowleft','arrowright'].indexOf(k)>=0){ keys[k]=true; e.preventDefault(); if(!world.manual&&k.length>1)setManual(true); } else if(e.code==='Space'){ e.preventDefault(); if(world.manual)world.climb=true; else togglePlay(); } });
+window.addEventListener('keyup',e=>{ keys[e.key.toLowerCase()]=false; if(e.code==='Space')world.climb=false; });
+function updateManualDir(){
+  let fx=0,fz=0; // screen-space: fz>0 = towards the viewer
+  if(keys['w']||keys['arrowup'])fz-=1; if(keys['s']||keys['arrowdown'])fz+=1; if(keys['a']||keys['arrowleft'])fx-=1; if(keys['d']||keys['arrowright'])fx+=1;
+  const L=Math.hypot(fx,fz); if(L>1){fx/=L;fz/=L;}
+  const st=Math.sin(cam.theta),ct=Math.cos(cam.theta); // forward (away from camera) = (-st,-ct); right = (ct,-st)
+  world.manualDir={x:(-st)*(-fz)+ct*fx, z:(-ct)*(-fz)+(-st)*fx};
+}
+$('#fail').addEventListener('click',()=>world.failDrone());
+$('#revive').addEventListener('click',()=>world.revive());
+$('#orbit').addEventListener('click',()=>{ Object.assign(cam,HOME); applyCam(); $('#orbit').classList.add('on'); $('#top').classList.remove('on'); });
+$('#top').addEventListener('click',()=>{ Object.assign(cam,{theta:0,phi:0.1,r:58,tx:24,tz:22}); applyCam(); $('#top').classList.add('on'); $('#orbit').classList.remove('on'); });
+window.addEventListener('keydown',e=>{ if(e.target.tagName==='INPUT'||e.target.tagName==='SELECT')return; if(e.key==='p'){togglePlay();} else if(e.key==='i')world.spawnIntruder(); else if(e.key==='c')setManual(!world.manual); else if(e.key==='f')world.failDrone(); else if(e.key==='r'){world.reset();syncLaws();} else if(e.key==='t')$('#top').click(); else if(e.key==='o')$('#orbit').click(); });
+
+// ---------- main loop ----------
+world.reset('alarm8'); syncLaws();
+let last=performance.now(),uiT=0,acc=0; const STEP=1/60;
+function frame(now){
+  const real=Math.min(0.05,(now-last)/1000); last=now;
+  updateManualDir();
+  if(running){ acc+=real*speed; let n=0; while(acc>=STEP&&n<12){ world.step(STEP); acc-=STEP; n++; } if(n>=12)acc=0; }
+  if(follow&&world.intruder){ cam.tx=world.intruder.x; cam.tz=world.intruder.z; applyCam(); }
+  render(real);
+  uiT-=real; if(uiT<=0){ uiT=0.12; updatePanel(); }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+window.SIM={world,metrics,settings,bus,get simT(){return simT;}};
+})();
+</script>
+</body>
+</html>
