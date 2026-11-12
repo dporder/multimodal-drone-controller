@@ -140,7 +140,7 @@ HEAD = r'''<!DOCTYPE html>
       <details><summary>What you are looking at</summary>
         <p>A floor seen from above. Rooms, 0.2 m walls, doors under a 2.0 m lintel, tables (0.8 m) and shelves (2.2 m). The coloured cones show what each drone camera can see at its height: walls, shelves and door lintels block it.</p>
         <p>Every 0.5 s the master (M) picks a tactic template for the current order and sends each follower a vector over a lossy radio. Yellow dashed lines are those vectors; squares are the slots. Amber rooms are where the person could be, green rooms were cleared since he was last seen.</p>
-        <p>Safety rules run on board: 2.5 m from people, 1 m between drones, 0.4 m from walls, one drone per doorway, slow in doors. The person model and the tactics are explained in docs/TACTICS.md; the training records in docs/DATASET_PLAN.md.</p></details></section>
+        <p>Safety rules run on board: never closer than 1.2 m to a person; 1.5 m in pressure tactics (drive out, keep out at the door) and 2.5 m otherwise (the dashed ring); 1 m between drones, 0.4 m from walls, one drone per doorway, slow in doors. The person model and the tactics are explained in docs/TACTICS.md; the training records in docs/DATASET_PLAN.md.</p></details></section>
   </aside>
 </div>
 '''
@@ -195,7 +195,8 @@ function render(){ fit(); const dpr=window.devicePixelRatio||1; ctx.setTransform
   // cameras: what each drone can see at its height (walls, shelves and door lintels block it)
   for(const d of team.drones){ if(d.y<0.4)continue; const poly=visPoly(d); ctx.beginPath(); ctx.moveTo(poly[0][0],poly[0][1]); for(const p of poly)ctx.lineTo(p[0],p[1]); ctx.closePath(); ctx.fillStyle=COL[d.id]+(d.sees?'26':'14'); ctx.fill(); }
   // person (truth) and what the team believes
-  if(person.alive){ const seen=team.seen; ctx.globalAlpha=seen?1:0.45; ctx.setLineDash([4*dpr,4*dpr]); ctx.strokeStyle='rgba(251,113,133,0.45)'; ctx.lineWidth=1*dpr; ctx.beginPath(); ctx.arc(X(person.x),Y(person.z),settings.dS*ui.scale,0,2*Math.PI); ctx.stroke(); ctx.setLineDash([]);
+  if(person.alive){ const seen=team.seen, press=mission.band==='pressure'; ctx.globalAlpha=seen?1:0.45; ctx.setLineDash([4*dpr,4*dpr]); ctx.strokeStyle=press?'rgba(251,191,36,0.7)':'rgba(251,113,133,0.45)'; ctx.lineWidth=1*dpr; ctx.beginPath(); ctx.arc(X(person.x),Y(person.z),(press?settings.dPress:settings.dS)*ui.scale,0,2*Math.PI); ctx.stroke(); ctx.setLineDash([]);
+    ctx.strokeStyle='rgba(251,113,133,0.35)'; ctx.beginPath(); ctx.arc(X(person.x),Y(person.z),settings.floorPress*ui.scale,0,2*Math.PI); ctx.stroke();
     ctx.fillStyle=COL.P; ctx.beginPath(); ctx.arc(X(person.x),Y(person.z),0.28*ui.scale,0,2*Math.PI); ctx.fill(); const h=person.heading; ctx.strokeStyle='#fff'; ctx.lineWidth=2*dpr; ctx.beginPath(); ctx.moveTo(X(person.x),Y(person.z)); ctx.lineTo(X(person.x+Math.sin(h)*0.45),Y(person.z+Math.cos(h)*0.45)); ctx.stroke();
     text((person.role==='visitor'?'visitor':'intruder')+' · '+person.state+(seen?'':' · not seen'),X(person.x),Y(person.z)-0.55*ui.scale,10.5,'#fecdd3'); ctx.globalAlpha=1; }
   const I=team.est(); if(I&&!team.seen){ ctx.strokeStyle='rgba(251,113,133,0.8)'; ctx.lineWidth=1.5*dpr; ctx.beginPath(); ctx.arc(X(I.x),Y(I.z),0.4*ui.scale,0,2*Math.PI); ctx.stroke(); text('last seen '+(simT-team.lkpT).toFixed(1)+' s',X(I.x),Y(I.z)+0.7*ui.scale,9.5,'rgba(251,113,133,0.9)'); }
@@ -218,7 +219,7 @@ function updatePanel(){ const M=metrics, inView=M.totT?Math.round(100*M.seenT/M.
     [(M.standoffViol+M.sepViol+M.wallViol).toFixed(1)+' s','safety'],[M.radioDrops,'radio drops'],[M.mapped?Math.round(100*M.mapped)+'%':'—','mapped'],[M.linkHolds,'link holds'],[M.maxMargin.toFixed(2),'margin']];
   $('#metrics').innerHTML=tiles.map(([v,k])=>'<div class="tile"><b class="mono">'+esc(v)+'</b><span>'+k+'</span></div>').join('');
   const st=mission.status, q=mission.queued;
-  $('#hudinfo').innerHTML='<b>'+esc(describeGoal())+'</b> <span class="chip'+(st==='active'?' ok':'')+'">'+esc(st)+'</span><br><span class="small">'+esc(mission.template?'Template: '+mission.template:'')+'</span>'+(q?'<br><span class="small">then: '+esc(GOALS[q.goal])+'</span>':'');
+  $('#hudinfo').innerHTML='<b>'+esc(describeGoal())+'</b> <span class="chip'+(st==='active'?' ok':'')+'">'+esc(st)+'</span> <span class="chip">'+(mission.band==='pressure'?'pressure · '+settings.dPress+' m':'comfort · '+settings.dS+' m')+'</span><br><span class="small">'+esc(mission.template?'Template: '+mission.template:'')+'</span>'+(q?'<br><span class="small">then: '+esc(GOALS[q.goal])+'</span>':'');
   const lastSite=[...talk].reverse().find(l=>l.who==='site'||l.who==='intruder');
   $('#status').innerHTML=(person.alive?esc((person.role==='visitor'?'Visitor':'Intruder')+' · '+person.state+' · '+roomName(person.room)+(team.seen?' · in sight':' · out of sight')):'Nobody inside.')+(lastSite?'<br><span class="small">'+esc(lastSite.t.toFixed(0)+' s '+lastSite.who+': '+lastSite.text)+'</span>':'');
   if(ui.talkVer!==talkVer){ ui.talkVer=talkVer; const el=$('#talk'); const near=el.scrollTop+el.clientHeight>=el.scrollHeight-30;

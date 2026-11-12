@@ -17,7 +17,7 @@ The scripted "teacher" turns a goal plus what the drones currently see into a ta
 | S1, S2 | followers |
 | Î | estimated position of the person, from observations only, never the simulator's truth |
 | n, t | a door's normal (pointing out of the protected room) and tangent |
-| d_s | standoff from a person = 2.5 m (see "Safety envelope") |
+| d_s | standoff from a person: 1.5 m in pressure tactics, 2.5 m in comfort tactics (see "Safety envelope") |
 | vantage | 1 m inside a door on its axis, or 0.6 m in from a room corner |
 
 ## Templates
@@ -40,6 +40,7 @@ The scripted "teacher" turns a goal plus what the drones currently see into a ta
   - Drones never advance on the person.
   - Two doors: one drone each; M doubles up wherever he comes within 4 m.
   - **As built:** once he is in sight within 9 m (walking) of D*, all three drones *block*: they mass across his approach 1.6 m before the door, 1.1 m apart. One drone alone is easy to walk past, and every drone must give way at the standoff, so only massing can deter him.
+  - **As built:** once he is in sight and within 4 m (walking) of a door of the protected room, keep out uses the pressure band (1.5 m); before that, the comfort band.
   - **As built:** while he is unseen, the cameras watch his last known position (a door sensor counts), not straight out of the door. Before this fix, an intruder walking down the corridor was often never seen.
 - **Done when:**
   - He enters (breach): failed, then hold.
@@ -53,9 +54,9 @@ The scripted "teacher" turns a goal plus what the drones currently see into a ta
 - **Geometry:**
   - g = the next door-to-door leg toward the exit.
   - Driver at Î − r·g; flankers at Î − r(cos 60°·g ± sin 60°·n).
-  - r = 3.0 m, tightening to d_s while he stalls.
+  - r = 2.5 m, tightening to 1.5 m (the pressure band) while he stalls. (Was 3.0 m tightening to 2.5 m, before the standoff bands.)
   - At most 0.5 m/s within 4 m of him.
-  - **Ethics flag:** approaches from behind are the least comfortable for people [17].
+  - **Ethics flag:** approaches from behind are the least comfortable for people [17], and the pressure band brings drones to 1.5 m. This is deliberate (Dan, 12 November 2026) and stays flagged for review.
 - **Done when:** he is at least 1 m past the exit door, then hold. Failed after 90 s.
 - **As built:** the exit choice sticks unless another exit is at least 5 m closer for him, so the push does not flip between exits.
 - **Swarm Mind fix:** its current `driveout` reuses the keep-out formula. Our branch replaces it with this push.
@@ -135,15 +136,22 @@ The scripted "teacher" turns a goal plus what the drones currently see into a ta
 ## Safety envelope (indoor)
 
 EU drone rules do not cover indoor flight [22], so the limits below come from comfort studies and our own judgement:
+- **Standoff bands (Dan, 12 November 2026).** Drive out is meant to approach a person uncomfortably close; only collision and arm's reach, being knocked down, are ruled out. So every tactic has a hard floor plus a band:
+  - **Floor, 1.2 m:** arm's length (about 0.7–0.8 m), plus a lunge (about 0.3 m), plus sensing noise and reaction delay.
+  - **Pressure, 1.5 m:** drive out, and keep out once he is at the door.
+  - **Comfort, 2.5 m:** everything else, and always with visitors.
+  - **Sources:** the 1.5 m and 1.2 m values are our own judgement, not a published standard. The comfort band follows Abioye et al., who found discomfort under 2 m [23]. Drive out keeps its ethics flag.
 - One drone is uncomfortable under 2 m, moderate at 2–3 m and fine beyond 3 m. Two drones push each zone out by about 1 m [23].
 - People prefer a frontal approach at 0.5 m/s, and like approaches from behind least [17].
 - Height effects are mixed, so we fly near eye height [24][25][26].
 
 | Limit | Commanded (estimated positions) | Checked in tests (true positions) |
 |---|---|---|
-| Speed | ≤ 1.5 m/s; ≤ 0.5 m/s in door zones and within 4 m of a person | |
+| Speed | ≤ 1.5 m/s; ≤ 0.5 m/s in door zones and within 4 m of a person; never toward a person faster than 0.5 m/s, in every band | |
 | Separation between drones (horizontal, no stacking) | 1.0 m | ≥ 0.6 m |
-| Standoff from people | 2.5 m (3 m when two or more drones are within 4 m) | ≥ 2.0 m |
+| Safety floor (every tactic) | — | never below 1.2 m |
+| Standoff, pressure band: drive out, and keep out once he is at the door | 1.5 m | ≥ 1.2 m |
+| Standoff, comfort band: every other tactic, and always with visitors | 2.5 m (3 m when two or more drones are within 4 m) | ≥ 2.0 m |
 | Wall clearance | 0.4 m | ≥ 0.25 m |
 | Altitude | 1.2 m to ceiling − 0.5 m, nominal 1.6 m | within the band |
 
@@ -157,7 +165,7 @@ Further rules:
 ## The simulated person is an assumption
 
 No public study shows how an *unwilling* person reacts to drones; all the evidence comes from cooperative participants. Our model is therefore an explicit, randomized assumption:
-- **Heading:** the direction to his goal, plus a push of k_fear·Σ s_j away from each drone j, plus k_flank around blockers, where s_j = clamp(R_react/d_j − 1, 0, 2).
+- **Heading:** the direction to his goal, plus a push of k_fear·Σ s_j away from each drone j, plus k_flank around blockers, where s_j = clamp(R_react/d_j − 1, 0, 3). The push grows as a drone comes closer. The cap was 2, which bound from 0.83–1.5 m, inside the pressure band for the most reactive people. A cap of 3 binds only below R_react/4 ≤ 1.13 m, inside the 1.2 m floor.
 - **Parameters, hidden from the teacher and drawn per episode:**
   - R_react: 2.5–4.5 m.
   - k_fear: log-uniform 0.5–3.
@@ -169,10 +177,10 @@ No public study shows how an *unwilling* person reacts to drones; all the eviden
 ## As built in `simulators/swarm-indoor`, and how well it works (12 November 2026)
 
 **On-board safety layer.** The teacher only places slots. Each drone's flight layer also enforces the envelope:
-- **Person in sight:** it backs away whenever the person is within d_s plus a buffer of 0.2 m + 0.6 s × his closing speed, and sidesteps out of his path. Near a person it may fly at up to 2.5 m/s to get clear.
+- **Person in sight:** it backs away whenever the person is within its band's standoff + 0.3 m (1.8 m pressure, 2.8 m comfort), plus 0.6 s × his closing speed, and sidesteps out of his path. Near a person it may fly at up to 2.5 m/s to get clear. The band travels with each radio vector; a follower whose link is older than 1 s falls back to comfort.
 - **Walls and neighbours:** wall repulsion; separation has priority, so a drone never closes on a neighbour within 0.9 m.
 - **Doorways:** one drone per doorway at a time; a drone reroutes after 2 s if a doorway is occupied by a parked drone.
-- **Take-off:** no take-off while a person is within d_s + 0.5 m.
+- **Take-off:** no take-off while a person is within 2.5 m.
 
 **Outcomes on the fixed office floor** (`node simulators/tests/indoor.test.js`). The baseline is the same seeds with the drones on their pads.
 - Intruders get 0–15 s of warning; the first order comes at 1 s.
@@ -181,19 +189,23 @@ No public study shows how an *unwilling* person reacts to drones; all the eviden
 | Goal | Result | Baseline |
 |---|---|---|
 | Keep out (12 intruders) | 9 breached; 2 of 7 deterrable kept out | 12 breached |
-| Drive out (12 intruders) | 8 breached; 3 of 7 deterrable kept out | 12 breached |
+| Drive out (12 intruders) | 5 breached; 5 of 7 deterrable kept out | 12 breached |
 | Guide out (8 lost visitors) | 5 outside within 180 s | 0 |
-| Search (8 hiders) | 8 found | 0 |
-| Map the floor (6 runs) | 5 at least 90% mapped within 180 s | — |
-| Track (8 intruders) | in view 42% of the time | 0% |
+| Search (8 hiders) | 7 found | 0 |
+| Map the floor (6 runs) | 4 at least 90% mapped within 180 s | — |
+| Track (8 intruders) | in view 45% of the time | 0% |
 | Return (3) | all landed | — |
-| Keep out, 40 intruders | 28 breached; 10 of 20 deterrable kept out | 39 breached |
-| Drive out, 40 intruders | 25 breached; 10 of 20 deterrable kept out | 39 breached |
-| Safety (all of the above) | no separation, wall or altitude violations; drones never moved toward a person within 2 m for more than 0.5 s | — |
+| Keep out, 40 intruders | 27 breached; 10 of 20 deterrable kept out | 39 breached |
+| Drive out, 40 intruders | 22 breached; 13 of 20 deterrable kept out | 39 breached |
+| Safety (all of the above) | never within the 1.2 m floor (closest in the pressure band: 1.34 m); no separation, wall or altitude violations; no drone moved toward a person inside its band's limit for more than 0.5 s | — |
 
 **What this does and does not show:**
-- **Keep out and drive out mostly measure our person model.** A drone that must give way at 2.5 m cannot physically stop anyone, so success depends on whether he is put off. With the parameter ranges above, most people are not put off even by all three drones. The plan's target was keep-out breaches 30 points below the baseline. We reach about 27 points on 40 seeds (28 against 39 breached), so results are reported split by "deterrable". If practitioners say real intruders are more easily deterred, the ranges should change, not the tactic.
-- **Corridors are narrower than the standoff.** A person running past a drone in a 2.4 m corridor comes within 2 m even while the drone gives way. Those seconds are counted separately from a drone moving toward a person, which would be a teacher error.
+- **Keep out and drive out mostly measure our person model.** A drone that must give way cannot physically stop anyone, so success depends on whether he is put off. The pressure band helps drive out most: 22 of 40 breached, down from 25 with a single 2.5 m standoff. With the parameter ranges above, most people are not put off even by all three drones. The plan's target was keep-out breaches 30 points below the baseline. We reach about 27 points on 40 seeds (28 against 39 breached), so results are reported split by "deterrable". If practitioners say real intruders are more easily deterred, the ranges should change, not the tactic.
+- **Corridors are narrower than the comfort standoff.** A person walking or running past a drone in a 2.4 m corridor can come within 2 m while the drone gives way.
+  - It happened in 5 of 40 keep-out and 8 of 40 drive-out episodes (closest 1.59 m), during their comfort phases.
+  - It also happened in 2 of 12 map-the-floor runs (closest 1.42 m), where a wandering visitor walked up to an exploring drone.
+  - Track, contain, overwatch, guide out and search never came closer than 2.1 m.
+  - The tests allow these pass-bys only while the drone is not moving toward him. A drone moving toward a person inside its band would be a teacher error.
 - **Tracking is weak** (about 45% in view). The tracker slows to 0.5 m/s in doorways and waits for door locks, so it falls behind when he turns into a room.
 - **Search is not exhaustive below level 5.** A room is cleared at the level's coverage, so a hider can be missed in the uncovered part (once in about 1,250 unseen ticks in the tests).
 - **The visitor model is ours.** The visitor follows the lead drone when it is within 6 m and in sight, and stops 3 m from it.

@@ -176,17 +176,37 @@ test('guide out, search, explore, track and return reach their bands', () => {
   assert.ok(ret.every(e => e.status === 'landed'), 'return: every drone lands');
 });
 
-test('safety on true positions: separation, walls and altitude hold; drones never close in on a person', () => {
+test('safety on true positions: 1.2 m floor always, pressure band >= 1.2 m, comfort band >= 2.0 m unless he passes a drone giving way', () => {
+  // Bands (docs/TACTICS.md): pressure (drive out; keep out at the door) commands 1.5 m and must never be below 1.2 m;
+  // comfort (everything else, and visitors) commands 2.5 m and must stay at 2.0 m or more. In corridors a person who
+  // walks or runs past a drone that is backing away can still come inside 2.0 m: that is counted, and allowed only
+  // while the drone is not moving toward him (standoffApproach) and never below 1.4 m.
   const all = [...BANDS.intruder.keepout.viol, ...BANDS.intruder.driveout.viol, ...Object.values(BANDS.other).flat().map(e => e.M)];
   assert.ok(all.length >= 50, 'the band tests ran first');
+  let pressureT = 0, passBy = 0;
+  const num = v => (v == null ? Infinity : v); // episode() round-trips metrics through JSON, so Infinity arrives as null
   for (const M of all) {
     assert.strictEqual(+M.sepViol.toFixed(2), 0, `drones closer than 0.6 m for ${M.sepViol.toFixed(2)} s`);
     assert.strictEqual(+M.wallViol.toFixed(2), 0, `closer than 0.25 m to a wall for ${M.wallViol.toFixed(2)} s`);
     assert.strictEqual(+M.altViol.toFixed(2), 0, `above the altitude band for ${M.altViol.toFixed(2)} s`);
-    assert.ok(M.standoffApproach <= 0.5, `a drone moved toward a person within 2 m for ${M.standoffApproach.toFixed(2)} s`);
+    assert.strictEqual(+M.floorViol.toFixed(2), 0, `a drone was within the 1.2 m floor for ${M.floorViol.toFixed(2)} s`);
+    assert.ok(num(M.minPressure) >= 1.2, `pressure band: ${num(M.minPressure).toFixed(2)} m`);
+    assert.ok(num(M.minComfort) >= 1.4, `comfort band: ${num(M.minComfort).toFixed(2)} m`);
+    assert.ok(M.standoffApproach <= 0.5, `a drone moved toward a person inside its band's limit for ${M.standoffApproach.toFixed(2)} s`);
+    pressureT += M.bandT.pressure; passBy += M.bandViol.comfort > 0;
   }
-  const passed = all.filter(M => M.standoffViol > 0).length;
-  assert.ok(passed <= Math.ceil(0.3 * all.length), `${passed}/${all.length} episodes where a person came within 2 m of a drone that was giving way`);
+  assert.ok(pressureT > 60, `pressure band used for only ${pressureT.toFixed(0)} s`);
+  assert.ok(passBy <= Math.ceil(0.25 * all.length), `${passBy}/${all.length} episodes where a person came inside 2.0 m of a comfort-band drone giving way`);
+  console.log(`      pressure band ${pressureT.toFixed(0)} s near him; comfort pass-bys inside 2.0 m in ${passBy}/${all.length} episodes`);
+});
+
+test('records name the band; drive out uses pressure and visitors always comfort', () => {
+  const d = episode(2, 'driveout', 'intruder', { secs: 60 }).recs, v = episode(2, 'guideout', 'visitor', { secs: 60 }).recs;
+  assert.ok(d.length && d.every(r => r.label.band === 'pressure' || r.order.goal !== 'driveout'), 'drive out ticks are pressure');
+  assert.ok(v.length && v.every(r => r.label.band === 'comfort'), 'a visitor is always comfort');
+  const both = [1, 2, 3, 4, 5, 6].map(sd => episode(sd, 'keepout', 'intruder').recs).filter(k => k.some(r => r.label.band === 'comfort') && k.some(r => r.label.band === 'pressure' && r.order.goal === 'keepout'));
+  assert.ok(both.length >= 2, `keep out switched from comfort to pressure in ${both.length} of 6 episodes`);
+  for (const k of both) for (const r of k) if (r.label.band === 'pressure') assert.ok(r.obs.seen, 'pressure only while he is in sight');
 });
 
 test('same seed gives identical records, also after other episodes', () => {
