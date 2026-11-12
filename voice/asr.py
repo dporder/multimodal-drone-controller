@@ -13,6 +13,9 @@ SR = 16000
 # A short vocabulary prompt biases Whisper toward the order words. Keep it short: long prompts
 # get echoed back on near-silence.
 VOCAB_PROMPT = "Keep him out. Drive him out. Track him. Hold position. Rotate left. Rotate right."
+# indoor (simulators/swarm-indoor): the goal words plus the fixed office floor's room and door names
+INDOOR_PROMPT = ("Keep him out of the lab. Guide them out by the main entrance. Track him. Contain him in the kitchen. "
+                 "Search the building. Map the floor. Watch the fire exit. Come back and land. Hold position.")
 
 
 def wav_to_float32(data):
@@ -60,10 +63,10 @@ class Transcriber:
         self.name = f"{model} ({device}, {compute_type})"
         self.min_seconds, self.min_rms = min_seconds, min_rms
 
-    def _run(self, audio):
+    def _run(self, audio, prompt=None):
         segments, _ = self.model.transcribe(
             audio, language="en", beam_size=1, best_of=1, temperature=0.0, without_timestamps=True,
-            condition_on_previous_text=False, initial_prompt=VOCAB_PROMPT, vad_filter=False)
+            condition_on_previous_text=False, initial_prompt=prompt or VOCAB_PROMPT, vad_filter=False)
         # segments is a lazy generator: consume it here, in the calling (worker) thread
         return " ".join(s.text.strip() for s in segments).strip()
 
@@ -71,8 +74,8 @@ class Transcriber:
         t = np.arange(SR, dtype=np.float32) / SR
         self._run((0.05 * np.sin(2 * np.pi * 220 * t)).astype(np.float32))
 
-    def transcribe(self, audio):
-        """audio: float32 mono 16 kHz. Returns {text, audio_s, rms, asr_ms, skipped}."""
+    def transcribe(self, audio, prompt=None):
+        """audio: float32 mono 16 kHz; prompt: vocabulary hint (default VOCAB_PROMPT). Returns {text, audio_s, rms, asr_ms, skipped}."""
         audio = np.asarray(audio, dtype=np.float32)
         dur = len(audio) / SR
         rms = float(np.sqrt(np.mean(audio ** 2))) if len(audio) else 0.0
@@ -81,13 +84,13 @@ class Transcriber:
         if rms < self.min_rms:
             return {"text": "", "audio_s": dur, "rms": rms, "asr_ms": 0.0, "skipped": "silence"}
         t = time.perf_counter()
-        text = self._run(audio)
+        text = self._run(audio, prompt)
         ms = (time.perf_counter() - t) * 1000
-        if _echoes_prompt(text):  # Whisper sometimes repeats its prompt on noise
+        if _echoes_prompt(text, prompt):  # Whisper sometimes repeats its prompt on noise
             return {"text": "", "audio_s": dur, "rms": rms, "asr_ms": ms, "skipped": "prompt echo"}
         return {"text": text, "audio_s": dur, "rms": rms, "asr_ms": ms, "skipped": None}
 
 
-def _echoes_prompt(text):
+def _echoes_prompt(text, prompt=None):
     t = text.lower().strip(" .")
-    return len(t) > 40 and t in VOCAB_PROMPT.lower()
+    return len(t) > 40 and t in (prompt or VOCAB_PROMPT).lower()

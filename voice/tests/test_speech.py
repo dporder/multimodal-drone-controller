@@ -150,6 +150,46 @@ def test_spoken_orders_parse_correctly(server):
     assert ok / n >= 0.9
 
 
+INDOOR = {"sim": "swarm-indoor", "goal": "hold", "version": 1, "protected": "lab",
+          "rooms": ["lab", "office", "kitchen", "corridor", "lobby", "storage", "meeting room"],
+          "doors": [{"name": n, "rooms": r} for n, r in [("lab door", ["lab", "corridor"]), ("main entrance", ["lobby", "outside"]),
+                                                          ("east exit", ["corridor", "outside"]), ("fire exit", ["kitchen", "outside"])]],
+          "person": {"role": "intruder", "seen": True, "known": True, "room": "lobby", "inside": True}}
+INDOOR_ORDERS = [  # (text, goal, params that must match)
+    ("keep him out of the lab", "keepout", {"room": "lab"}),
+    ("guard the kitchen", "keepout", {"room": "kitchen"}),
+    ("drive him out the fire exit", "driveout", {"exit": "fire exit"}),
+    ("track him", "track", {}),
+    ("contain him in the storage room", "contain", {"room": "storage"}),
+    ("search the building thoroughly", "search", {"level": 5}),
+    ("have a quick look around", "search", {"level": 2}),
+    ("map the floor", "explore", {}),
+    ("watch the main entrance", "overwatch", {"door": "main entrance"}),
+    ("come back and land", "return", {}),
+    ("hold position", "hold", {}),
+    ("keep him in the meeting room", "contain", {"room": "meeting room"}),
+]
+
+
+def test_spoken_indoor_orders(server):
+    rows, ok, n = [], 0, 0
+    with tempfile.TemporaryDirectory() as tmp:
+        for voice in VOICES:
+            for k, (text, goal, params) in enumerate(INDOOR_ORDERS):
+                clean = synth(text, voice, tmp)
+                for cond in CONDITIONS:
+                    wav = clean if cond == "clean" else add_noise(clean, 10, seed=k)
+                    d = ask(server, {"type": "order_audio", "id": k, "context": INDOOR, "wav_b64": base64.b64encode(wav).decode()})
+                    hit = d["action"] == "accept" and d.get("goal") == goal and all(d.get("params", {}).get(a) == b for a, b in params.items())
+                    ok += hit
+                    n += 1
+                    if not hit:
+                        rows.append(f"  miss [{voice}, {cond}] {text!r} heard {d['transcript']!r} -> {d['action']}/{d.get('goal')} {d.get('params')}")
+    print(f"\nspoken indoor orders correct: {ok}/{n} ({ok / n:.0%})")
+    print("\n".join(rows))
+    assert ok / n >= 0.85
+
+
 def test_silence_changes_nothing(server):
     silence = float32_to_wav(np.zeros(16000, dtype=np.float32))
     d = ask(server, {"type": "order_audio", "id": 1, "context": OUTSIDE, "wav_b64": base64.b64encode(silence).decode()})

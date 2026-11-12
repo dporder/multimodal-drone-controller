@@ -29,8 +29,8 @@ from concurrent.futures import ThreadPoolExecutor
 import websockets
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from asr import Transcriber, wav_to_float32  # noqa: E402
-from orders import GOALS, interpret  # noqa: E402
+from asr import INDOOR_PROMPT, Transcriber, wav_to_float32  # noqa: E402
+from orders import describe, interpret  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -58,7 +58,8 @@ class Server:
         if msg.get("type") == "order_audio":
             wav = base64.b64decode(msg.get("wav_b64", ""))
             audio = wav_to_float32(wav)
-            res = await asyncio.get_running_loop().run_in_executor(self.pool, self.asr.transcribe, audio)
+            prompt = INDOOR_PROMPT if (msg.get("context") or {}).get("sim") == "swarm-indoor" else None
+            res = await asyncio.get_running_loop().run_in_executor(self.pool, self.asr.transcribe, audio, prompt)
             text, source = res["text"], "speech"
         else:
             res = {"audio_s": 0.0, "asr_ms": 0.0, "skipped": None}
@@ -66,11 +67,14 @@ class Server:
         t1 = time.perf_counter()
         d = interpret(text, msg.get("context"))
         if d["action"] == "next":
-            d = ({"action": "accept", "goal": queued[0], "reply": GOALS[queued[0]] + "."} if queued[0]
+            q = queued[0]
+            d = ({"action": "accept", "goal": q["goal"], "params": q["params"], "reply": describe(q["goal"]) + "."} if q
                  else {"action": "query", "reply": "Nothing is queued. Say the next order."})
+            if q and not q["params"]:
+                d.pop("params")
             queued[0] = None
         elif d["action"] == "accept" and d.get("goal"):
-            queued[0] = d.get("queued")
+            queued[0] = {"goal": d["queued"], "params": d.get("queued_params") or {}} if d.get("queued") else None
         t2 = time.perf_counter()
         out = {"type": "decision", "id": msg.get("id"), "source": source, "transcript": text, **d,
                "timings": {"audio_s": round(res.get("audio_s", 0.0), 2), "asr_ms": round(res.get("asr_ms", 0.0)),
