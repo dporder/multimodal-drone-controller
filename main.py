@@ -48,6 +48,14 @@ def headless(sim: str, seconds: int) -> int:
 
 
 def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] == "lab":
+        try:
+            from swarm_lab.__main__ import main as lab_main
+        except ImportError:
+            print("Install Swarm Lab first: python3 -m pip install -e .", file=sys.stderr)
+            sys.exit(1)
+        lab_main(sys.argv[2:])
+        return
     p = argparse.ArgumentParser(description="Run a swarm simulator")
     p.add_argument("sim", nargs="?", default="mind", choices=sorted(SIMS), help="which simulator (default: mind)")
     p.add_argument("--port", type=int, default=8000)

@@ -1,0 +1,16 @@
+Poly Haven assets, CC0 1.0: https://polyhaven.com/license
+Industrial Sunset 02 — Sergej Majboroda
+https://polyhaven.com/a/industrial_sunset_02
+1K HDR, downloaded from https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/1k/industrial_sunset_02_1k.hdr
+Aerial Asphalt 01 — Rob Tuytel
+https://polyhaven.com/a/aerial_asphalt_01
+1K diffuse, OpenGL normal and roughness JPG maps, downloaded from:
+https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/aerial_asphalt_01/
+Three.js r170 and addon modules are MIT licensed; see ../vendor/THREE-LICENSE.txt.
+
+Cesium Man — © 2017 Cesium, Creative Commons Attribution 4.0 International.
+https://github.com/KhronosGroup/glTF-Sample-Assets/tree/main/Models/CesiumMan
+https://creativecommons.org/licenses/by/4.0/
+The bundled GLB is unmodified. Its view is scaled/rotated for Z-up display.
+The Cesium logo belongs to Cesium. No endorsement is implied.
+GLTFLoader is Three.js r170 (MIT); its helper import path was adjusted locally.

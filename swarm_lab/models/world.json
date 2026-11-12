@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "name": "Three-layer non-contact security simulation world",
+  "units": {"length":"metre","time":"second","mass":"kilogram","force":"newton","angle":"radian","world_up":"Z","quaternion":"WXYZ"},
+  "invariants": ["Exactly three drones", "Physical contacts stop the flight episode", "No action applies force, fear or compliance to the person", "A person may ignore guidance", "Hidden is a sensor result, not a magic invisibility flag", "Perception is distinct from true world state", "Every stochastic event uses the episode random stream"],
+  "layers": [
+    {"id":"person","label":"Person / independent actor","state":["position","velocity","heading","posture","movement_mode","intention","current_goal","planned_route","memory","observed_by","response_probability","manual_input","vertical_velocity","support_surface"],"capabilities":["stand","walk","run","stop","jump","crouch","seek_cover","climb_low_surface","choose_route","accept_guidance","ignore_guidance"],"decisions":{"deliberation_hz":2,"route_algorithm":"A* with inflated obstacles and segment validation","guidance_response":"Bernoulli(p), independent of drone proximity","default_intention":"inspect site","manual_override":true}},
+    {"id":"swarm","label":"Three-drone swarm","state":["individual_pose","linear_velocity","angular_velocity","motor_speeds","rotor_forces","battery","current_waypoints","local_ranges","communication_history","person_observations","shared_belief","operator_command"],"capabilities":["observe","report","hover","maintain_separation","avoid_obstacle","indicate_route","hold_after_refusal","return_to_formation"],"decisions":{"mission_hz":1,"controller_hz":30,"physics_hz":240,"control_chain":["mission","map route","local avoidance","acceleration","attitude","rotor mixer","motor response","rigid-body dynamics"]}},
+    {"id":"environment","label":"Environment / objects / laws","state":["geometry","object_types","materials","support_surfaces","portals","walkable_regions","occluders","wind_state","friction","lighting","seed","interventions"],"capabilities":["support","block_motion","occlude_visibility","connect_regions","provide_cover","offer_low_surface","define_destination","produce_wind","resolve_contact"]}
+  ],
+  "relations": ["IS_A","PART_OF","LOCATED_IN","HAS_STATE","CAN_PERFORM","REQUIRES","CAUSES","BLOCKS","OCCLUDES","SUPPORTS","CONNECTS","HAS_GOAL","OBSERVES","LAST_OBSERVED","COMMUNICATES_WITH","AVOIDS","INDICATES_ROUTE_TO","CONTROLLED_BY","GOVERNED_BY"],
+  "object_types": [
+    {"id":"ground","label":"Ground","solid":true,"occludes":false,"supports":true,"walkable":true,"friction":0.8},
+    {"id":"wall","label":"Wall","solid":true,"occludes":true,"supports":false,"walkable":false,"material":"concrete"},
+    {"id":"door","label":"Door aperture","solid":false,"occludes":false,"connects_regions":true,"states":["open","closed"],"implemented_states":["open"]},
+    {"id":"window","label":"Window aperture","solid":false,"occludes":false,"connects_visibility":true,"states":["open","glazed"],"implemented_states":["open"]},
+    {"id":"room","label":"Room","region":true,"contains_objects":true},
+    {"id":"hall","label":"Hall / corridor","region":true,"connects_regions":true},
+    {"id":"tree","label":"Tree trunk","solid":true,"occludes":true,"material":"wood"},
+    {"id":"foliage","label":"Tree foliage","solid":false,"visual_only":true},
+    {"id":"container","label":"Storage container","solid":true,"occludes":true,"material":"steel"},
+    {"id":"crate","label":"Crate","solid":true,"occludes":true,"material":"wood","provides_cover":true},
+    {"id":"shelf","label":"Storage shelf","solid":true,"occludes":true,"material":"steel"},
+    {"id":"sofa","label":"Sofa","solid":true,"occludes":true,"material":"fabric","provides_cover":true},
+    {"id":"table","label":"Table","solid":true,"occludes":true,"material":"wood","supports":true,"climbable":true,"max_climb_height":1.1},
+    {"id":"tv","label":"Television","solid":true,"occludes":true,"material":"glass/plastic"},
+    {"id":"exit","label":"Exit / designated destination","solid":false,"goal_region":true},
+    {"id":"ceiling","label":"Ceiling","solid":true,"occludes":true,"cutaway_in_viewer":true},
+    {"id":"person","label":"Person","solid":true,"shape":"capsule","dynamic":"kinematic agent","max_walk_speed":1.15,"max_run_speed":2.6,"jump_speed":3.0,"crouch_height":1.1,"standing_height":1.8},
+    {"id":"drone","label":"Quadrotor","solid":true,"dynamic":"6-DoF rigid body","count":3,"rotors":4,"arm_xy":0.19,"nominal_mass":1.2}
+  ],
+  "actions": [
+    {"id":"walk","layer":"person","preconditions":["traversable segment"],"effects":["position evolves toward own waypoint"],"engine":"kinematic_navigation","cost":"time"},
+    {"id":"run","layer":"person","preconditions":["traversable segment"],"effects":["higher desired speed"],"engine":"kinematic_navigation","cost":"time"},
+    {"id":"jump","layer":"person","preconditions":["on support"],"effects":["vertical impulse","ballistic gravity","land on support"],"engine":"ballistic_vertical"},
+    {"id":"crouch","layer":"person","effects":["reduce capsule height","reduce movement speed"],"engine":"posture"},
+    {"id":"seek_cover","layer":"person","preconditions":["reachable cover point"],"effects":["choose waypoint adjacent to an occluder"],"engine":"navigation_then_crouch"},
+    {"id":"climb_low_surface","layer":"person","preconditions":["climbable object","height <= 1.1m","within reach"],"effects":["controlled ascent onto support"],"engine":"kinematic_climb","limitations":["no arbitrary walls or window climbing"]},
+    {"id":"observe","layer":"swarm","preconditions":["within range","unoccluded ray"],"effects":["update observation and timestamp"],"engine":"mujoco_ray"},
+    {"id":"indicate_route","layer":"swarm","preconditions":["person accepted guidance","route exists"],"effects":["aircraft mark one side of a route","person retains own controller"],"engine":"non_contact_guidance"},
+    {"id":"avoid_obstacle","layer":"swarm","preconditions":["obstacle detected"],"effects":["modify drone acceleration"],"engine":"range_avoidance"},
+    {"id":"maintain_separation","layer":"swarm","effects":["move drones away from the person and peers"],"engine":"clearance_supervisor"},
+    {"id":"manual_control","layer":"person","effects":["replace autonomous horizontal command with operator input"],"engine":"keyboard_velocity"}
+  ],
+  "laws": [
+    {"id":"gravity","layer":"environment","equation":"a_z = -g","parameters":{"g":9.81},"class":"deterministic"},
+    {"id":"translation","layer":"environment","equation":"m dv/dt = sum(F)","class":"deterministic"},
+    {"id":"rotation","layer":"environment","equation":"I domega/dt = tau - omega cross (I omega)","class":"deterministic"},
+    {"id":"rotor_thrust","layer":"swarm","equation":"f = kf * omega_motor^2 * voltage_factor^2","parameters":{"kf":0.000011},"class":"deterministic"},
+    {"id":"motor_lag","layer":"swarm","equation":"domega/dt = (command - omega)/tau","parameters":{"tau":0.035},"class":"deterministic"},
+    {"id":"drag","layer":"environment","equation":"F = -cd * abs(v-w) * (v-w)","class":"deterministic"},
+    {"id":"contact","layer":"environment","equation":"MuJoCo constrained rigid-body contact","class":"deterministic"},
+    {"id":"gust","layer":"environment","equation":"dg = -0.7*g*dt + sigma*sqrt(dt)*N(0,1)","class":"seeded stochastic"},
+    {"id":"radio_delivery","layer":"swarm","equation":"delivery ~ Bernoulli(1-loss)","parameters":{"loss":0.05},"class":"seeded stochastic"},
+    {"id":"measurement","layer":"swarm","equation":"observation = state + Gaussian noise","class":"seeded stochastic"},
+    {"id":"person_choice","layer":"person","equation":"accept_guidance ~ Bernoulli(p)","parameters":{"p":0.85},"class":"seeded stochastic"},
+    {"id":"intervention","layer":"person","equation":"input(t) = timestamped operator command","class":"external input"}
+  ]
+}

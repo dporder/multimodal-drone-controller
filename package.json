@@ -1,0 +1,24 @@
+{
+  "name": "swarm-lab-browser",
+  "private": true,
+  "scripts": {
+    "start": "node scripts/start-hybrid.cjs",
+    "test": "node --test tests/browser/*.test.mjs",
+    "test:browser": "node tests/browser/e2e.cjs",
+    "test:episodes": "node scripts/check-browser-episodes.mjs",
+    "test:city": "node tests/browser/city-e2e.cjs",
+    "start:static": "node scripts/serve-browser.cjs",
+    "start:controller": ".venv/bin/python -m swarm_lab.drone_backend --port 8767",
+    "test:hybrid": "node tests/browser/hybrid-physics.mjs",
+    "test:dashboard": "node tests/browser/hybrid-e2e.cjs",
+    "test:single": "node --test tests/browser/single-drone.test.mjs",
+    "test:single-browser": "node tests/browser/single-e2e.cjs",
+    "train:single": "node scripts/train-single-policy.mjs"
+  },
+  "devDependencies": {
+    "playwright": "1.62.1"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

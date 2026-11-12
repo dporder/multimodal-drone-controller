@@ -1,0 +1,55 @@
+const {chromium}=require('playwright');
+const assert=require('node:assert/strict');
+const fs=require('node:fs/promises');
+const path=require('node:path');
+(async()=>{
+  const browser=await chromium.launch({channel:'chrome',headless:true});
+  try{
+    const context=await browser.newContext({viewport:{width:1600,height:1050},acceptDownloads:true});
+    const page=await context.newPage(),errors=[];
+    page.on('pageerror',e=>errors.push(e.message));page.on('console',m=>{if(m.type()==='error')errors.push(m.text());});
+    await page.goto('http://127.0.0.1:8766/browser/?scene=amsterdam&controller=browser');
+    await page.waitForFunction(()=>document.querySelector('#connection').textContent==='Browser simulation');
+    await page.waitForTimeout(1000);
+    const snapshot=async()=>{const pending=page.waitForEvent('download');await page.locator('#export').click();return JSON.parse(await fs.readFile(await (await pending).path(),'utf8'));};
+    const initial=await snapshot();assert.equal(initial.config.scene,'amsterdam');assert.equal(initial.drones.length,3);
+    await fs.mkdir('test-results',{recursive:true});await page.screenshot({path:'test-results/amsterdam-block.png'});
+    await page.locator('[data-camera="top"]').click();await page.waitForTimeout(1200);
+    await page.locator('#focus-scene').click();await page.locator('#response').selectOption('1');await page.locator('#focus-scene').click();
+    await page.locator('#path-pace').selectOption('run');await page.locator('#path-end').selectOption('hide');
+    const c=await page.locator('#viewport canvas').boundingBox(),x=c.x+c.width/2;
+    await page.mouse.move(x,c.y+c.height*.7);await page.mouse.down();await page.mouse.move(x,c.y+c.height*.54,{steps:12});await page.mouse.up();
+    await page.waitForTimeout(300);const drawn=await snapshot();assert.equal(drawn.person.intention,'follow drawn route');assert.equal(drawn.person.endpoint_action,'hide');assert.ok(drawn.person.drawn_path.length>=1);
+    await page.locator('#speed').selectOption('2');
+    await page.waitForFunction(()=>document.querySelector('#person-status').textContent==='hiding at path endpoint',{},{timeout:30000});
+    const hiding=await snapshot();assert.equal(hiding.person.posture,'crouching');assert.ok(Math.hypot(hiding.person.position[0]-drawn.person.position[0],hiding.person.position[1]-drawn.person.position[1])>1);
+    assert.equal(hiding.drones.length,3);assert.equal(hiding.metrics.collisions,0);
+    await page.screenshot({path:'test-results/amsterdam-drawn-route.png'});
+    // A new path restarts the person from their current endpoint.
+    await page.locator('#path-end').selectOption('jump');await page.mouse.move(x,c.y+c.height*.54);await page.mouse.down();await page.mouse.move(x,c.y+c.height*.48,{steps:8});await page.mouse.up();await page.waitForTimeout(250);
+    const second=await snapshot();assert.equal(second.person.intention,'follow drawn route');
+    await page.keyboard.press('h');await page.waitForTimeout(200);const cover=await snapshot();
+    assert.deepEqual(cover.person.hide_target.reference,second.person.route[0]);assert.equal(cover.person.intention,'seek cover');assert.equal(cover.mode,'guidance');assert.equal(cover.destination_label,'South-east bridge');
+    await page.locator('#decision-toggle').click();
+    await page.waitForFunction(()=>document.querySelectorAll('#decision-orders .decision-order').length===3);
+    assert.equal(await page.locator('#decision-tree .decision-node').count(),19);assert.ok(await page.locator('#decision-tree .decision-node.active').count()>3);
+    await page.locator('[data-decision="ascend"]').click();assert.match(await page.locator('#decision-detail').textContent(),/Climb above/);
+    const viewport=await page.locator('#viewport').boundingBox(),panel=await page.locator('#decision-panel').boundingBox();assert.ok(viewport.x+viewport.width<=panel.x);
+    await page.screenshot({path:'test-results/amsterdam-decision-tree.png'});
+    await page.waitForFunction(()=>document.querySelector('#person-status').textContent==='at bridge',{},{timeout:70000});
+    const escorted=await snapshot();assert.equal(escorted.reason,'flying');assert.equal(escorted.drones.length,3);assert.equal(escorted.tactics.state,'bridge_reached');assert.equal(escorted.metrics.collisions,0);
+    assert.ok(escorted.tactics.events.some(e=>e.state==='escort'));
+    const graphPage=await page.context().newPage();
+    graphPage.on('pageerror',e=>errors.push(e.message));
+    await graphPage.goto(await page.locator('#decision-graph-link').getAttribute('href').then(h=>new URL(h,page.url()).href));
+    await graphPage.waitForFunction(()=>document.querySelectorAll('.node').length===19);
+    await graphPage.locator('[data-id="decision:ascend"]').click();assert.match(await graphPage.locator('#properties').textContent(),/bounded altitude/);
+    await graphPage.screenshot({path:'test-results/amsterdam-full-decision-graph.png'});
+    await graphPage.locator('#graph-mode').click();await graphPage.waitForFunction(()=>document.querySelectorAll('.node').length>60);
+    assert.equal(await graphPage.locator('[data-id^="order:"]').count(),3);
+    await graphPage.close();await page.bringToFront();
+    await page.locator('#decision-close').click();
+    await page.locator('[data-camera="orbit"]').click();assert.equal(await page.locator('#draw-route').getAttribute('class'),'');
+    assert.deepEqual(errors,[]);console.log('PASS: Amsterdam render, mouse-drawn path, running, endpoint hide, H uses next target, leader + two wings, live decision graph, actual bridge arrival, orbit, three drones');
+  }finally{await browser.close();}
+})().catch(e=>{console.error(e);process.exitCode=1;});

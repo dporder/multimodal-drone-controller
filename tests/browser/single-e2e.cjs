@@ -1,0 +1,33 @@
+const {chromium}=require('playwright');
+const assert=require('node:assert/strict');
+const fs=require('node:fs/promises');
+(async()=>{
+ const browser=await chromium.launch({channel:'chrome',headless:true});
+ try{
+  const context=await browser.newContext({viewport:{width:1720,height:1120},acceptDownloads:true}),page=await context.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));
+  await page.goto('http://127.0.0.1:8766/browser/single/');
+  await page.waitForFunction(()=>Number(document.querySelector('#camera').dataset.frames)>5,{},{timeout:20000});
+  assert.equal(await page.locator('.rotor-row').count(),4);assert.equal(await page.locator('#viewport canvas').count(),1);
+  const image=await page.locator('#camera').evaluate(c=>{const a=c.getContext('2d').getImageData(0,0,c.width,c.height).data;let lo=255,hi=0;for(let i=0;i<a.length;i+=4){lo=Math.min(lo,a[i]);hi=Math.max(hi,a[i]);}return {range:hi-lo,objects:JSON.parse(c.dataset.objects)};});assert.ok(image.range>60);
+  const object=image.objects.find(o=>o.id==='orange-panel'),rect=await page.locator('#camera').boundingBox();assert.ok(object.bounds.w>5);await page.mouse.click(rect.x+(object.bounds.x+object.bounds.w/2)/480*rect.width,rect.y+(object.bounds.y+object.bounds.h/2)/270*rect.height);
+  await page.waitForFunction(()=>document.querySelector('#selected-label').textContent==='ORANGE');assert.match(await page.locator('#reference-label').textContent(),/captured/);
+  await page.locator('[data-task="find"]').click();await page.locator('#start').click();await page.waitForFunction(()=>document.body.dataset.state==='success',{},{timeout:15000});
+  await page.locator('#reset').click();await page.waitForFunction(()=>document.body.dataset.episode==='2');
+  await page.locator('[data-target="orange-panel"]').click();await page.locator('[data-task="touch"]').click();await page.locator('#start').click();
+  await fs.mkdir('test-results',{recursive:true});await page.screenshot({path:'test-results/single-drone-overview.png',fullPage:true});
+  await page.waitForFunction(()=>['success','fault'].includes(document.body.dataset.state),{},{timeout:100000});assert.equal(await page.locator('body').getAttribute('data-state'),'success');assert.match(await page.locator('#contact-status').textContent(),/contact confirmed/);
+  const download=page.waitForEvent('download');await page.locator('#export').click();const exported=JSON.parse(await fs.readFile(await(await download).path(),'utf8'));assert.equal(exported.kind,'single-drone-flight-dataset');assert.equal(exported.state.rotors.length,4);assert.ok(exported.records.length>50);assert.ok(exported.latest_rgb.startsWith('data:image/png'));assert.ok(exported.records.every(r=>r.camera_pose.time===r.time&&r.action.rotor_forces.length===4));assert.ok(exported.state.telemetry.contact_speed<=.25);assert.equal(exported.state.telemetry.collisions,0);
+  await page.screenshot({path:'test-results/single-drone-touch-complete.png',fullPage:true});
+  await page.locator('#view-drone').click();await page.waitForTimeout(1200);await page.screenshot({path:'test-results/single-drone-airframe.png',fullPage:true});await page.locator('#overview').click();
+  await page.locator('#play').click();await page.waitForTimeout(150);const paused=Number(await page.locator('body').getAttribute('data-time'));await page.waitForTimeout(300);assert.equal(Number(await page.locator('body').getAttribute('data-time')),paused);await page.locator('#step').click();await page.waitForTimeout(150);assert.ok(Math.abs(Number(await page.locator('body').getAttribute('data-time'))-paused-.05)<1e-6);
+  await page.locator('#mount').selectOption('underslung');assert.equal(await page.locator('#pitch').inputValue(),'-70');await page.locator('#airframe').selectOption('compact');await page.locator('#compute').selectOption('thor128');assert.match(await page.locator('#budget').textContent(),/Over payload/);await page.locator('#apply').click();await page.waitForFunction(()=>document.body.dataset.episode==='3');await page.locator('#start').click();await page.waitForFunction(()=>!document.querySelector('#toast').hidden);assert.match(await page.locator('#toast').textContent(),/Payload/);
+  // Exercise the actual camera -> adapter -> body-frame action -> physics path.
+  await page.locator('#airframe').selectOption('x650');await page.locator('#compute').selectOption('nx16');await page.locator('#mount').selectOption('front');await page.locator('#apply').click();await page.waitForFunction(()=>document.body.dataset.episode==='4');
+  const packets=[];let breakAdapter=false;
+  await page.route('http://127.0.0.1:8780/act',async route=>{if(breakAdapter)return route.abort();const headers={'Access-Control-Allow-Origin':'*','Access-Control-Allow-Headers':'content-type','Access-Control-Allow-Methods':'POST, OPTIONS'};if(route.request().method()==='OPTIONS')return route.fulfill({status:204,headers});const p=route.request().postDataJSON();packets.push(p);return route.fulfill({headers,contentType:'application/json',body:JSON.stringify({version:1,episode:p.episode,mission:p.mission,sequence:p.sequence,frame:'body_flu',velocity_mps:[.25,0,0],yaw_rate_rps:0,duration_s:.2})});});
+  await page.locator('#policy-mode').selectOption('external');await page.locator('#endpoint').fill('http://127.0.0.1:8780/act');await page.locator('#instruction').fill('Inspect the orange panel');await page.locator('#start').click();await page.waitForTimeout(1800);assert.ok(packets.length>=2);assert.ok(packets.every(p=>p.rgb.data.startsWith('data:image/png')&&p.camera.time===p.simulation_time&&p.action_contract.frame==='body_flu'));assert.equal('sceneObjects' in packets[0],false);
+  const tBefore=Number(await page.locator('body').getAttribute('data-time'));breakAdapter=true;await page.waitForTimeout(1200);assert.ok(Number(await page.locator('body').getAttribute('data-time'))>tBefore+.5);assert.match(await page.locator('#mission-status').textContent(),/fresh VLA action/);await page.locator('#hold').click();
+  await page.setViewportSize({width:390,height:844});await page.waitForTimeout(500);assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);await page.screenshot({path:'test-results/single-drone-mobile.png',fullPage:true});
+  assert.deepEqual(errors,[]);console.log(JSON.stringify({result:'PASS',camera_range:image.range,visual_reference:true,find:true,gentle_contact:exported.state.telemetry.contact_speed,contact_time:exported.time??exported.state.time,records:exported.records.length,rotors:4,mount:true,payload_check:true,external_adapter:packets.length,mobile:true,errors}));
+ }finally{await browser.close();}
+})().catch(e=>{console.error(e);process.exitCode=1;});
