@@ -57,7 +57,7 @@ HARM = re.compile(
     r"crash into|fly into|dive (?:at|into)|knock " + PERSON + r"? ?(?:down|over|out)|take " + PERSON + r" (?:down|out))\b")
 CORNER = re.compile(r"\b(corner|trap|pin|box in) " + PERSON + r"\b|\btrap " + PERSON)
 
-STOP_DOING = re.compile(r"\b(stop|quit|cease) (following|tracking|watching|chasing|pushing|driving|blocking|that)\b")
+STOP_DOING = re.compile(r"\b(stop|quit|cease) (following|tracking|watching|chasing|pushing|driving|blocking)\b|^(stop|quit|cease) (that|it)$")
 NOT_LET_IN = re.compile(r"\b(?:don't|dont|do not) let " + PERSON + r" (?:get |go |come )?(?:in|inside|enter|through|into)\b")
 NOT_LOSE = re.compile(r"\b(?:don't|dont|do not) (?:lose|let " + PERSON + r" (?:get away|escape|out of (?:your )?sight))\b")
 NEGATION = re.compile(r"\b(don't|dont|do not|never)\b")
@@ -80,6 +80,10 @@ KEEP = [
     re.compile(r"\b(guard|protect|defend|secure)\b"),
     re.compile(r"\bstop " + PERSON + r"\b.*\b(in|inside|entering|enter|getting in|going in)\b"),
     re.compile(r"\bdeny\b.*\b(entry|access|entrance)\b"),
+    # found by voice/sampler.py's mismatch report (12 Nov 2026)
+    re.compile(r"\bkeep " + PERSON + r" from\b"),
+    re.compile(r"\bstays? (?:out|away|outside)\b"),
+    re.compile(r"\bkeep the (?:building|warehouse|door|doors|entrance|site) (?:clear|empty|secure|safe)\b"),
 ]
 TRACK = [
     re.compile(r"\b(track|follow|shadow|tail|monitor|trail|pursue)\b"),
@@ -115,7 +119,8 @@ def _strip(clause):
 
 def _drop_correction_prefix(t):
     parts = [p.strip() for p in t.split(",")]
-    while len(parts) > 1 and _strip(parts[0]) in CORRECTIONS | {""}:
+    # drop "no, …" / "actually, …" only when something meaningful follows ("wait, now" means wait)
+    while len(parts) > 1 and _strip(parts[0]) in CORRECTIONS | {""} and _strip(" ".join(parts[1:])):
         parts = parts[1:]
     return ", ".join(parts)
 

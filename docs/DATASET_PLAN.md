@@ -103,6 +103,37 @@ Variety of layouts and phrasings matters more than tick count.
 - Paraphrases come from a model whose terms allow training on its outputs.
 - macOS voices are for internal tests only.
 
+## Generating data today (milestone 1, Swarm Mind)
+
+```
+voice/.venv/bin/python voice/sampler.py --episodes 200 --seed 0 --out output/dataset/run1   # order schedules + parser report
+node simulators/tools/generate.js --orders output/dataset/run1/orders.jsonl --baseline     # episodes, manifest, summary
+node simulators/tools/check_dataset.js output/dataset/run1                                   # every record against contract v0
+```
+
+**First run (12 November 2026, M1 MacBook):**
+
+Size and quality:
+- 200 episodes in 31 s on 7 worker threads: 24,198 plan records, 490 order events, 3 MB gzipped.
+- Every record matches contract v0.
+- Two runs with different worker counts give byte-identical files.
+
+Parser agreement with the sampler's intended orders:
+- 497/497 on seen phrasing templates.
+- 108/108 on a sweep of the 9 held-out templates.
+- Both numbers are optimistic: the grammar was fixed using this report's earlier mismatches.
+
+Outcomes, with the same seeds also run under the hold baseline (drones on their pads):
+
+| Goal active longest | Episodes | Breached | Left without breach | Hold baseline breached |
+|---|---|---|---|---|
+| keep out | 62 | 16% | 82% | 100% |
+| drive out | 67 | 10% | 82% | 100% |
+| track | 39 | 69% | 31% | 100% |
+| hold | 32 | 84% | 16% | 100% |
+
+These are Swarm Mind's outdoor yard and its scripted intruder. They prove the pipeline, not indoor tactics.
+
 ## Open questions for Prat
 
 1. Is "slot + vector every 0.5 s" the right output for NN1, or should NN1 emit time-stamped reference points, as the 10 November briefs recommend? `swarm-indoor` logs both.
