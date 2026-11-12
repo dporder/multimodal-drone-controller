@@ -39,6 +39,7 @@ The scripted "teacher" turns a goal plus what the drones currently see into a ta
   - M takes a vantage at least d_s from Î that covers the corridor approach.
   - Drones never advance on the person.
   - Two doors: one drone each; M doubles up wherever he comes within 4 m.
+  - **As built:** once he is in sight within 9 m (walking) of D*, all three drones *block*: they mass across his approach 1.6 m before the door, 1.1 m apart. One drone alone is easy to walk past, and every drone must give way at the standoff, so only massing can deter him.
 - **Done when:**
   - He enters (breach): failed, then hold.
   - He stays more than 6 m from the doors for 10 s: deterred.
@@ -55,12 +56,18 @@ The scripted "teacher" turns a goal plus what the drones currently see into a ta
   - At most 0.5 m/s within 4 m of him.
   - **Ethics flag:** approaches from behind are the least comfortable for people [17].
 - **Done when:** he is at least 1 m past the exit door, then hold. Failed after 90 s.
+- **As built:** the exit choice sticks unless another exit is at least 5 m closer for him, so the push does not flip between exits.
 - **Swarm Mind fix:** its current `driveout` reuses the keep-out formula. Our branch replaces it with this push.
 
 ### Guide out (civil default: evacuation, a lost visitor)
 - **Grounding:** in a simulated fire, all 26 participants followed a guide robot, even after seeing it fail. This shows the method works, and also the risk of over-trust [8].
 - **Geometry:** the leader flies 3 m ahead on the route to the exit, turned toward him. The followers trail at 3 m and keep line of sight through doors.
-- **Done when:** as for drive out.
+- **As built (changed after testing):**
+  - The followers fly ahead of him too (6.5 m and 9 m along the route), not behind. In a corridor they cannot pass him at the standoff, so a trailing slot deadlocked.
+  - The leader stays 4 m ahead, closer if needed to keep his line of sight.
+  - The exit is the nearest one the leader is already closer to than he is.
+  - Within 4.5 m of the exit, all three stand aside outside, either side of the door, so the way out is clear.
+- **Done when:** he is outside. Failed after 150 s.
 
 ### Track (relay chain, like Swarm Mind's "elastic strings")
 - **Grounding:**
@@ -82,7 +89,7 @@ The scripted "teacher" turns a goal plus what the drones currently see into a ta
 - **Geometry:**
   - Rooms at least 7 m across: a ring of radius 3 m at 120° spacing, rotated to fit the walls.
   - Smaller rooms: one drone just outside each door of his room, with M at the busiest door.
-- **Done when:** every drone has held its slot for 3 s. If he is lost: search.
+- **Done when:** every drone has held its slot for 3 s. If he is lost: search. **As built:** a standing goal; the 3 s check is not implemented yet.
 
 ### Search
 - **Doctrine:** *clear* [2].
@@ -109,6 +116,7 @@ The scripted "teacher" turns a goal plus what the drones currently see into a ta
   - Each drone takes the frontier cluster that maximizes value − β·path.
   - Drones fly only through known-free cells.
 - **Done when:** no reachable frontier of at least 0.5 m² is left.
+- **As built:** a frontier counts from 4 cells (0.8 m), because a doorway into an unseen room is only 5 cells wide; only the building is mapped, not the outside; the drones first take off and look around.
 
 ### Overwatch
 - **Doctrine:** *overwatch* and bounding overwatch [2].
@@ -156,6 +164,39 @@ No public study shows how an *unwilling* person reacts to drones; all the eviden
   - T_resolve: 10–60 s (patience before giving up).
 - **Margin:** a metric-only field records whether a formation could stop him at all, so impossible cases are not counted as teacher errors.
 - **Review:** these tactics are grounded but not validated by a practitioner. A review by a search-and-rescue, police or security professional is planned.
+
+## As built in `simulators/swarm-indoor`, and how well it works (12 November 2026)
+
+**On-board safety layer.** The teacher only places slots. Each drone's flight layer also enforces the envelope:
+- **Person in sight:** it backs away whenever the person is within d_s plus a buffer of 0.2 m + 0.6 s × his closing speed, and sidesteps out of his path. Near a person it may fly at up to 2.5 m/s to get clear.
+- **Walls and neighbours:** wall repulsion; separation has priority, so a drone never closes on a neighbour within 0.9 m.
+- **Doorways:** one drone per doorway at a time; a drone reroutes after 2 s if a doorway is occupied by a parked drone.
+- **Take-off:** no take-off while a person is within d_s + 0.5 m.
+
+**Outcomes on the fixed office floor** (`node simulators/tests/indoor.test.js`). The baseline is the same seeds with the drones on their pads.
+- Intruders get 0–15 s of warning; the first order comes at 1 s.
+- An intruder counts as **deterrable** if all three drones at 3 m could stop him under his hidden parameters. That is k_fear·3·(R_react/3 − 1) ≥ 1, true for about 40% of sampled people.
+
+| Goal | Result | Baseline |
+|---|---|---|
+| Keep out (12 intruders) | 9 breached; 2 of 7 deterrable kept out | 12 breached |
+| Drive out (12 intruders) | 8 breached; 3 of 7 deterrable kept out | 12 breached |
+| Guide out (8 lost visitors) | 5 outside within 180 s | 0 |
+| Search (8 hiders) | 8 found | 0 |
+| Map the floor (6 runs) | 5 at least 90% mapped within 180 s | — |
+| Track (8 intruders) | in view 42% of the time | 0% |
+| Return (3) | all landed | — |
+| Safety (all of the above) | no separation, wall or altitude violations; drones never moved toward a person within 2 m for more than 0.5 s | — |
+
+**What this does and does not show:**
+- **Keep out and drive out mostly measure our person model.** A drone that must give way at 2.5 m cannot physically stop anyone, so success depends on whether he is put off. With the parameter ranges above, most people are not put off even by all three drones. The plan's target was keep-out breaches 30 points below the baseline. We reach about 20–25 points on 40 seeds, so results are reported split by "deterrable". If practitioners say real intruders are more easily deterred, the ranges should change, not the tactic.
+- **Corridors are narrower than the standoff.** A person running past a drone in a 2.4 m corridor comes within 2 m even while the drone gives way. Those seconds are counted separately from a drone moving toward a person, which would be a teacher error.
+- **Tracking is weak** (about 45% in view). The tracker slows to 0.5 m/s in doorways and waits for door locks, so it falls behind when he turns into a room.
+- **Search is not exhaustive below level 5.** A room is cleared at the level's coverage, so a hider can be missed in the uncovered part (once in about 1,250 unseen ticks in the tests).
+- **The visitor model is ours.** The visitor follows the lead drone when it is within 6 m and in sight, and stops 3 m from it.
+- **Bugs found and fixed while testing:**
+  - Walking distances to doors were computed with a float32 rounding bug that cut them off about 3 m from each door. This broke door choice, drive-out routing and guide-out.
+  - The "could he be here" rooms used room-centre distances, so a man last seen at a doorway could be ruled out of the room beside him. The belief test now guards both.
 
 ## Sources (checked 12 November 2026)
 

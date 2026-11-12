@@ -7,6 +7,7 @@
     python main.py mind --port 9000
     python main.py mind --headless 300   # physics only, no browser, 300 simulated seconds (needs node)
     python main.py --voice               # [dan] also start the offline speech server: hold Space and say an order
+    python main.py indoor --voice        # [dan] the indoor simulator (rooms, doors, line of sight) with orders by voice
 
 The page is served from a local HTTP server so the Live brain link (websocket)
 works and the browser treats it as a normal site. Ctrl-C stops the server.
@@ -21,7 +22,7 @@ import threading
 import webbrowser
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-SIMS = {"mind": "swarm-mind", "seek": "swarm-seek", "guard": "swarm-guard"}
+SIMS = {"mind": "swarm-mind", "seek": "swarm-seek", "guard": "swarm-guard", "indoor": "swarm-indoor"}  # [dan] indoor
 
 
 def start_voice(port: int):
