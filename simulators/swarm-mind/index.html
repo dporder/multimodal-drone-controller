@@ -28,6 +28,7 @@
   .btn{border:1px solid var(--line2);background:rgba(255,255,255,.02);color:var(--text);padding:6px 9px;border-radius:9px;font:inherit;font-size:11.5px;cursor:pointer;white-space:nowrap}
   .btn:hover{background:rgba(255,255,255,.05)}
   .btn.on{background:rgba(52,211,153,.16);color:#bbf7d0;box-shadow:inset 0 0 0 1px rgba(52,211,153,.4)}
+.btn.rec{background:rgba(251,113,133,.22);color:#fecdd3;box-shadow:inset 0 0 0 1px rgba(251,113,133,.6)}
   .btn.danger.on{background:rgba(251,113,133,.16);color:#fecdd3;box-shadow:inset 0 0 0 1px rgba(251,113,133,.4)}
   .spacer{flex:1}
   .k{font-size:10px;color:var(--muted);letter-spacing:.08em;text-transform:uppercase}
@@ -117,6 +118,7 @@
       <div class="seg goal" id="goalseg"><button data-goal="keepout" class="on">Keep him out</button><button data-goal="driveout">Drive him out</button><button data-goal="track">Track him</button><button data-goal="hold">Hold</button></div>
       <div class="seg" id="srcseg"><button data-src="keys" class="on">Keys</button><button data-src="sim">Sim BCI</button><button data-src="replay">Log</button><button data-src="live">Live</button></div>
       <button class="btn" id="voice">Voice off</button>
+      <button class="btn" id="talkbtn" title="Hold Space, or hold this button, and say an order">Talk · hold Space</button><!-- [dan] push-to-talk -->
       <div class="spacer"></div>
       <div class="seg" id="modeseg"><button data-mode="mind" class="on">Mind</button><button data-mode="mouse">Mouse</button><button data-mode="wander">Wander</button></div>
       <button class="btn" id="auto">Pulses off</button>
@@ -127,10 +129,13 @@
     </div>
     <div id="hud" class="glass"><div id="cmd">·</div><div id="hudinfo"></div></div>
     <div id="status" class="glass"></div>
-    <div id="hint" class="glass">1 2 3 4 goals · ← → rotate formation · click ground: move him · c chase · p pause · r reset</div>
+    <div id="hint" class="glass">hold Space: say an order · 1 2 3 4 goals · ← → rotate formation · click ground: move him · c chase · p pause · r reset</div>
   </div>
   <aside id="panel">
     <section><div class="tiles" id="metrics"></div></section>
+    <section><h3>Orders by voice <span id="speechstat" class="small" style="font-weight:400;margin-left:6px;text-transform:none;letter-spacing:0"></span></h3><!-- [dan] -->
+      <div class="src"><input type="text" id="ordertxt" placeholder="…or type one: drive him out" style="flex:1"><button class="btn" id="ordersend">Send</button></div>
+      <div id="speechlast" class="small"></div></section>
     <section><h3>Conversation <button class="btn" id="narrate" style="padding:2px 8px;font-size:10px">every tick</button></h3><div id="talk"></div></section>
     <section><h3>Drones · vector from master → rotor layer</h3><div id="cards"></div></section>
     <section><h3>Map</h3><canvas id="mini" class="chart" width="480" height="440"></canvas></section>
@@ -815,6 +820,53 @@ $('#top').addEventListener('click',()=>{ chase=false; Object.assign(cam,{theta:0
 $('#chase').addEventListener('click',()=>{ chase=true; cam.r=24; cam.phi=1.0; for(const b of ['#orbit','#top','#chase'])$(b).classList.toggle('on',b==='#chase'); });
 $('#replayload').addEventListener('click',()=>{ const f=$('#replayfile').files[0]; if(f){ f.text().then(t=>{ $('#replaytxt').value=t; brain.loadReplay(t); }); } else brain.loadReplay($('#replaytxt').value); });
 $('#wsconnect').addEventListener('click',()=>{ try{ if(brain.ws){ brain.ws.close(); brain.ws=null; } const ws=new WebSocket($('#wsurl').value); brain.liveState='connecting'; ws.onopen=()=>{ brain.liveState='connected'; logLine('Live link connected.','good'); }; ws.onclose=()=>{ brain.liveState='closed'; }; ws.onerror=()=>{ brain.liveState='failed'; logLine('Live link failed. The hosted page cannot open sockets; run the page from a local file.','alert'); }; ws.onmessage=ev=>{ let c=String(ev.data).trim(); try{ const j=JSON.parse(c); if(j&&j.cmd)c=String(j.cmd); }catch(_){ } c=c.toUpperCase()[0]; if('LRN'.indexOf(c)>=0)brain.issue(c,'live'); }; brain.ws=ws; }catch(err){ brain.liveState='failed'; logLine('Live link failed: '+err.message,'alert'); } });
+// ---------- [dan] orders by voice: push-to-talk -> local speech server (voice/server.py) -> world.order ----------
+// The mic opens on the first Talk press. Audio is captured at the context's native rate with a 300 ms pre-roll,
+// downsampled to 16 kHz, wrapped as 16-bit WAV and sent with what the swarm currently knows (goal, sighting, inside).
+const speech={url:'ws://localhost:8765',ws:null,state:'offline',model:'',id:0,sent:{},rec:false,stopping:false,want:false,ctx:null,rate:16000,pre:[],buf:[],retry:1000};
+const TAP='class Tap extends AudioWorkletProcessor{process(i){const c=i[0]&&i[0][0];if(c)this.port.postMessage(c.slice(0));return true;}}registerProcessor("tap",Tap);';
+function speechContext(){ return {goal:mission.goal,version:mission.version,intruder:{alive:intruder.alive,seen:!!intruder.seen,inside:!!intruder.inside,state:intruder.state},sim_t:+simT.toFixed(2)}; }
+function speechUI(){ const s=speech.state; $('#speechstat').textContent=s==='ready'?'· ready · offline '+speech.model:s==='listening'?'· listening…':s==='thinking'?'· recognizing…':s==='connecting'?'· connecting…':'· speech server off (run python main.py --voice)'; $('#talkbtn').classList.toggle('rec',s==='listening'); }
+function speechConnect(){ if(speech.ws&&speech.ws.readyState<=1)return; let ws; try{ ws=new WebSocket(speech.url); }catch(err){ speech.state='offline'; speechUI(); return; }
+  speech.ws=ws; speech.state='connecting'; speechUI();
+  ws.onopen=()=>{ speech.retry=1000; speech.state='ready'; ws.send(JSON.stringify({type:'hello',sim:'swarm-mind'})); speechUI(); };
+  ws.onclose=()=>{ speech.ws=null; speech.state='offline'; speechUI(); setTimeout(speechConnect,speech.retry); speech.retry=Math.min(10000,speech.retry*2); };
+  ws.onmessage=ev=>{ let m; try{ m=JSON.parse(ev.data); }catch(_){ return; } if(m.type==='hello'){ speech.model=m.asr||''; speechUI(); } else if(m.type==='decision')applyDecision(m); }; }
+function highlightGoal(g){ for(const b of $('#goalseg').children)b.classList.toggle('on',b.dataset.goal===g); }
+function applyDecision(m){ const t0=speech.sent[m.id]; delete speech.sent[m.id]; const rt=t0!=null?Math.round(performance.now()-t0):null; if(speech.state==='thinking')speech.state='ready';
+  const heard=m.transcript||'';
+  if(m.action==='accept'&&m.goal){ world.order(m.goal,heard||null,m.source); highlightGoal(m.goal); if(m.queued)say('master','Queued next: '+GOALS[m.queued]+'. Say "next" when ready.'); }
+  else if(m.action==='accept'&&m.turn){ brain.issue(m.turn,'voice'); }
+  else if(m.action==='query'||m.action==='refuse'){ if(heard)say('you',heard); say('master',m.reply); }
+  const tm=m.timings||{}; const what=m.action==='accept'?(m.goal?GOALS[m.goal]+' (v'+mission.version+')':'rotate '+(m.turn==='L'?'left':'right')):m.action==='ignore'?'nothing heard'+(m.skipped?' ('+m.skipped+')':''):m.action;
+  $('#speechlast').innerHTML=(heard?'“'+heard.replace(/</g,'&lt;')+'” → ':'')+'<b>'+what+'</b>'+(m.source==='speech'?' · speech '+(tm.audio_s||0).toFixed(1)+' s · recognition '+(tm.asr_ms||0)+' ms':'')+(rt!=null?' · release → order '+rt+' ms':'');
+  speechUI(); }
+function sendOrder(payload){ if(!speech.ws||speech.ws.readyState!==1){ speech.state='offline'; speechUI(); logLine('Speech server not running: start it with python main.py --voice.','alert'); return false; }
+  payload.id=++speech.id; payload.context=speechContext(); speech.sent[payload.id]=performance.now(); speech.ws.send(JSON.stringify(payload)); return true; }
+async function micOpen(){ if(speech.ctx)return true; try{
+    const stream=await navigator.mediaDevices.getUserMedia({audio:{channelCount:1,echoCancellation:true,noiseSuppression:true,autoGainControl:true}});
+    const ctx=new AudioContext(); await ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([TAP],{type:'application/javascript'})));
+    const node=new AudioWorkletNode(ctx,'tap'); const mute=ctx.createGain(); mute.gain.value=0; ctx.createMediaStreamSource(stream).connect(node); node.connect(mute); mute.connect(ctx.destination);
+    speech.rate=ctx.sampleRate; const preMax=Math.round(0.3*ctx.sampleRate);
+    node.port.onmessage=e=>{ const f=e.data; if(speech.rec)speech.buf.push(f); else { speech.pre.push(f); let n=0; for(const p of speech.pre)n+=p.length; while(n>preMax&&speech.pre.length>1){ n-=speech.pre[0].length; speech.pre.shift(); } } };
+    speech.ctx=ctx; return true;
+  }catch(err){ logLine('Microphone unavailable: '+err.message,'alert'); $('#speechlast').textContent='Microphone unavailable ('+err.message+'). Type the order instead, or open the page in Chrome.'; return false; } }
+function toWav16k(chunks,rate){ let n=0; for(const c of chunks)n+=c.length; const x=new Float32Array(n); let o=0; for(const c of chunks){ x.set(c,o); o+=c.length; }
+  const r=rate/16000, m=Math.floor(n/r), y=new Int16Array(m);
+  for(let i=0;i<m;i++){ const a=Math.floor(i*r), b=Math.max(a+1,Math.floor((i+1)*r)); let s=0; for(let k=a;k<b&&k<n;k++)s+=x[k]; const v=Math.max(-1,Math.min(1,s/(b-a))); y[i]=v<0?v*32768:v*32767; } // box filter, then decimate
+  const buf=new ArrayBuffer(44+y.length*2), dv=new DataView(buf); const w=(o,s)=>{ for(let i=0;i<s.length;i++)dv.setUint8(o+i,s.charCodeAt(i)); };
+  w(0,'RIFF'); dv.setUint32(4,36+y.length*2,true); w(8,'WAVE'); w(12,'fmt '); dv.setUint32(16,16,true); dv.setUint16(20,1,true); dv.setUint16(22,1,true); dv.setUint32(24,16000,true); dv.setUint32(28,32000,true); dv.setUint16(32,2,true); dv.setUint16(34,16,true); w(36,'data'); dv.setUint32(40,y.length*2,true);
+  new Int16Array(buf,44).set(y); return buf; }
+function b64(buf){ const u=new Uint8Array(buf); let s=''; for(let i=0;i<u.length;i+=0x8000)s+=String.fromCharCode.apply(null,u.subarray(i,i+0x8000)); return btoa(s); }
+async function talkStart(){ if(speech.rec||speech.stopping)return; speech.want=true; if(!(await micOpen()))return; if(!speech.want)return; if(speech.ctx.state==='suspended')await speech.ctx.resume(); speech.buf=speech.pre.slice(); speech.pre=[]; speech.rec=true; speech.state='listening'; speechUI(); }
+function talkStop(){ speech.want=false; if(!speech.rec||speech.stopping)return; speech.stopping=true;
+  setTimeout(()=>{ speech.rec=false; speech.stopping=false; const chunks=speech.buf; speech.buf=[]; if(sendOrder({type:'order_audio',wav_b64:b64(toWav16k(chunks,speech.rate))}))speech.state='thinking'; speechUI(); },150); } // a 150 ms tail keeps the last syllable
+$('#talkbtn').addEventListener('pointerdown',e=>{ e.preventDefault(); talkStart(); }); for(const ev of ['pointerup','pointerleave','pointercancel'])$('#talkbtn').addEventListener(ev,()=>talkStop());
+window.addEventListener('keydown',e=>{ if(e.code!=='Space'||['INPUT','SELECT','TEXTAREA'].includes(e.target.tagName))return; e.preventDefault(); if(!e.repeat)talkStart(); });
+window.addEventListener('keyup',e=>{ if(e.code!=='Space'||['INPUT','SELECT','TEXTAREA'].includes(e.target.tagName))return; e.preventDefault(); talkStop(); });
+const sendTyped=()=>{ const t=$('#ordertxt').value.trim(); if(!t)return; if(sendOrder({type:'order_text',text:t}))$('#ordertxt').value=''; };
+$('#ordersend').addEventListener('click',sendTyped); $('#ordertxt').addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); sendTyped(); } });
+speechConnect(); speechUI();
 // sweep
 const sweepC=$('#sweepc'), sweepCtx=sweepC.getContext('2d'); let sweepRes={auto:[],bci:[]}; let sweeping=false;
 function drawSweep(){ const w=sweepC.width,h=sweepC.height; const ctx=sweepCtx; ctx.clearRect(0,0,w,h); const pad={l:36,r:10,t:10,b:22}; const bs=[0,0.05,0.1,0.2,0.3,0.45]; const X=B=>pad.l+(w-pad.l-pad.r)*B/0.45, Y=c=>h-pad.b-(h-pad.t-pad.b)*c;
