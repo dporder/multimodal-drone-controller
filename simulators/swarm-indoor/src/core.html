@@ -317,7 +317,7 @@ function tKeepout(I){
       for(let k=1;gate.length<offs.length;k++){ const q=nearestFreeNav(FLY,c.x+gx*1.0*k,c.z+gz*1.0*k,0.6)||{x:c.x+gx*1.0*k,z:c.z+gz*1.0*k}; gate.push(q); }
       const pts=gate.map(q=>at(q,y)); if(pts.length<3)pts.push(second);
       return {key:'block',text:'block his way to the '+Dstar.name,pts:[pts[0],pts[1],pts[2]],door:Dstar.id,room:P,yawTo:I}; } }
-  return {key:'barrier',text:'screen the '+Dstar.name+(others.length?' and the '+others[0].name:''),pts:[watch,screen,second],door:Dstar.id,room:P,yawTo:I||{x:Dstar.x+n.x*3,z:Dstar.z+n.z*3}};
+  return {key:'barrier',text:'screen the '+Dstar.name+(others.length?' and the '+others[0].name:''),pts:[watch,screen,second],door:Dstar.id,room:P,yawTo:I||team.lkp||{x:Dstar.x+n.x*3,z:Dstar.z+n.z*3}}; // unseen: watch where he was last known (a door sensor counts), not straight out of the door
 }
 function tDrive(I,guide){
   if(mission.exitId==null||simT-(mission.exitT||-9)>3){ let ne=mission.params.exit!=null?mission.params.exit:nearestExit(I).id;

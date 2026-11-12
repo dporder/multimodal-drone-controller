@@ -40,6 +40,7 @@ The scripted "teacher" turns a goal plus what the drones currently see into a ta
   - Drones never advance on the person.
   - Two doors: one drone each; M doubles up wherever he comes within 4 m.
   - **As built:** once he is in sight within 9 m (walking) of D*, all three drones *block*: they mass across his approach 1.6 m before the door, 1.1 m apart. One drone alone is easy to walk past, and every drone must give way at the standoff, so only massing can deter him.
+  - **As built:** while he is unseen, the cameras watch his last known position (a door sensor counts), not straight out of the door. Before this fix, an intruder walking down the corridor was often never seen.
 - **Done when:**
   - He enters (breach): failed, then hold.
   - He stays more than 6 m from the doors for 10 s: deterred.
@@ -186,10 +187,12 @@ No public study shows how an *unwilling* person reacts to drones; all the eviden
 | Map the floor (6 runs) | 5 at least 90% mapped within 180 s | — |
 | Track (8 intruders) | in view 42% of the time | 0% |
 | Return (3) | all landed | — |
+| Keep out, 40 intruders | 28 breached; 10 of 20 deterrable kept out | 39 breached |
+| Drive out, 40 intruders | 25 breached; 10 of 20 deterrable kept out | 39 breached |
 | Safety (all of the above) | no separation, wall or altitude violations; drones never moved toward a person within 2 m for more than 0.5 s | — |
 
 **What this does and does not show:**
-- **Keep out and drive out mostly measure our person model.** A drone that must give way at 2.5 m cannot physically stop anyone, so success depends on whether he is put off. With the parameter ranges above, most people are not put off even by all three drones. The plan's target was keep-out breaches 30 points below the baseline. We reach about 20–25 points on 40 seeds, so results are reported split by "deterrable". If practitioners say real intruders are more easily deterred, the ranges should change, not the tactic.
+- **Keep out and drive out mostly measure our person model.** A drone that must give way at 2.5 m cannot physically stop anyone, so success depends on whether he is put off. With the parameter ranges above, most people are not put off even by all three drones. The plan's target was keep-out breaches 30 points below the baseline. We reach about 27 points on 40 seeds (28 against 39 breached), so results are reported split by "deterrable". If practitioners say real intruders are more easily deterred, the ranges should change, not the tactic.
 - **Corridors are narrower than the standoff.** A person running past a drone in a 2.4 m corridor comes within 2 m even while the drone gives way. Those seconds are counted separately from a drone moving toward a person, which would be a teacher error.
 - **Tracking is weak** (about 45% in view). The tracker slows to 0.5 m/s in doorways and waits for door locks, so it falls behind when he turns into a room.
 - **Search is not exhaustive below level 5.** A room is cleared at the level's coverage, so a hider can be missed in the uncovered part (once in about 1,250 unseen ticks in the tests).

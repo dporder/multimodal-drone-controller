@@ -104,7 +104,8 @@ HEAD = r'''<!DOCTYPE html>
   .tiles{grid-template-columns:repeat(4,1fr)}
   #talk{max-height:320px}
   #rooms div{white-space:normal}
-  @media (max-width:980px){ #hud{bottom:96px} }
+  @media (max-width:980px){ html,body{height:auto} #app{height:auto;grid-template-rows:max(62vh,460px) auto} #hud{bottom:96px} }
+  @media (max-height:560px) and (min-width:981px){ html,body{height:auto} #app{height:auto;min-height:560px} }
 </style>
 </head>
 <body>
