@@ -5,6 +5,9 @@
 const fs = require('fs'), path = require('path'), zlib = require('zlib');
 const dir = process.argv[2] || 'output/dataset/run1';
 const isVec3 = v => Array.isArray(v) && v.length === 3 && v.every(Number.isFinite);
+// a floor: its family, source and licence, and every room as one or more rectangles [x0, z0, x1, z1] inside the floor
+const floorOk = F => !!F && typeof F.family === 'string' && typeof F.source === 'string' && typeof F.licence === 'string' && Number.isInteger(F.home) &&
+  Array.isArray(F.protectable) && F.rooms.every(q => Array.isArray(q.rects) && q.rects.length > 0 && q.rects.every(x => x.length === 4 && x.every(Number.isFinite) && x[0] < x[2] && x[1] < x[3] && x[2] <= F.W && x[3] <= F.D));
 const errs = []; const count = { header: 0, plan: 0, order: 0, outcome: 0 };
 const need = (ok, msg) => { if (!ok && errs.length < 30) errs.push(msg); };
 const files = fs.readdirSync(path.join(dir, 'episodes')).filter(f => f.endsWith('.jsonl.gz')).sort();
@@ -36,7 +39,7 @@ for (const f of files) {
   let lastT = -1, lastV = -1;
   for (const r of recs) {
     count[r.type] = (count[r.type] || 0) + 1;
-    if (r.type === 'header') need(r.schema === 'dmc.contract.v0' && Number.isInteger(r.seed) && Array.isArray(r.doors) && Array.isArray(r.orders) && (!indoor || (r.map && r.perception && r.floor_role)), `${f}: bad header`);
+    if (r.type === 'header') need(r.schema === 'dmc.contract.v0' && Number.isInteger(r.seed) && Array.isArray(r.doors) && Array.isArray(r.orders) && (!indoor || (r.map && r.perception && r.floor_role && floorOk(r.floor))), `${f}: bad header`);
     if (r.type === 'order') need(typeof r.text === 'string' && r.intended && typeof r.applied === 'boolean' && r.situation, `${f}: bad order at ${r.t}`);
     if (r.type === 'plan') {
       need(r.t >= lastT, `${f}: time goes backwards at ${r.t}`); lastT = r.t;

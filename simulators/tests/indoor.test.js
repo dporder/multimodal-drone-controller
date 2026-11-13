@@ -2,7 +2,8 @@
 // [dan] Tests for the indoor simulator (simulators/swarm-indoor): floors, line of sight, belief, no-leak, records,
 // safety on true positions, outcome bands against the grounded baseline, and determinism.
 //   node simulators/tests/indoor.test.js
-// The bands are regression floors for today's teacher on the fixed office floor (docs/TACTICS.md has the numbers).
+// The bands are regression floors for today's teacher on the fixed office floor (docs/TACTICS.md has the numbers); the
+// family tests check every floor family for reachability, doors, line of sight, and safety under every order.
 'use strict';
 const fs = require('fs');
 const path = require('path');
@@ -242,11 +243,108 @@ test('same seed gives identical records, also after other episodes', () => {
   assert.strictEqual(JSON.stringify(S.getPlan().rooms), w1, 'random floors depend only on the seed');
 });
 
+// ---------- every floor family (rooms are unions of rectangles; docs/DATASET_PLAN.md, "Layout families") ----------
+const FAM_SEEDS = [0, 1, 2, 3, 4, 5, 6, 7]; // 0 is the family's fixed floor
+function famReset(fam, sd, extra) { S.seed(1000 + sd); S.world.reset(Object.assign({ family: fam, layout: sd === 0 ? 'fixed' : 'random' }, extra || {})); return S.getPlan(); }
+const NAVM = 0.2;
+// flood fill over free cells of a 0.2 m grid from (x, z), optionally limited to a square of half-size `lim` around (cx, cz)
+function flood(G, grid, x, z, lim, cx, cz) {
+  const seen = new Uint8Array(grid.length), k0 = S.navIdx(x, z); if (grid[k0]) return seen; seen[k0] = 1; const st = [k0];
+  while (st.length) { const k = st.pop(), i = k % G.NX, j = (k - i) / G.NX;
+    for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { const ni = i + di, nj = j + dj; if (ni < 0 || nj < 0 || ni >= G.NX || nj >= G.NZ) continue;
+      if (lim && (Math.abs((ni + 0.5) * NAVM - cx) > lim || Math.abs((nj + 0.5) * NAVM - cz) > lim)) continue;
+      const kk = nj * G.NX + ni; if (!seen[kk] && !grid[kk]) { seen[kk] = 1; st.push(kk); } } }
+  return seen; }
+function roomsIn(G, seen) { const rooms = new Set(); for (let k = 0; k < seen.length; k++) if (seen[k]) { const i = k % G.NX, j = (k - i) / G.NX; rooms.add(S.roomAt((i + 0.5) * NAVM, (j + 0.5) * NAVM)); } return rooms; }
+const axes = d => d.axis === 'h' ? { n: { x: 0, z: 1 }, t: { x: 1, z: 0 } } : { n: { x: 1, z: 0 }, t: { x: 0, z: 1 } };
+
+test('every family: rooms reachable by air from the pads and on foot from every exit, every door passable both ways, pads free, search points in every room', () => {
+  const sizes = {};
+  for (const fam of S.FAMILIES) for (const sd of FAM_SEEDS) {
+    const P = famReset(fam, sd), G = S.grids(), tag = `${fam} seed ${sd}`;
+    assert.strictEqual(P.family, fam);
+    assert.ok(P.rooms.length >= 1 && P.doors.some(d => d.rooms[1] === P.OUT), `${tag}: no rooms or no exit`);
+    assert.ok(P.protectable.includes(P.protect) && P.rooms[P.home], `${tag}: protected or home room missing`);
+    for (const p of P.pads) { assert.ok(!G.FLY[S.navIdx(p.x, p.z)], `${tag}: a pad is not free to fly`); assert.strictEqual(S.roomAt(p.x, p.z), P.home, `${tag}: a pad is outside the home room`); }
+    const fly = roomsIn(G, flood(G, G.FLY, P.pads[1].x, P.pads[1].z));
+    for (const q of P.rooms) {
+      assert.ok(fly.has(q.id), `${tag}: the ${q.name} cannot be reached by air`);
+      assert.ok(S.COVP[q.id].length > 0, `${tag}: the ${q.name} has no search coverage points`);
+    }
+    for (const e of P.doors.filter(d => d.rooms[1] === P.OUT)) {
+      const { n } = axes(e), s = S.roomAt(e.x + n.x * 0.5, e.z + n.z * 0.5) === P.OUT ? 1 : -1;
+      const walk = roomsIn(G, flood(G, G.WALK, e.x + s * n.x * 1.2, e.z + s * n.z * 1.2));
+      for (const q of P.rooms) assert.ok(walk.has(q.id), `${tag}: the ${q.name} cannot be reached on foot from the ${e.name}`);
+    }
+    for (const d of P.doors) {
+      const { n } = axes(d), a = { x: d.x - 0.6 * n.x, z: d.z - 0.6 * n.z }, b = { x: d.x + 0.6 * n.x, z: d.z + 0.6 * n.z };
+      assert.ok(G.DZONE[S.navIdx(d.x, d.z)] === d.id + 1, `${tag}: the ${d.name} has no door zone`);
+      for (const [grid, how] of [[G.FLY, 'by air'], [G.WALK, 'on foot']]) {
+        const f = flood(G, grid, a.x, a.z, 1.6, d.x, d.z);
+        assert.ok(f[S.navIdx(a.x, a.z)] && f[S.navIdx(b.x, b.z)], `${tag}: the ${d.name} cannot be passed ${how}`);
+      }
+    }
+    const z = sizes[fam] || (sizes[fam] = { n: 0, rooms: 0, area: 0 }); z.n++; z.rooms += P.rooms.length; z.area += P.rooms.reduce((s, q) => s + q.area, 0);
+  }
+  console.log('      ' + Object.entries(sizes).map(([f, z]) => `${f} ${(z.rooms / z.n).toFixed(1)} rooms ${(z.area / z.n).toFixed(0)} m2`).join(' · '));
+});
+
+test('every family: walls block sight between rooms, doorways do not, lintels block above 2 m', () => {
+  for (const fam of S.FAMILIES) for (const sd of [0, 1, 2, 3]) {
+    const P = famReset(fam, sd), tag = `${fam} seed ${sd}`; let walls = 0;
+    for (const d of P.doors) {
+      const { n, t } = axes(d);
+      assert.ok(S.los(d.x - 0.6 * n.x, 1.5, d.z - 0.6 * n.z, d.x + 0.6 * n.x, 1.5, d.z + 0.6 * n.z), `${tag}: no sight through the open ${d.name}`);
+      assert.ok(!S.los(d.x - 0.6 * n.x, 2.3, d.z - 0.6 * n.z, d.x + 0.6 * n.x, 2.3, d.z + 0.6 * n.z), `${tag}: sight over the ${d.name} lintel`);
+      for (const s of [-1, 1]) {
+        const o = d.w / 2 + 1.0, px = d.x + s * o * t.x, pz = d.z + s * o * t.z, a = { x: px - 0.6 * n.x, z: pz - 0.6 * n.z }, b = { x: px + 0.6 * n.x, z: pz + 0.6 * n.z };
+        const ra = S.roomAt(a.x, a.z), rb = S.roomAt(b.x, b.z);
+        if (ra < 0 || rb < 0 || ra === rb || S.heightAt(px, pz) < P.ceil - 0.01) continue; // past the end of this wall
+        if (P.doors.some(e => e !== d && Math.hypot(e.x - px, e.z - pz) < e.w / 2 + 0.8)) continue; // another door there
+        walls++; assert.ok(!S.los(a.x, 1.5, a.z, b.x, 1.5, b.z), `${tag}: sight through the wall beside the ${d.name}`);
+      }
+    }
+    assert.ok(walls > 0, `${tag}: no wall checked`);
+  }
+});
+
+test('every family: every tactic runs with no safety violation on true positions, finite labels and a sound belief', () => {
+  const goals = [['keepout', 'intruder'], ['driveout', 'intruder'], ['guideout', 'visitor'], ['track', 'intruder'], ['contain', 'intruder'], ['search', 'hider'], ['explore', 'hider'], ['overwatch', 'intruder'], ['return', 'visitor']];
+  let eps = 0, unseen = 0;
+  for (const fam of S.FAMILIES) for (const [k, [goal, who]] of goals.entries()) {
+    const sd = 101 + k + 10 * S.FAMILIES.indexOf(fam), tag = `${fam} ${goal} seed ${sd}`;
+    const { recs, M } = episode(sd, goal, who, { secs: 45, reset: { family: fam, layout: 'random' } });
+    const P = S.getPlan(); eps++;
+    for (const key of ['floorViol', 'sepViol', 'wallViol', 'altViol']) assert.strictEqual(+M[key].toFixed(2), 0, `${tag}: ${key} ${M[key].toFixed(2)} s`);
+    assert.ok(M.standoffApproach <= 0.5, `${tag}: a drone moved toward a person inside its band's limit for ${M.standoffApproach.toFixed(2)} s`);
+    // an intruder driven out ends the episode early; drones still on their pads land at once on return
+    assert.ok(recs.length >= (goal === 'return' ? 1 : 20), `${tag}: only ${recs.length} plan records`);
+    for (const r of recs) {
+      for (const v of r.label.vectors) assert.ok(v.every(Number.isFinite), `${tag}: a non-finite vector at t ${r.t}`);
+      const room = r.truth.person.room;
+      if (r.obs.seen || !r.truth.person.alive || !(room >= 0 && room < P.rooms.length) || !r.obs.belief_rooms.length || r.truth.estimate_from_fp) continue;
+      unseen++;
+      if (!r.obs.belief_rooms.includes(room) && r.obs.cleared.includes(room)) continue; // a partial search can miss a hidden person
+      assert.ok(r.obs.belief_rooms.includes(room), `${tag} t ${r.t}: he is in the ${P.rooms[room].name}, belief ${r.obs.belief_rooms.map(i => P.rooms[i].name)}`);
+    }
+  }
+  console.log(`      ${eps} episodes (${S.FAMILIES.length} families x 9 orders); belief checked on ${unseen} unseen ticks`);
+});
+
+test('every family: a random floor depends only on its seed', () => {
+  for (const fam of S.FAMILIES) {
+    const a = JSON.stringify(famReset(fam, 5)); famReset(fam, 6); famReset('office', 7);
+    assert.strictEqual(JSON.stringify(famReset(fam, 5)), a, `${fam}: the floor changed with the history`);
+    assert.notStrictEqual(JSON.stringify(famReset(fam, 6)), a, `${fam}: seeds 5 and 6 gave the same floor`);
+  }
+});
+
 let failed = 0;
-for (const t of tests) {
+const only = process.argv[2], run = tests.filter(x => !only || x.name.includes(only));
+for (const t of run) {
   const t0 = Date.now();
   try { t.fn(); console.log('ok   ', t.name, `(${Date.now() - t0} ms)`); }
   catch (e) { failed++; console.log('FAIL ', t.name, '\n      ', e.message); }
 }
-console.log(failed ? `${failed} of ${tests.length} failed` : `all ${tests.length} passed`);
+console.log(failed ? `${failed} of ${run.length} failed` : `all ${run.length} passed`);
 process.exit(failed ? 1 : 0);

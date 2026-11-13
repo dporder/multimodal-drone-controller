@@ -21,10 +21,15 @@ const C = {
   floor: 0, approach: 0, sepViol: 0, wallViol: 0, altViol: 0, passBy: 0, segments: 0,
 };
 const note = (k, msg) => { if (!C.worst[k]) C.worst[k] = msg; };
+// the same counts per floor family: each episode's increments are added to its family
+const FAMKEYS = ['ticks', 'vecBad', 'standoffBad', 'sepBad', 'boundsBad', 'altBad', 'refsBad', 'flicker', 'swaps', 'stuck', 'doorWait', 'sft', 'sftStuck', 'sftUnsafe', 'estTicks', 'estFromFP',
+  'falseFound', 'autoHold', 'hold', 'seen', 'floor', 'approach', 'sepViol', 'wallViol', 'altViol', 'passBy'];
+const F = {};
 
 for (const r of rows) {
   const recs = zlib.gunzipSync(fs.readFileSync(path.join(dir, r.file))).toString().trim().split('\n').map(l => JSON.parse(l));
   const H = recs[0], plans = recs.filter(x => x.type === 'plan'), out = recs[recs.length - 1];
+  const fam = r.family || (H.floor && H.floor.family) || 'office', before = Object.fromEntries(FAMKEYS.map(k => [k, C[k]])), errBefore = C.estErr.length;
   const W = H.floor.W, Dd = H.floor.D, ceil = H.floor.ceil;
   for (let k = 0; k < plans.length; k++) {
     const p = plans[k], L = p.label; C.ticks++;
@@ -73,6 +78,11 @@ for (const r of rows) {
   }
   if (out.segments) C.segments += out.segments.length; C.falseFound += out.false_found || 0;
   C.floor += out.floor_viol_s > 0; C.approach += out.standoff_approach_s > 0.5; C.sepViol += out.sep_viol_s > 0; C.wallViol += out.wall_viol_s > 0; C.altViol += out.alt_viol_s > 0; C.passBy += out.band_viol_s.comfort > 0;
+  const G = F[fam] || (F[fam] = Object.assign(Object.fromEntries(FAMKEYS.map(k => [k, 0])), { episodes: 0, test: 0, estErr: [], minPressure: null, minComfort: null, area: 0, rooms: 0 }));
+  for (const k of FAMKEYS) G[k] += C[k] - before[k];
+  G.estErr.push(...C.estErr.slice(errBefore)); G.episodes++; G.test += r.split === 'test'; G.rooms += H.floor.rooms.length;
+  G.area += H.floor.rooms.reduce((a, q) => a + (q.rects || [[q.x0, q.z0, q.x1, q.z1]]).reduce((b, x) => b + (x[2] - x[0]) * (x[3] - x[1]), 0), 0);
+  for (const [k, v] of [['minPressure', out.min_pressure], ['minComfort', out.min_comfort]]) if (v != null && (G[k] === null || v < G[k])) G[k] = v;
 }
 
 const share = n => n / C.ticks;
@@ -102,7 +112,14 @@ const gates = [
   { hard: false, name: 'automatic hold after an order finished (share of ticks)', value: +share(C.autoHold).toFixed(3), ok: share(C.autoHold) < 0.15 },
   { hard: false, name: 'hold, all causes (share of ticks)', value: +share(C.hold).toFixed(3), ok: share(C.hold) < 0.25 },
 ];
-const report = { dir, episodes: C.episodes, ticks: C.ticks, gates, standoff_checked: C.standoffChecked, jitter_p50: J50, jitter_by_template: jitterBy,
+const families = Object.fromEntries(Object.entries(F).sort().map(([f, G]) => [f, {
+  episodes: G.episodes, test: G.test, ticks: G.ticks, rooms: +(G.rooms / G.episodes).toFixed(1), floor_m2: Math.round(G.area / G.episodes),
+  label_rule_breaks: G.vecBad + G.standoffBad + G.sepBad + G.boundsBad + G.altBad + G.refsBad, sft: +(G.sft / G.ticks).toFixed(3), sft_stuck: G.sftStuck, sft_unsafe: G.sftUnsafe,
+  stuck: +(G.stuck / (3 * G.ticks)).toFixed(4), door_wait: +(G.doorWait / (3 * G.ticks)).toFixed(4), hold: +(G.hold / G.ticks).toFixed(3), auto_hold: +(G.autoHold / G.ticks).toFixed(3),
+  flicker: +(G.flicker / G.ticks).toFixed(4), seen: +(G.seen / G.ticks).toFixed(3), estimate_error_p95: q(G.estErr, 0.95) === null ? null : +q(G.estErr, 0.95).toFixed(2),
+  estimate_from_fp: +(G.estFromFP / Math.max(1, G.estTicks)).toFixed(4), episodes_below_floor: G.floor, episodes_closing_in: G.approach, episodes_sep_wall_alt: G.sepViol + G.wallViol + G.altViol,
+  min_pressure_m: G.minPressure, min_comfort_m: G.minComfort, comfort_pass_by_episodes: G.passBy }]));
+const report = { dir, episodes: C.episodes, ticks: C.ticks, gates, families, standoff_checked: C.standoffChecked, jitter_p50: J50, jitter_by_template: jitterBy,
   perception: { detections_true: C.tp, detections_false: C.fp, false_accepted: C.fpAccepted, estimate_error_p50: q(C.estErr, 0.5), estimate_error_p95: q(C.estErr, 0.95), searches_ended_on_a_false_positive: C.falseFound },
   obs: { seen: +share(C.seen).toFixed(3), estimate_only: +share(C.estimate).toFixed(3), unknown: +share(C.unknown).toFixed(3) },
   goals: C.goal, templates: C.template, bands: C.band, comfort_pass_by_episodes: C.passBy, examples: C.worst };
@@ -113,6 +130,13 @@ else {
   console.log(`observations: seen ${report.obs.seen}, estimate only ${report.obs.estimate_only}, unknown ${report.obs.unknown}; comfort pass-bys in ${C.passBy} episodes`);
   console.log(`perception (records' last frames): ${C.tp} true and ${C.fp} false detections (${C.fpAccepted} false ones confident enough to count); estimate error in sight p50 ${q(C.estErr, 0.5) && q(C.estErr, 0.5).toFixed(2)} m, p95 ${q(C.estErr, 0.95) && q(C.estErr, 0.95).toFixed(2)} m; searches ended on a false positive: ${C.falseFound}`);
   console.log('slot jitter p50/p95 by template:', Object.entries(jitterBy).map(([k, v]) => `${k} ${v.p50}/${v.p95}`).join(', '));
+  if (Object.keys(families).length) {
+    console.log('\nby floor family: episodes (test) · rooms · m2 · ticks | label rule breaks · sft share · sft stuck/unsafe · stuck · door queue · hold (auto) · flicker | seen · est. err p95 · from FP | ' +
+      'episodes below 1.2 m · closing in · sep/wall/alt · comfort pass-by | closest: pressure / comfort (m)');
+    for (const [f, x] of Object.entries(families)) console.log(`  ${f.padEnd(10)} ${String(x.episodes).padStart(4)} (${x.test}) · ${x.rooms} · ${x.floor_m2} · ${x.ticks} | ${x.label_rule_breaks} · ${x.sft} · ${x.sft_stuck}/${x.sft_unsafe} · ` +
+      `${x.stuck} · ${x.door_wait} · ${x.hold} (${x.auto_hold}) · ${x.flicker} | ${x.seen} · ${x.estimate_error_p95} · ${x.estimate_from_fp} | ${x.episodes_below_floor} · ${x.episodes_closing_in} · ${x.episodes_sep_wall_alt} · ` +
+      `${x.comfort_pass_by_episodes} | ${x.min_pressure_m == null ? '—' : x.min_pressure_m} / ${x.min_comfort_m == null ? '—' : x.min_comfort_m}`);
+  }
 }
 fs.writeFileSync(path.join(dir, 'quality.json'), JSON.stringify(report, null, 1));
 process.exit(gates.some(g => g.hard && !g.ok) ? 1 : 0);

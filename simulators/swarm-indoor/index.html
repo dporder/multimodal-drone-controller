@@ -25,6 +25,7 @@
   .seg button:hover{background:rgba(255,255,255,.05)}
   .seg button.on{background:rgba(34,211,238,.16);color:#bff6ff;box-shadow:inset 0 0 0 1px rgba(34,211,238,.35)}
   .seg.goal button.on{background:rgba(251,191,36,.16);color:#ffe9a8;box-shadow:inset 0 0 0 1px rgba(251,191,36,.4)}
+  select.sel{border:1px solid var(--line2);background:#121722;color:var(--text);padding:5px 7px;border-radius:9px;font:inherit;font-size:11.5px;cursor:pointer}
   .btn{border:1px solid var(--line2);background:rgba(255,255,255,.02);color:var(--text);padding:6px 9px;border-radius:9px;font:inherit;font-size:11.5px;cursor:pointer;white-space:nowrap}
   .btn:hover{background:rgba(255,255,255,.05)}
   .btn.on{background:rgba(52,211,153,.16);color:#bbf7d0;box-shadow:inset 0 0 0 1px rgba(52,211,153,.4)}
@@ -106,7 +107,8 @@
       <button class="btn" id="talkbtn" title="Hold Space, or hold this button, and say an order">Talk · hold Space</button>
       <div class="spacer"></div>
       <div class="seg" id="whoseg"><button data-who="intruder" class="on">Intruder</button><button data-who="visitor">Lost visitor</button><button data-who="hider">Hiding</button></div>
-      <div class="seg" id="layseg"><button data-lay="fixed" class="on">Office</button><button data-lay="random">Random floor</button></div>
+      <select class="sel" id="famsel" title="Floor family"><option value="office">Office</option><option value="house">House</option><option value="warehouse">Warehouse</option><option value="openplan">Open-plan office</option><option value="corridor">School or hospital</option><option value="retail">Shop</option><option value="single">Single room</option><option value="irregular">Irregular</option></select>
+      <div class="seg" id="layseg"><button data-lay="fixed" class="on">Fixed floor</button><button data-lay="random">Random floor</button></div>
       <button class="btn" id="play">Pause</button>
       <button class="btn" id="reset">Reset</button>
       <div class="seg" id="speed"><button data-s="1" class="on">1×</button><button data-s="2">2×</button><button data-s="4">4×</button></div>
@@ -120,7 +122,7 @@
     <section><h3>Orders by voice <span id="speechstat" class="small" style="font-weight:400;margin-left:6px;text-transform:none;letter-spacing:0"></span></h3>
       <div class="src"><input type="text" id="ordertxt" placeholder="…or type one: keep him out of the lab" style="flex:1"><button class="btn" id="ordersend">Send</button></div>
       <div id="speechlast" class="small"></div>
-      <p class="small">Try: “keep him out of the lab” · “drive him out the east exit” · “guide her out” · “track him” · “keep him in the kitchen” · “search the building thoroughly” · “map the floor” · “watch the main entrance” · “come back and land” · “search the building, then come back”.</p></section>
+      <p class="small" id="tryline">Try: “keep him out of the lab” · “drive him out the east exit” · “guide her out” · “track him” · “keep him in the kitchen” · “search the building thoroughly” · “map the floor” · “watch the main entrance” · “come back and land” · “search the building, then come back”.</p></section>
     <section><h3>Conversation</h3><div id="talk"></div></section>
     <section><h3>Drones</h3><div id="drones"></div></section>
     <section><h3>Rooms (search record)</h3><div id="rooms" class="log"></div></section>
@@ -162,63 +164,275 @@ const fmtV=v=>'('+(v.x>=0?'+':'')+v.x.toFixed(1)+', '+(v.y>=0?'+':'')+v.y.toFixe
 
 // ---------- floor plans ----------
 // Frame: x to the east, z to the south, y up, metres. A 2 m strip of "outside" surrounds the building.
-// Office family: north rooms (lab, office, kitchen), a corridor, south rooms (lobby, storage, meeting room), 3 exits.
-// makeOffice(null) is the fixed reference floor; makeOffice(rng) randomizes sizes, door positions and widths, furniture, ceiling.
+// One plan format for every floor: a room is a union of axis-aligned rectangles (so L-shaped and irregular rooms work), a door
+// sits on the wall between two rooms or between a room and outside, furniture is boxes with a height. A plan also names the
+// drones' home room and pads, the operator, the default protected room, the rooms worth protecting, and its source and licence.
+// Single-level families: office, house (house or apartment), warehouse, openplan (open-plan office), corridor (school or
+// hospital), retail, single (one room, sometimes L-shaped) and irregular (L-shaped rooms). makeFloor(family, null) is the
+// family's fixed floor; makeFloor(family, rng) draws sizes, room and door counts, door positions and widths, furniture, ceiling.
 const CELL=0.1, NAV=0.2, MARGIN=2.0;
+const FAMILIES=['office','house','warehouse','openplan','corridor','retail','single','irregular'];
+function makeFloor(family,r){
+  const f={office:makeOffice,house:makeHouse,warehouse:makeWarehouse,openplan:makeOpenPlan,corridor:makeCorridorBuilding,retail:makeRetail,single:makeSingleRoom,irregular:makeIrregular}[family||'office'];
+  if(!f)throw new Error('unknown floor family '+family);
+  return Object.assign(f(r),{source:'procedural',licence:'MIT (this repository)'}); }
+function floorKit(r){
+  const J=(a,b)=>r?a+(b-a)*r():(a+b)/2;
+  const I=(a,b)=>r?Math.min(b,a+Math.floor(r()*(b-a+1))):Math.round((a+b)/2);
+  const pick=a=>r?a[Math.min(a.length-1,Math.floor(r()*a.length))]:a[0];
+  const R1=v=>Math.round(v*10)/10;
+  const rooms=[], doors=[], furn=[];
+  const room=(name,rects)=>{ const q={id:rooms.length,name,rects:rects.map(([x0,z0,x1,z1])=>({x0,z0,x1,z1}))}; rooms.push(q); return q; };
+  const door=(name,axis,x,z,w,a,b)=>{ doors.push({id:doors.length,name,axis,x:+x.toFixed(2),z:+z.toFixed(2),w:+w.toFixed(2),rooms:[a,b]}); };
+  // furniture: a box at least `clear` metres (default 1.3) from every door centre, so door approaches stay open
+  const box=(x0,z0,x1,z1,h,kind,clear)=>{ clear=clear==null?1.3:clear; if(x1-x0<0.3||z1-z0<0.3)return false;
+    for(const dd of doors){ if(dd.x>x0-clear&&dd.x<x1+clear&&dd.z>z0-clear&&dd.z<z1+clear)return false; }
+    furn.push({x0,z0,x1,z1,h,kind}); return true; };
+  // a door position on the wall from a to b: a fraction lo..hi of the way, at least m (default 0.6) plus half the width from either end
+  const along=(a,b,w,lo,hi,m)=>{ m=m==null?0.6:m; return clamp(a+(b-a)*J(lo,hi),a+m+w/2,b-m-w/2); };
+  return {J,I,pick,R1,rooms,doors,furn,room,door,box,along};
+}
+// bounding box, area and a centre (of the largest rectangle, so it lies inside the room); door rooms as ids; pads if not given
+function finishPlan(K,o){
+  const OUT=K.rooms.length;
+  for(const q of K.rooms){ let A=0,x0=Infinity,z0=Infinity,x1=-Infinity,z1=-Infinity,big=null,bigA=-1;
+    for(const r of q.rects){ const a=(r.x1-r.x0)*(r.z1-r.z0); A+=a; if(a>bigA){ bigA=a; big=r; } x0=Math.min(x0,r.x0); z0=Math.min(z0,r.z0); x1=Math.max(x1,r.x1); z1=Math.max(z1,r.z1); }
+    Object.assign(q,{x0,z0,x1,z1,cx:(big.x0+big.x1)/2,cz:(big.z0+big.z1)/2,area:+A.toFixed(2)}); }
+  const id=v=>v==='out'?OUT:(v!=null&&typeof v==='object'?v.id:v);
+  for(const d of K.doors)d.rooms=d.rooms.map(id);
+  const p=Object.assign({},o,{W:o.BW+2*MARGIN,D:o.BD+2*MARGIN,rooms:K.rooms,doors:K.doors,furn:K.furn,OUT,home:id(o.home),protect:id(o.protect),protectable:(o.protectable||[]).map(id)});
+  if(!p.pads)Object.assign(p,autoPads(p,o.padsNear));
+  delete p.padsNear; return p;
+}
+// three pads 1 m apart on free floor in the home room (0.9 m from walls, 0.8 m from furniture, 1.6 m from doors), nearest
+// the preferred point, and the operator beside them
+function autoPads(p,near){
+  const q=p.rooms[p.home]; near=near||{x:q.cx,z:q.cz};
+  const dBox=(x,z,f)=>hyp(Math.max(f.x0-x,0,x-f.x1),Math.max(f.z0-z,0,z-f.z1));
+  const free=(x,z,r,mw,mf,md)=>x>r.x0+mw&&x<r.x1-mw&&z>r.z0+mw&&z<r.z1-mw&&p.furn.every(f=>dBox(x,z,f)>=mf)&&p.doors.every(d=>hyp(d.x-x,d.z-z)>=md);
+  let best=null,bd=Infinity;
+  for(const r of q.rects)for(let z=r.z0+0.9;z<=r.z1-0.9;z+=0.25)for(let x=r.x0+1.9;x<=r.x1-1.9;x+=0.25){
+    if(![-1,0,1].every(k=>free(x+k,z,r,0.9,0.8,1.6)))continue;
+    const op=[[0,0.8],[0,-0.8],[1.8,0],[-1.8,0]].map(([a,b])=>({x:x+a,z:z+b})).find(o=>free(o.x,o.z,r,0.4,0.4,1.0)); if(!op)continue;
+    const s=hyp(x-near.x,z-near.z); if(s<bd){ bd=s; best={pads:[-1,0,1].map(k=>({x:+(x+k).toFixed(2),z:+z.toFixed(2)})),operator:{x:+op.x.toFixed(2),z:+op.z.toFixed(2)}}; } }
+  if(!best)throw new Error('no free floor for the pads in the '+q.name);
+  return best; }
+
+// Office: north rooms (lab, office, kitchen), a corridor, south rooms (lobby, storage, meeting room), 3 exits. The fixed
+// office is the reference floor of the first datasets; random offices draw exactly as before rooms became rectangle sets.
 function makeOffice(r){
-  const J=(a,b)=>r?a+(b-a)*r():(a+b)/2, M=MARGIN;
+  const K=floorKit(r), J=K.J, M=MARGIN;
   const BW=r?Math.round(J(20,28)):24, BD=r?Math.round(J(13,16)):14, ceil=r?+J(2.7,3.6).toFixed(2):3.0;
   const cz0=M+(r?J(5.2,6.4):5.8), cz1=cz0+(r?J(2.2,2.8):2.4);
   const a=M+BW*J(0.30,0.38), b=M+BW*J(0.62,0.70), c=M+BW*J(0.26,0.33), d=M+BW*J(0.55,0.62);
-  const rooms=[
-    {name:'lab',x0:M,z0:M,x1:a,z1:cz0},{name:'office',x0:a,z0:M,x1:b,z1:cz0},{name:'kitchen',x0:b,z0:M,x1:M+BW,z1:cz0},
-    {name:'corridor',x0:M,z0:cz0,x1:M+BW,z1:cz1},
-    {name:'lobby',x0:M,z0:cz1,x1:c,z1:M+BD},{name:'storage',x0:c,z0:cz1,x1:d,z1:M+BD},{name:'meeting room',x0:d,z0:cz1,x1:M+BW,z1:M+BD}];
-  rooms.forEach((q,i)=>{ q.id=i; q.cx=(q.x0+q.x1)/2; q.cz=(q.z0+q.z1)/2; });
-  const OUT=rooms.length, R=n=>rooms.find(q=>q.name===n);
-  const doors=[]; const add=(name,axis,x,z,w,ra,rb)=>doors.push({id:doors.length,name,axis,x:+x.toFixed(2),z:+z.toFixed(2),w:+w.toFixed(2),rooms:[ra,rb]});
-  const onX=(q,w,lo,hi)=>clamp(q.x0+(q.x1-q.x0)*J(lo,hi),q.x0+0.8+w/2,q.x1-0.8-w/2);
-  const onZ=(q,w,lo,hi)=>clamp(q.z0+(q.z1-q.z0)*J(lo,hi),q.z0+0.8+w/2,q.z1-0.8-w/2);
+  const lab=K.room('lab',[[M,M,a,cz0]]), off=K.room('office',[[a,M,b,cz0]]), kit=K.room('kitchen',[[b,M,M+BW,cz0]]), cor=K.room('corridor',[[M,cz0,M+BW,cz1]]),
+    lob=K.room('lobby',[[M,cz1,c,M+BD]]), sto=K.room('storage',[[c,cz1,d,M+BD]]), mtg=K.room('meeting room',[[d,cz1,M+BW,M+BD]]);
+  const R=q=>q.rects[0], C=q=>({x:(R(q).x0+R(q).x1)/2,z:(R(q).z0+R(q).z1)/2});
+  const onX=(q,w,lo,hi)=>clamp(R(q).x0+(R(q).x1-R(q).x0)*J(lo,hi),R(q).x0+0.8+w/2,R(q).x1-0.8-w/2);
+  const onZ=(q,w,lo,hi)=>clamp(R(q).z0+(R(q).z1-R(q).z0)*J(lo,hi),R(q).z0+0.8+w/2,R(q).z1-0.8-w/2);
   let w;
-  w=r?J(1.0,1.6):1.4; add('lab door','h',onX(R('lab'),w,0.55,0.8),cz0,w,R('lab').id,R('corridor').id);
-  w=r?J(0.9,1.2):1.0; add('office door','h',onX(R('office'),w,0.3,0.7),cz0,w,R('office').id,R('corridor').id);
-  w=r?J(0.9,1.2):1.0; add('kitchen door','h',onX(R('kitchen'),w,0.2,0.5),cz0,w,R('kitchen').id,R('corridor').id);
-  w=0.9;              add('lab side door','v',a,onZ(R('lab'),w,0.3,0.6),w,R('lab').id,R('office').id);
-  w=r?J(1.2,1.8):1.6; add('lobby door','h',onX(R('lobby'),w,0.4,0.7),cz1,w,R('lobby').id,R('corridor').id);
-  w=r?J(0.9,1.2):1.0; add('storage door','h',onX(R('storage'),w,0.3,0.7),cz1,w,R('storage').id,R('corridor').id);
-  w=r?J(0.9,1.2):1.0; add('meeting room door','h',onX(R('meeting room'),w,0.2,0.6),cz1,w,R('meeting room').id,R('corridor').id);
-  w=r?J(1.4,1.8):1.6; add('main entrance','h',onX(R('lobby'),w,0.25,0.5),M+BD,w,R('lobby').id,OUT);
-  w=1.2;              add('east exit','v',M+BW,(cz0+cz1)/2,Math.min(w,cz1-cz0-0.6),R('corridor').id,OUT);
-  w=1.0;              add('fire exit','v',M+BW,onZ(R('kitchen'),w,0.3,0.6),w,R('kitchen').id,OUT);
-  // furniture: [x0,z0,x1,z1,h,kind], kept clear of door approaches
-  const furn=[]; const box=(x0,z0,x1,z1,h,kind)=>{ if(x1-x0<0.3||z1-z0<0.3)return; for(const dd of doors){ if(dd.x>x0-1.3&&dd.x<x1+1.3&&dd.z>z0-1.3&&dd.z<z1+1.3)return; } furn.push({x0,z0,x1,z1,h,kind}); };
-  const lab=R('lab'), off=R('office'), kit=R('kitchen'), lob=R('lobby'), sto=R('storage'), mtg=R('meeting room');
-  box(lab.x0+0.6,lab.z0+0.5,lab.x1-0.6,lab.z0+1.2,0.9,'bench'); box(lab.cx-1.4,lab.cz-0.1,lab.cx+1.4,lab.cz+0.6,0.9,'bench'); box(lab.x0+0.3,lab.z0+1.6,lab.x0+0.8,lab.z1-1.2,2.2,'shelf');
-  box(off.x0+0.8,off.z0+0.6,off.x0+2.4,off.z0+1.4,0.75,'desk'); box(off.x1-2.4,off.z0+0.6,off.x1-0.8,off.z0+1.4,0.75,'desk');
-  box(kit.x0+0.6,kit.z0+0.3,kit.x1-0.6,kit.z0+0.9,0.9,'counter'); box(kit.cx-0.8,kit.cz,kit.cx+0.8,kit.cz+0.9,0.75,'table');
-  const rowL=sto.x0+1.5, rowR=sto.x1-1.5; box(rowL,sto.z0+1.6,rowR,sto.z0+2.1,2.2,'shelf'); if(sto.z1-sto.z0>5.2)box(rowL,sto.z0+3.4,rowR,sto.z0+3.9,2.2,'shelf'); // shelf rows leave end aisles wide enough for drones with 0.4 m wall clearance
-  box(mtg.cx-(mtg.x1-mtg.x0)*0.25,mtg.cz-0.6,mtg.cx+(mtg.x1-mtg.x0)*0.25,mtg.cz+0.6,0.75,'table');
-  box(lob.x1-2.6,lob.z0+0.9,lob.x1-0.9,lob.z0+1.6,1.1,'desk');
-  const pads=[0,1,2].map(k=>({x:lob.cx-1+k,z:lob.cz+0.6}));
-  return {family:'office',W:BW+2*M,D:BD+2*M,BW,BD,ceil,rooms,doors,furn,OUT,home:lob.id,pads,operator:{x:lob.cx,z:lob.cz+1.5}};
+  w=r?J(1.0,1.6):1.4; K.door('lab door','h',onX(lab,w,0.55,0.8),cz0,w,lab.id,cor.id);
+  w=r?J(0.9,1.2):1.0; K.door('office door','h',onX(off,w,0.3,0.7),cz0,w,off.id,cor.id);
+  w=r?J(0.9,1.2):1.0; K.door('kitchen door','h',onX(kit,w,0.2,0.5),cz0,w,kit.id,cor.id);
+  w=0.9;              K.door('lab side door','v',a,onZ(lab,w,0.3,0.6),w,lab.id,off.id);
+  w=r?J(1.2,1.8):1.6; K.door('lobby door','h',onX(lob,w,0.4,0.7),cz1,w,lob.id,cor.id);
+  w=r?J(0.9,1.2):1.0; K.door('storage door','h',onX(sto,w,0.3,0.7),cz1,w,sto.id,cor.id);
+  w=r?J(0.9,1.2):1.0; K.door('meeting room door','h',onX(mtg,w,0.2,0.6),cz1,w,mtg.id,cor.id);
+  w=r?J(1.4,1.8):1.6; K.door('main entrance','h',onX(lob,w,0.25,0.5),M+BD,w,lob.id,'out');
+  w=1.2;              K.door('east exit','v',M+BW,(cz0+cz1)/2,Math.min(w,cz1-cz0-0.6),cor.id,'out');
+  w=1.0;              K.door('fire exit','v',M+BW,onZ(kit,w,0.3,0.6),w,kit.id,'out');
+  const L=R(lab), O=R(off), KI=R(kit), S=R(sto), G=R(mtg), LB=R(lob);
+  K.box(L.x0+0.6,L.z0+0.5,L.x1-0.6,L.z0+1.2,0.9,'bench'); K.box(C(lab).x-1.4,C(lab).z-0.1,C(lab).x+1.4,C(lab).z+0.6,0.9,'bench'); K.box(L.x0+0.3,L.z0+1.6,L.x0+0.8,L.z1-1.2,2.2,'shelf');
+  K.box(O.x0+0.8,O.z0+0.6,O.x0+2.4,O.z0+1.4,0.75,'desk'); K.box(O.x1-2.4,O.z0+0.6,O.x1-0.8,O.z0+1.4,0.75,'desk');
+  K.box(KI.x0+0.6,KI.z0+0.3,KI.x1-0.6,KI.z0+0.9,0.9,'counter'); K.box(C(kit).x-0.8,C(kit).z,C(kit).x+0.8,C(kit).z+0.9,0.75,'table');
+  // shelf rows leave end aisles wide enough for drones with 0.4 m wall clearance
+  K.box(S.x0+1.5,S.z0+1.6,S.x1-1.5,S.z0+2.1,2.2,'shelf'); if(S.z1-S.z0>5.2)K.box(S.x0+1.5,S.z0+3.4,S.x1-1.5,S.z0+3.9,2.2,'shelf');
+  K.box(C(mtg).x-(G.x1-G.x0)*0.25,C(mtg).z-0.6,C(mtg).x+(G.x1-G.x0)*0.25,C(mtg).z+0.6,0.75,'table');
+  K.box(LB.x1-2.6,LB.z0+0.9,LB.x1-0.9,LB.z0+1.6,1.1,'desk');
+  const pads=[0,1,2].map(k=>({x:C(lob).x-1+k,z:C(lob).z+0.6}));
+  return finishPlan(K,{family:'office',BW,BD,ceil,home:lob,protect:lab,protectable:[lab,off,kit,sto,mtg],pads,operator:{x:C(lob).x,z:C(lob).z+1.5}});
+}
+
+// House or apartment: living room and kitchen to the north, a hallway (wide enough to fly), 1-3 bedrooms and a bathroom to the south.
+function makeHouse(r){
+  const K=floorKit(r), {J,I,R1}=K, M=MARGIN, R=q=>q.rects[0];
+  const nBed=I(1,3), nS=nBed+1, BW=R1(J(3.6*nS+2,3.6*nS+5)), BD=R1(J(10,13)), ceil=+J(2.5,2.9).toFixed(2), hw=R1(J(1.6,2.2));
+  const hz0=R1(M+BD*J(0.45,0.55)-hw/2), hz1=R1(hz0+hw), xLK=R1(M+BW*J(0.5,0.62));
+  const living=K.room('living room',[[M,M,xLK,hz0]]), kitchen=K.room('kitchen',[[xLK,M,M+BW,hz0]]), hall=K.room('hallway',[[M,hz0,M+BW,hz1]]);
+  const xs=[M]; for(let k=1;k<nS;k++)xs.push(R1(M+BW*k/nS+J(-0.4,0.4))); xs.push(M+BW);
+  const south=[]; for(let k=0;k<nS;k++)south.push(K.room(k===nS-1?'bathroom':(nBed===1?'bedroom':'bedroom '+(k+1)),[[xs[k],hz1,xs[k+1],M+BD]]));
+  let w;
+  w=R1(J(0.9,1.2)); K.door('living room door','h',K.along(M,xLK,w,0.4,0.8),hz0,w,living,hall);
+  w=0.9;            K.door('kitchen door','h',K.along(xLK,M+BW,w,0.2,0.6),hz0,w,kitchen,hall);
+  w=R1(J(1.2,1.6)); K.door('kitchen opening','v',xLK,K.along(M,hz0,w,0.3,0.6,0.5),w,living,kitchen);
+  for(const q of south){ w=q.name==='bathroom'?0.9:R1(J(0.9,1.1)); K.door(q.name+' door','h',K.along(R(q).x0,R(q).x1,w,0.3,0.7,0.5),hz1,w,q,hall); }
+  K.door('front door','v',M,(hz0+hz1)/2,Math.min(1.0,hw-0.4),hall,'out');
+  w=0.9;            K.door('back door','h',K.along(xLK,M+BW,w,0.4,0.8),M,w,kitchen,'out');
+  const LV=R(living), KT=R(kitchen);
+  K.box(LV.x0+0.5,LV.z0+0.3,LV.x0+2.5,LV.z0+1.2,0.85,'sofa'); K.box(LV.x0+0.15,LV.z0+1.6,LV.x0+0.55,LV.z1-0.8,2.0,'bookshelf');
+  K.box(KT.x1-0.8,KT.z0+0.4,KT.x1-0.2,KT.z1-0.6,0.9,'counter',0.9); K.box((KT.x0+KT.x1)/2-0.7,(KT.z0+KT.z1)/2-0.4,(KT.x0+KT.x1)/2+0.7,(KT.z0+KT.z1)/2+0.5,0.75,'table');
+  for(const q of south){ const S=R(q);
+    if(q.name==='bathroom'){ K.box(S.x0+0.3,S.z1-0.95,S.x0+2.0,S.z1-0.2,0.6,'bathtub',0.9); continue; }
+    K.box((S.x0+S.x1)/2-0.8,S.z1-2.2,(S.x0+S.x1)/2+0.8,S.z1-0.2,0.6,'bed',1.0); K.box(S.x1-0.65,S.z0+1.2,S.x1-0.15,S.z0+2.4,2.0,'wardrobe',1.0); }
+  return finishPlan(K,{family:'house',BW,BD,ceil,home:living,protect:south[0],protectable:south.filter(q=>q.name!=='bathroom').concat([kitchen]),padsNear:{x:(LV.x0+LV.x1)/2,z:LV.z1-1.2}});
+}
+
+// Warehouse: a high hall with rack rows and aisles, an office and a break room in a corner, a wide loading-dock door.
+function makeWarehouse(r){
+  const K=floorKit(r), {J,R1}=K, M=MARGIN, R=q=>q.rects[0];
+  const BW=R1(J(24,38)), BD=R1(J(16,24)), ceil=+J(4.5,7).toFixed(2), oW=R1(J(5,7)), bW=R1(J(3.6,4.6)), oD=R1(J(4,5));
+  const zO=R1(M+BD-oD), xE=R1(M+oW+bW);
+  const hall=K.room('warehouse',[[M,M,M+BW,zO],[xE,zO,M+BW,M+BD]]), office=K.room('office',[[M,zO,M+oW,M+BD]]), brk=K.room('break room',[[M+oW,zO,xE,M+BD]]);
+  let w;
+  w=1.0;            K.door('office door','h',K.along(M,M+oW,w,0.5,0.8),zO,w,office,hall);
+  w=0.9;            K.door('break room door','h',K.along(M+oW,xE,w,0.3,0.7),zO,w,brk,hall);
+  w=R1(J(1.0,1.4)); K.door('front door','h',K.along(xE,M+BW,w,0.1,0.3),M+BD,w,hall,'out');
+  w=R1(J(3.0,4.0)); K.door('loading dock door','v',M+BW,K.along(M,zO,w,0.3,0.7,1.0),w,hall,'out');
+  w=1.0;            K.door('side exit','h',K.along(M,M+BW,w,0.1,0.4),M,w,hall,'out');
+  // rack rows along x: 1.0-1.2 m deep, 2.4-3.2 m aisles, up to 4 m high; open strips by the walls and 4.2 m by the dock
+  const rh=+Math.min(4.0,ceil-1.0).toFixed(2), aisle=J(2.4,3.2), depth=J(1.0,1.2), xa=M+2.6, xb=M+BW-4.2;
+  for(let z=M+2.4;z+depth<zO-2.6;z+=depth+aisle)K.box(xa,z,xb,z+depth,rh,'rack',1.6);
+  const OF=R(office), BR=R(brk);
+  K.box(OF.x0+0.4,OF.z1-1.3,OF.x0+1.9,OF.z1-0.6,0.75,'desk',1.0); K.box(OF.x0+0.15,OF.z0+0.6,OF.x0+0.6,OF.z0+2.0,1.9,'cabinet',1.0);
+  K.box(BR.x0+0.6,BR.z1-1.5,BR.x1-0.6,BR.z1-0.8,0.75,'table',1.0);
+  return finishPlan(K,{family:'warehouse',BW,BD,ceil,home:hall,protect:office,protectable:[office,brk],padsNear:{x:xE+2.5,z:zO-1.2}});
+}
+
+// Open-plan office: meeting rooms along the north wall, a large open floor with desk clusters, reception and kitchen in the south corners.
+function makeOpenPlan(r){
+  const K=floorKit(r), {J,I,R1,pick}=K, M=MARGIN, R=q=>q.rects[0];
+  const BW=R1(J(22,34)), BD=R1(J(15,21)), ceil=+J(2.8,3.4).toFixed(2), mD=R1(J(3.6,4.8)), cD=R1(J(4.0,5.0)), rW=R1(J(5,7)), kW=R1(J(4,6));
+  const nM=I(2,4), mW=R1(Math.min(6,(BW-4)/nM)), meet=[]; let x=M;
+  for(let k=0;k<nM;k++){ const x1=R1(x+mW); meet.push(K.room('meeting room '+(k+1),[[x,M,x1,M+mD]])); x=x1; }
+  const open=K.room('open office',[[M,M+mD,M+BW,M+BD-cD],[M+rW,M+BD-cD,M+BW-kW,M+BD],[x,M,M+BW,M+mD]]);
+  const rec=K.room('reception',[[M,M+BD-cD,M+rW,M+BD]]), kit=K.room('kitchen',[[M+BW-kW,M+BD-cD,M+BW,M+BD]]);
+  let w;
+  for(const q of meet){ w=1.0; K.door(q.name+' door','h',K.along(R(q).x0,R(q).x1,w,0.3,0.7,0.5),M+mD,w,q,open); }
+  w=R1(J(1.6,2.2)); K.door('reception door','h',K.along(M,M+rW,w,0.4,0.7),M+BD-cD,w,rec,open);
+  w=1.2;            K.door('kitchen door','h',K.along(M+BW-kW,M+BW,w,0.3,0.7),M+BD-cD,w,kit,open);
+  w=R1(J(1.6,2.0)); K.door('main entrance','h',K.along(M,M+rW,w,0.3,0.6),M+BD,w,rec,'out');
+  w=1.0;            K.door('fire exit','v',M+BW,K.along(M+mD,M+BD-cD,w,0.3,0.7),w,open,'out');
+  w=1.0;            K.door('west exit','v',M,K.along(M+mD,M+BD-cD,w,0.3,0.7),w,open,'out');
+  // desk clusters (four desks, some with 1.3 m privacy screens) on a grid with 2 m aisles
+  for(let z=M+mD+1.8;z+1.6<=M+BD-cD-1.8;z+=3.6)for(let x2=M+2.0;x2+2.8<=M+BW-2.0;x2+=5.0)K.box(x2,z,x2+2.8,z+1.6,pick([0.75,0.75,1.3]),'desk cluster',1.4);
+  for(const q of meet){ const Q=R(q), cx=(Q.x0+Q.x1)/2, cz=(Q.z0+Q.z1)/2; K.box(cx-1.0,cz-0.5,cx+1.0,cz+0.5,0.75,'table',1.2); }
+  const KT=R(kit), RC=R(rec);
+  K.box(KT.x0+0.4,KT.z1-0.8,KT.x1-0.4,KT.z1-0.2,0.9,'counter',1.0); K.box(RC.x0+0.4,RC.z0+0.6,RC.x0+2.2,RC.z0+1.3,1.1,'desk',1.0);
+  return finishPlan(K,{family:'openplan',BW,BD,ceil,home:rec,protect:meet[0],protectable:meet.concat([kit]),padsNear:{x:(RC.x0+RC.x1)/2,z:RC.z1-1.2}});
+}
+
+// School or hospital: a long central corridor with many small rooms on both sides, a lobby, exits at both ends.
+function makeCorridorBuilding(r){
+  const K=floorKit(r), {J,R1,pick}=K, M=MARGIN, R=q=>q.rects[0], school=pick([true,false]);
+  const BW=R1(J(30,46)), BD=R1(J(14,18)), ceil=+J(2.8,3.3).toFixed(2), cw=R1(J(2.4,3.2)), cz0=R1(M+(BD-cw)/2), cz1=R1(cz0+cw);
+  const nN=Math.max(3,Math.round(BW/J(5,7))), nS=Math.max(3,Math.round(BW/J(5,7))), lobbyK=Math.floor(nS/2);
+  const cor=K.room('corridor',[[M,cz0,M+BW,cz1]]), label=k=>(school?'classroom ':'ward ')+k, extra=school?['staff room','office']:['nurses station','storeroom'];
+  const rooms=[]; let lobby=null, n=1;
+  for(let k=0;k<nN;k++)rooms.push(K.room(k===1?extra[0]:label(n++),[[R1(M+BW*k/nN),M,R1(M+BW*(k+1)/nN),cz0]]));
+  for(let k=0;k<nS;k++){ const x0=R1(M+BW*k/nS), x1=R1(M+BW*(k+1)/nS);
+    if(k===lobbyK){ lobby=K.room('lobby',[[x0,cz1,x1,M+BD]]); continue; }
+    rooms.push(K.room(k===nS-1?extra[1]:label(n++),[[x0,cz1,x1,M+BD]])); }
+  let w;
+  for(const q of rooms){ const Q=R(q); w=R1(J(0.9,1.2)); K.door(q.name+' door','h',K.along(Q.x0,Q.x1,w,0.3,0.7,0.5),Q.z1<=cz0+1e-6?cz0:cz1,w,q,cor); }
+  const LB=R(lobby);
+  w=R1(J(1.6,2.0)); K.door('lobby door','h',K.along(LB.x0,LB.x1,w,0.4,0.6),cz1,w,lobby,cor);
+  w=1.6;            K.door('main entrance','h',K.along(LB.x0,LB.x1,w,0.4,0.6),M+BD,w,lobby,'out');
+  w=Math.min(1.4,cw-0.6); K.door('west exit','v',M,(cz0+cz1)/2,w,cor,'out'); K.door('east exit','v',M+BW,(cz0+cz1)/2,w,cor,'out');
+  for(const q of rooms){ const Q=R(q), north=Q.z1<=cz0+1e-6;
+    if(q.name.startsWith('classroom')){ for(let z=Q.z0+1.4;z+0.6<=Q.z1-1.4;z+=1.6)K.box(Q.x0+0.9,z,Q.x1-0.9,z+0.6,0.75,'desks',1.2); }
+    else if(q.name.startsWith('ward')){ const z0=north?Q.z0+0.3:Q.z1-2.3; K.box(Q.x0+0.3,z0,Q.x0+1.2,z0+2.0,0.6,'bed',1.0); K.box(Q.x1-1.2,z0,Q.x1-0.3,z0+2.0,0.6,'bed',1.0); }
+    else { const z0=north?Q.z0+0.3:Q.z1-1.0; K.box(Q.x0+0.3,z0,Q.x0+1.8,z0+0.7,1.8,'cabinet',1.0); K.box((Q.x0+Q.x1)/2-0.8,(Q.z0+Q.z1)/2-0.4,(Q.x0+Q.x1)/2+0.8,(Q.z0+Q.z1)/2+0.4,0.75,'table',1.2); } }
+  K.box(LB.x0+0.4,LB.z0+1.6,LB.x0+2.0,LB.z0+2.3,1.1,'desk',1.2);
+  return finishPlan(K,{family:'corridor',BW,BD,ceil,home:lobby,protect:rooms.find(q=>q.name===extra[1]),protectable:rooms,padsNear:{x:(LB.x0+LB.x1)/2,z:LB.z1-1.2}});
+}
+
+// Retail: a sales floor with gondola rows and checkouts, a storeroom and an office at the back.
+function makeRetail(r){
+  const K=floorKit(r), {J,R1}=K, M=MARGIN, R=q=>q.rects[0];
+  const BW=R1(J(18,32)), BD=R1(J(16,24)), ceil=+J(3.0,4.5).toFixed(2), bD=R1(J(4,6)), xS=R1(M+BW*J(0.55,0.7)), zB=R1(M+bD);
+  const store=K.room('storeroom',[[M,M,xS,zB]]), office=K.room('office',[[xS,M,M+BW,zB]]), sales=K.room('sales floor',[[M,zB,M+BW,M+BD]]);
+  let w;
+  w=R1(J(1.4,2.0)); K.door('storeroom door','h',K.along(M,xS,w,0.4,0.7),zB,w,store,sales);
+  w=0.9;            K.door('office door','h',K.along(xS,M+BW,w,0.3,0.7),zB,w,office,sales);
+  w=R1(J(2.0,3.0)); K.door('front entrance','h',K.along(M,M+BW,w,0.35,0.65),M+BD,w,sales,'out');
+  w=1.2;            K.door('back door','h',K.along(M,xS,w,0.2,0.5),M,w,store,'out');
+  w=1.0;            K.door('side exit','v',M,K.along(zB,M+BD,w,0.5,0.8),w,sales,'out');
+  // gondola rows from back to front with 1.8-2.4 m aisles; an open band by the entrance for the checkouts
+  const gh=+J(1.4,1.8).toFixed(2), gw=J(0.9,1.2), aisle=J(1.8,2.4), z0=zB+2.2, z1=M+BD-4.6;
+  if(z1-z0>=2)for(let x=M+2.2;x+gw<=M+BW-2.2;x+=gw+aisle)K.box(x,z0,x+gw,z1,gh,'gondola',1.6);
+  K.box(M+BW*0.25,M+BD-3.0,M+BW*0.25+1.6,M+BD-2.4,1.0,'checkout',1.4); K.box(M+BW*0.6,M+BD-3.0,M+BW*0.6+1.6,M+BD-2.4,1.0,'checkout',1.4);
+  const ST=R(store), OF=R(office);
+  for(let x=ST.x0+1.2;x+0.6<=ST.x1-1.2;x+=2.4)K.box(x,ST.z0+1.0,x+0.6,ST.z1-1.4,2.2,'shelf',1.4);
+  K.box(OF.x0+0.6,OF.z0+0.4,OF.x0+2.2,OF.z0+1.1,0.75,'desk',1.0); K.box(OF.x1-0.8,OF.z0+0.3,OF.x1-0.2,OF.z0+0.9,1.2,'safe',1.0);
+  return finishPlan(K,{family:'retail',BW,BD,ceil,home:sales,protect:office,protectable:[office,store],padsNear:{x:M+BW*0.8,z:M+BD-1.5}});
+}
+
+// A single room (a hall, gym, studio, workshop or showroom), L-shaped 40% of the time, with 1-3 outside doors and loose furniture.
+function makeSingleRoom(r){
+  const K=floorKit(r), {J,I,R1,pick}=K, M=MARGIN;
+  const BW=R1(J(8,14)), BD=R1(J(7,11)), ceil=+J(2.7,4.0).toFixed(2), name=pick(['hall','gym','studio','workshop','showroom']);
+  const Lshape=r?r()<0.4:false, xN=R1(M+BW*J(0.5,0.7)), zN=R1(M+BD*J(0.5,0.7));
+  const q=K.room(name,Lshape?[[M,M,M+BW,zN],[M,zN,xN,M+BD]]:[[M,M,M+BW,M+BD]]);
+  const nD=I(1,3); let w;
+  w=R1(J(1.2,1.8)); K.door('main door','h',K.along(M,Lshape?xN:M+BW,w,0.3,0.7),M+BD,w,q,'out');
+  if(nD>=2){ w=1.0; K.door('side door','v',M+BW,K.along(M,Lshape?zN:M+BD,w,0.3,0.7),w,q,'out'); }
+  if(nD>=3){ w=1.0; K.door('back door','h',K.along(M,M+BW,w,0.3,0.7),M,w,q,'out'); }
+  const cat=[[1.6,0.8,0.75,'table'],[0.6,1.6,1.9,'cabinet'],[2.0,0.5,2.0,'shelf'],[1.2,1.2,0.9,'bench'],[0.8,0.8,1.1,'crate']];
+  const nF=I(2,6); for(let k=0;k<nF;k++){ const [fw,fd,fh,kind]=pick(cat), Q=pick(q.rects), x=J(Q.x0+0.6,Q.x1-0.6-fw), z=J(Q.z0+0.6,Q.z1-0.6-fd); K.box(x,z,x+fw,z+fd,fh,kind,1.6); }
+  return finishPlan(K,{family:'single',BW,BD,ceil,home:q,protect:q,protectable:[q],padsNear:{x:M+(Lshape?xN-M:BW)/2,z:M+BD-1.5}});
+}
+
+// Irregular: an L-shaped corridor and an L-shaped hall, with an office, a store and a workshop around them.
+function makeIrregular(r){
+  const K=floorKit(r), {J,R1}=K, M=MARGIN, R=q=>q.rects[0];
+  const BW=R1(J(18,26)), BD=R1(J(14,18)), ceil=+J(2.8,3.6).toFixed(2), cw=R1(J(2.2,2.8));
+  const xa=R1(M+BW*J(0.3,0.4)), xb=R1(xa+cw), za=R1(M+BD*J(0.3,0.4)), zb=R1(za+cw);
+  const cor=K.room('corridor',[[M,za,xb,zb],[xa,zb,xb,M+BD]]), hall=K.room('hall',[[xa,M,M+BW,za],[xb,za,M+BW,zb]]),
+    off=K.room('office',[[M,M,xa,za]]), store=K.room('store',[[M,zb,xa,M+BD]]), shop=K.room('workshop',[[xb,zb,M+BW,M+BD]]);
+  let w;
+  w=1.0;                   K.door('office door','h',K.along(M,xa,w,0.3,0.7),za,w,off,cor);
+  w=Math.min(1.2,cw-0.6);  K.door('hall door','h',K.along(xa,xb,w,0.3,0.7,0.4),za,w,hall,cor);
+  w=1.0;                   K.door('store door','v',xa,K.along(zb,M+BD,w,0.3,0.7),w,store,cor);
+  w=1.0;                   K.door('workshop door','v',xb,K.along(zb,M+BD,w,0.3,0.7),w,shop,cor);
+  w=Math.min(1.4,cw-0.6);  K.door('main entrance','v',M,(za+zb)/2,w,cor,'out');
+  w=Math.min(1.2,cw-0.6);  K.door('back exit','h',(xa+xb)/2,M+BD,w,cor,'out');
+  w=1.2;                   K.door('hall exit','v',M+BW,K.along(M,za,w,0.3,0.7),w,hall,'out');
+  const H=R(hall), O=R(off), S=R(store), W=R(shop);
+  K.box(H.x0+1.5,H.z0+0.8,H.x0+3.5,H.z0+1.6,0.75,'table',1.2); K.box(H.x1-0.7,H.z0+0.3,H.x1-0.2,H.z0+2.2,2.0,'shelf',1.2);
+  K.box(O.x0+0.5,O.z0+0.5,O.x0+2.0,O.z0+1.2,0.75,'desk'); K.box(S.x0+0.3,S.z0+0.8,S.x0+0.9,S.z1-0.8,2.2,'shelf',1.2);
+  K.box((W.x0+W.x1)/2-1.0,(W.z0+W.z1)/2-0.4,(W.x0+W.x1)/2+1.0,(W.z0+W.z1)/2+0.4,0.9,'workbench',1.2);
+  return finishPlan(K,{family:'irregular',BW,BD,ceil,home:hall,protect:off,protectable:[off,store,shop],padsNear:{x:(H.x0+H.x1)/2+1.0,z:H.z1-1.2}});
 }
 
 // ---------- grids derived from the plan (one representation; everything else reads these) ----------
 let plan=null, GX=0, GZ=0, NX=0, NZ=0;
 let Hg, DOORC, ROOMC;            // 0.1 m: obstacle top height, door id+1, room id (-1 wall/door, OUT outside)
 let WALK, FLY, FLYRAW, ROOMN, DZONE; // 0.2 m: walk blocked, fly blocked (inflated, door channels carved), raw fly obstacles, room id, door zone id+1
+// 0.2 m: free cells joined to the main free region (on foot: the outside strip, so every exit; by air: the pads). Furniture
+// can close off a pocket of free floor (behind a table, between a bed and a wall); targets snap out of such pockets, since a
+// path search into one fails only after exploring the whole floor
+let WALKOK=null, FLYOK=null;
 let roomDist=null;              // room-to-room distance via doors (m)
 let CLR=null;                    // 0.1 m: distance (m) to the nearest obstacle at drone flight height (top >= 1.1 m), chamfer transform
 const COVP=[];                   // coverage points per room: {x,z,seen}
 function buildWorld(p){
-  plan=p; settings.ceil=p.ceil; const wt=settings.wallT, M=MARGIN, ceil=p.ceil; for(const k in doorFields)delete doorFields[k];
+  plan=p; settings.ceil=p.ceil; const wt=settings.wallT, ceil=p.ceil; for(const k in doorFields)delete doorFields[k]; WALKOK=FLYOK=null;
   GX=Math.ceil(p.W/CELL); GZ=Math.ceil(p.D/CELL); NX=Math.ceil(p.W/NAV); NZ=Math.ceil(p.D/NAV);
   Hg=new Float32Array(GX*GZ); DOORC=new Int16Array(GX*GZ); ROOMC=new Int16Array(GX*GZ).fill(p.OUT);
-  for(let j=0;j<GZ;j++)for(let i=0;i<GX;i++){ const x=(i+0.5)*CELL, z=(j+0.5)*CELL, k=j*GX+i;
-    if(x>M-wt/2&&x<M+p.BW+wt/2&&z>M-wt/2&&z<M+p.BD+wt/2){ Hg[k]=ceil; ROOMC[k]=-1; }
-    for(const q of p.rooms){ if(x>q.x0+wt/2&&x<q.x1-wt/2&&z>q.z0+wt/2&&z<q.z1-wt/2){ Hg[k]=0; ROOMC[k]=q.id; break; } }
-    for(const d of p.doors){ const inDoor=d.axis==='h'?(Math.abs(z-d.z)<=wt/2+0.06&&Math.abs(x-d.x)<=d.w/2):(Math.abs(x-d.x)<=wt/2+0.06&&Math.abs(z-d.z)<=d.w/2); if(inDoor){ Hg[k]=0; DOORC[k]=d.id+1; ROOMC[k]=-1; } }
-    for(const f of p.furn){ if(x>f.x0&&x<f.x1&&z>f.z0&&z<f.z1)Hg[k]=Math.max(Hg[k],f.h); } }
+  // each room labels the 0.1 m cells whose centres its rectangles cover; a cell with a differently labelled neighbour (8 around)
+  // is wall, so every room boundary, the outer one included, gets a 0.2 m wall at ceiling height
+  const LAB=new Int16Array(GX*GZ).fill(p.OUT);
+  for(const q of p.rooms)for(const r of q.rects){ const i0=Math.max(0,Math.ceil(r.x0/CELL-0.5)), i1=Math.min(GX-1,Math.ceil(r.x1/CELL-0.5)-1), j0=Math.max(0,Math.ceil(r.z0/CELL-0.5)), j1=Math.min(GZ-1,Math.ceil(r.z1/CELL-0.5)-1);
+    for(let j=j0;j<=j1;j++)for(let i=i0;i<=i1;i++)LAB[j*GX+i]=q.id; }
+  for(let j=0;j<GZ;j++)for(let i=0;i<GX;i++){ const k=j*GX+i, l=LAB[k]; let wall=false;
+    for(let dj=-1;dj<=1&&!wall;dj++)for(let di=-1;di<=1;di++){ const ii=i+di, jj=j+dj; if(ii<0||jj<0||ii>=GX||jj>=GZ)continue; if(LAB[jj*GX+ii]!==l){ wall=true; break; } }
+    if(wall){ Hg[k]=ceil; ROOMC[k]=-1; } else ROOMC[k]=l; }
+  for(const d of p.doors){ const hx=d.axis==='h'?d.w/2:wt/2+0.06, hz=d.axis==='h'?wt/2+0.06:d.w/2;
+    const i0=Math.max(0,Math.floor((d.x-hx)/CELL)-1), i1=Math.min(GX-1,Math.ceil((d.x+hx)/CELL)+1), j0=Math.max(0,Math.floor((d.z-hz)/CELL)-1), j1=Math.min(GZ-1,Math.ceil((d.z+hz)/CELL)+1);
+    for(let j=j0;j<=j1;j++)for(let i=i0;i<=i1;i++){ const x=(i+0.5)*CELL, z=(j+0.5)*CELL, k=j*GX+i;
+      const inDoor=d.axis==='h'?(Math.abs(z-d.z)<=wt/2+0.06&&Math.abs(x-d.x)<=d.w/2):(Math.abs(x-d.x)<=wt/2+0.06&&Math.abs(z-d.z)<=d.w/2); if(inDoor){ Hg[k]=0; DOORC[k]=d.id+1; ROOMC[k]=-1; } } }
+  for(const f of p.furn){ const i0=Math.max(0,Math.floor(f.x0/CELL)-1), i1=Math.min(GX-1,Math.ceil(f.x1/CELL)+1), j0=Math.max(0,Math.floor(f.z0/CELL)-1), j1=Math.min(GZ-1,Math.ceil(f.z1/CELL)+1);
+    for(let j=j0;j<=j1;j++)for(let i=i0;i<=i1;i++){ const x=(i+0.5)*CELL, z=(j+0.5)*CELL; if(x>f.x0&&x<f.x1&&z>f.z0&&z<f.z1){ const k=j*GX+i; Hg[k]=Math.max(Hg[k],f.h); } } }
   const N=NX*NZ, walkRaw=new Uint8Array(N); FLYRAW=new Uint8Array(N); ROOMN=new Int16Array(N); DZONE=new Int16Array(N);
   for(let j=0;j<NZ;j++)for(let i=0;i<NX;i++){ const k=j*NX+i; let hw=0;
     for(let dj=0;dj<2;dj++)for(let di=0;di<2;di++){ const ii=Math.min(GX-1,2*i+di), jj=Math.min(GZ-1,2*j+dj); hw=Math.max(hw,Hg[jj*GX+ii]); }
@@ -239,8 +453,9 @@ function buildWorld(p){
   const a=CELL, b=CELL*Math.SQRT2;
   for(let j=0;j<GZ;j++)for(let i=0;i<GX;i++){ const k=j*GX+i; let v=CLR[k]; if(i>0)v=Math.min(v,CLR[k-1]+a); if(j>0){ v=Math.min(v,CLR[k-GX]+a); if(i>0)v=Math.min(v,CLR[k-GX-1]+b); if(i<GX-1)v=Math.min(v,CLR[k-GX+1]+b); } CLR[k]=v; }
   for(let j=GZ-1;j>=0;j--)for(let i=GX-1;i>=0;i--){ const k=j*GX+i; let v=CLR[k]; if(i<GX-1)v=Math.min(v,CLR[k+1]+a); if(j<GZ-1){ v=Math.min(v,CLR[k+GX]+a); if(i<GX-1)v=Math.min(v,CLR[k+GX+1]+b); if(i>0)v=Math.min(v,CLR[k+GX-1]+b); } CLR[k]=v; }
-  // coverage points (0.5 m) where a hidden person could be: floor below 0.3 m, per room
-  COVP.length=0; for(const q of p.rooms){ const pts=[]; for(let z=q.z0+0.45;z<q.z1-0.3;z+=0.5)for(let x=q.x0+0.45;x<q.x1-0.3;x+=0.5){ if(Hg[cellIdx(x,z)]<0.3&&!WALK[navIdx(x,z)])pts.push({x,z,seen:0}); } COVP.push(pts); }
+  WALKOK=mainRegion(WALK,0.7,0.7); FLYOK=mainRegion(FLY,p.pads[0].x,p.pads[0].z);
+  // coverage points (0.5 m) where a hidden person could be: floor below 0.3 m he can walk to, per room
+  COVP.length=0; for(const q of p.rooms){ const pts=[]; for(let z=q.z0+0.45;z<q.z1-0.3;z+=0.5)for(let x=q.x0+0.45;x<q.x1-0.3;x+=0.5){ if(ROOMC[cellIdx(x,z)]===q.id&&Hg[cellIdx(x,z)]<0.3&&!WALK[navIdx(x,z)]&&WALKOK[navIdx(x,z)])pts.push({x,z,seen:0}); } COVP.push(pts); }
 }
 function dilate(src,r){ const out=new Uint8Array(src.length); for(let j=0;j<NZ;j++)for(let i=0;i<NX;i++){ if(!src[j*NX+i])continue; for(let dj=-r;dj<=r;dj++)for(let di=-r;di<=r;di++){ if(di*di+dj*dj>r*r+r)continue; const ii=i+di, jj=j+dj; if(ii>=0&&jj>=0&&ii<NX&&jj<NZ)out[jj*NX+ii]=1; } } return out; }
 function cellIdx(x,z){ return clamp(Math.floor(z/CELL),0,GZ-1)*GX+clamp(Math.floor(x/CELL),0,GX-1); }
@@ -249,9 +464,12 @@ function navXZ(k){ const i=k%NX; return {x:(i+0.5)*NAV,z:((k-i)/NX+0.5)*NAV}; }
 function heightAt(x,z){ return Hg[cellIdx(x,z)]; }
 function roomAt(x,z){ return ROOMC[cellIdx(x,z)]; }
 function doorCoords(d,x,z){ return d.axis==='h'?{n:z-d.z,t:x-d.x}:{n:x-d.x,t:z-d.z}; }
-// unit normal of a door pointing out of room `rid` (into the other side)
-function doorNormal(d,rid){ const q=plan.rooms[rid]; if(!q){ const o=plan.rooms[d.rooms[0]]; const n=doorNormal(d,o.id); return {x:-n.x,z:-n.z}; }
-  return d.axis==='h'?{x:0,z:Math.sign(d.z-q.cz)||1}:{x:Math.sign(d.x-q.cx)||1,z:0}; }
+// unit normal of a door pointing out of room `rid` (into the other side): the side 0.3 m off the door line that belongs to the
+// room, which works for rooms of any shape; outside is the opposite of the inside room's normal
+function doorNormal(d,rid){ if(!(rid>=0&&rid<plan.rooms.length)){ const n=doorNormal(d,d.rooms[0]); return {x:-n.x,z:-n.z}; }
+  const h=d.axis==='h', a=h?roomAt(d.x,d.z-0.3):roomAt(d.x-0.3,d.z), b=h?roomAt(d.x,d.z+0.3):roomAt(d.x+0.3,d.z); let s;
+  if(a===rid&&b!==rid)s=1; else if(b===rid&&a!==rid)s=-1; else { const q=plan.rooms[rid]; s=h?(Math.sign(d.z-q.cz)||1):(Math.sign(d.x-q.cx)||1); }
+  return h?{x:0,z:s}:{x:s,z:0}; }
 function doorTangent(d){ return d.axis==='h'?{x:1,z:0}:{x:0,z:1}; }
 
 // ---------- geometry: 2.5-D line of sight, paths ----------
@@ -281,8 +499,16 @@ function astar(grid,sx,sz,gx,gz,extra){
 }
 function shortcut(grid,pts){ if(!pts||pts.length<3)return pts; const out=[pts[0]]; let a=0; while(a<pts.length-1){ let b=pts.length-1; while(b>a+1&&!losGrid(grid,pts[a].x,pts[a].z,pts[b].x,pts[b].z))b--; out.push(pts[b]); a=b; } return out; }
 // nearest unblocked nav cell to (x,z) within maxM metres (breadth-first over cells)
-function nearestFreeNav(grid,x,z,maxM){ const k0=navIdx(x,z); if(!grid[k0])return {x,z}; const i0=k0%NX, j0=(k0-i0)/NX, R=Math.ceil((maxM||3)/NAV); let best=null,bd=Infinity;
-  for(let dj=-R;dj<=R;dj++)for(let di=-R;di<=R;di++){ const i=i0+di,j=j0+dj; if(i<0||j<0||i>=NX||j>=NZ||grid[j*NX+i])continue; const d=di*di+dj*dj; if(d<bd){ bd=d; best={x:(i+0.5)*NAV,z:(j+0.5)*NAV}; } } return best; }
+function nearestFreeNav(grid,x,z,maxM){ const ok=grid===WALK?WALKOK:grid===FLY?FLYOK:null, k0=navIdx(x,z); if(!grid[k0]&&(!ok||ok[k0]))return {x,z}; const i0=k0%NX, j0=(k0-i0)/NX, R=Math.ceil((maxM||3)/NAV); let best=null,bd=Infinity;
+  for(let dj=-R;dj<=R;dj++)for(let di=-R;di<=R;di++){ const i=i0+di,j=j0+dj; if(i<0||j<0||i>=NX||j>=NZ||grid[j*NX+i]||(ok&&!ok[j*NX+i]))continue; const d=di*di+dj*dj; if(d<bd){ bd=d; best={x:(i+0.5)*NAV,z:(j+0.5)*NAV}; } } return best; }
+// the free cells 4-connected to the free cell nearest (x, z): what a path search from there can reach
+function mainRegion(grid,x,z){ const ok=new Uint8Array(NX*NZ), k0=navIdx(x,z), i0=k0%NX, j0=(k0-i0)/NX; let s=-1,bd=Infinity;
+  for(let dj=-15;dj<=15;dj++)for(let di=-15;di<=15;di++){ const i=i0+di,j=j0+dj; if(i<0||j<0||i>=NX||j>=NZ||grid[j*NX+i])continue; const d=di*di+dj*dj; if(d<bd){ bd=d; s=j*NX+i; } }
+  if(s<0)return ok; ok[s]=1; const st=[s];
+  while(st.length){ const k=st.pop(), i=k%NX, j=(k-i)/NX;
+    if(i>0&&!grid[k-1]&&!ok[k-1]){ ok[k-1]=1; st.push(k-1); } if(i<NX-1&&!grid[k+1]&&!ok[k+1]){ ok[k+1]=1; st.push(k+1); }
+    if(j>0&&!grid[k-NX]&&!ok[k-NX]){ ok[k-NX]=1; st.push(k-NX); } if(j<NZ-1&&!grid[k+NX]&&!ok[k+NX]){ ok[k+NX]=1; st.push(k+NX); } }
+  return ok; }
 function planPath(grid,from,to,extra){
   const f=nearestFreeNav(grid,from.x,from.z,2)||from, t=nearestFreeNav(grid,to.x,to.z,3); if(!t)return null;
   const s=navIdx(f.x,f.z), g=navIdx(t.x,t.z); const si=s%NX, gi=g%NX;
@@ -311,7 +537,11 @@ function descend(id,from,dist){ const f=doorField(id), d=plan.doors[id]; let p={
   return p; }
 function exitDoors(){ return plan.doors.filter(d=>d.rooms[1]===plan.OUT); }
 function outsidePoint(d,dist){ const n=doorNormal(d,d.rooms[0]); const k=Math.min(dist||1.2,1.2); return {x:d.x+n.x*k,z:d.z+n.z*k}; }
-function randomPointIn(rid,grid,rnd){ rnd=rnd||rng; const q=plan.rooms[rid]; for(let k=0;k<60;k++){ const x=q.x0+0.5+rnd()*(q.x1-q.x0-1), z=q.z0+0.5+rnd()*(q.z1-q.z0-1); if(!grid[navIdx(x,z)])return {x,z}; } return nearestFreeNav(grid,q.cx,q.cz,4)||{x:q.cx,z:q.cz}; }
+// a free point in a room: a rectangle chosen by area (one draw, only for rooms of several rectangles), then a point inside it
+function randomPointIn(rid,grid,rnd){ rnd=rnd||rng; const q=plan.rooms[rid];
+  for(let k=0;k<60;k++){ let r=q.rects[0]; if(q.rects.length>1){ let u=rnd()*q.area; for(const rr of q.rects){ r=rr; u-=(rr.x1-rr.x0)*(rr.z1-rr.z0); if(u<=0)break; } }
+    const x=r.x0+0.5+rnd()*(r.x1-r.x0-1), z=r.z0+0.5+rnd()*(r.z1-r.z0-1), k=navIdx(x,z), ok=grid===WALK?WALKOK:grid===FLY?FLYOK:null; if(!grid[k]&&(!ok||ok[k]))return {x,z}; }
+  return nearestFreeNav(grid,q.cx,q.cz,4)||{x:q.cx,z:q.cz}; }
 
 // ---------- metrics ----------
 const metrics={breaches:0,left:0,deterred:0,guided:0,found:0,falseFound:0,fpFrames:0,tFound:null,seenT:0,totT:0,minStandoff:Infinity,minSep:Infinity,minWall:Infinity,
@@ -324,7 +554,7 @@ const person={
   reset(o){ o=o||{};
     this.role=o.role||'intruder'; this.intent=o.intent||(this.role==='intruder'?'enter':'wander');
     const P=o.params||{}; this.params={Rreact:P.Rreact!=null?P.Rreact:2.5+2*prng(),kFear:P.kFear!=null?P.kFear:0.5*Math.pow(6,prng()),kFlank:P.kFlank!=null?P.kFlank:prng(),Tresolve:P.Tresolve!=null?P.Tresolve:10+50*prng()};
-    this.targetRoom=o.targetRoom!=null?o.targetRoom:plan.rooms.find(q=>q.name==='lab').id;
+    this.targetRoom=o.targetRoom!=null?o.targetRoom:(plan.protect!=null?plan.protect:0);
     let start;
     if(o.start==='outside'||(o.start==null&&this.role==='intruder')){ const ex=exitDoors(); const e=o.startExit!=null?plan.doors[o.startExit]:ex[Math.floor(prng()*ex.length)]; start=outsidePoint(e,1.6); this.entry=e.id; }
     else { const rid=o.start!=null?o.start:Math.floor(prng()*plan.rooms.length); start=randomPointIn(rid,WALK,prng); this.entry=null; }
@@ -332,8 +562,9 @@ const person={
       insideT:0,alive:true,breached:false,threat:0,pauseT:o.delay||0,delay:o.delay||0,room:roomAt(start.x,start.z),hideAt:null,following:false});
     this.setTarget(this.intent==='enter'?randomPointIn(this.targetRoom,WALK,prng):this.intent==='hide'?this.hidingSpot(this.room>=0&&this.room<plan.rooms.length?this.room:this.targetRoom):this.intent==='leave'?this.exitTarget():randomPointIn(Math.floor(prng()*plan.rooms.length),WALK,prng));
   },
-  setTarget(p){ this.target=p; this.path=[]; this.replanT=0; this.lastRemain=Infinity; },
-  exitTarget(){ let best=null,bl=Infinity; for(const e of exitDoors()){ const L=doorWalk(e.id,this); if(L<bl){ bl=L; best=outsidePoint(e,1.8); } } return best||outsidePoint(exitDoors()[0],1.8); },
+  setTarget(p){ this.target=p; this.path=[]; this.replanT=0; this.lastRemain=Infinity; this.noPath=false; },
+  // the nearest exit on foot, avoiding one with drones hovering at it (each counts as 12 m more walking)
+  exitTarget(){ let best=null,bl=Infinity; for(const e of exitDoors()){ const L=doorWalk(e.id,this)+12*team.drones.filter(d=>d.y>0.4&&hyp(d.x-e.x,d.z-e.z)<2.0).length; if(L<bl){ bl=L; best=outsidePoint(e,1.8); } } return best||outsidePoint(exitDoors()[0],1.8); },
   hidingSpot(rid){ const q=plan.rooms[rid]; const ds=plan.doors.filter(d=>d.rooms.includes(rid)); let best=null,bs=-1; for(let k=0;k<40;k++){ const p=randomPointIn(rid,WALK,prng); const s=Math.min(...ds.map(d=>hyp(d.x-p.x,d.z-p.z))); if(s>bs){ bs=s; best=p; } } this.hideAt=best; return best; },
   inBuilding(){ return this.room>=0&&this.room<plan.rooms.length; },
   step(dt,drones){
@@ -353,13 +584,16 @@ const person={
     if(this.state==='hiding'&&this.hideAt&&hyp(this.x-this.hideAt.x,this.z-this.hideAt.z)<0.4){ this.vx=this.vz=0; return; }
     this.pauseT-=dt; if(this.pauseT>0){ this.vx=this.vz=0; return; }
     this.replanT-=dt;
-    if(this.target&&(this.replanT<=0||!this.path.length)){
+    // replan every second, or at once when the path ran out; a search that found no path waits for the next second
+    if(this.target&&(this.replanT<=0||(!this.path.length&&!this.noPath))){
       this.replanT=1.0; const low=drones.filter(d=>d.y>0.4);
       const extra=(i,j)=>{ const cx=(i+0.5)*NAV, cz=(j+0.5)*NAV; for(const d of low)if((cx-d.x)**2+(cz-d.z)**2<0.36)return true; return false; };
-      this.path=planPath(WALK,this,this.target,extra)||planPath(WALK,this,this.target)||[];
+      this.path=planPath(WALK,this,this.target,extra)||planPath(WALK,this,this.target)||[]; this.noPath=!this.path.length;
       const remain=this.path.length?pathLength(this.path,this):Infinity;
       if(this.role==='intruder'&&threat>0.2&&remain>this.lastRemain-0.2)this.blockedT+=1.0; else this.blockedT=Math.max(0,this.blockedT-0.5);
       this.lastRemain=remain;
+      // leaving and blocked for 3 s: choose the way out again (drones may now stand at the exit he was heading for)
+      if(this.state==='leave'&&this.blockedT>=3){ this.blockedT=0; const e=this.exitTarget(); if(e&&this.target&&hyp(e.x-this.target.x,e.z-this.target.z)>0.5){ this.setTarget(e); } }
       if(this.role==='intruder'&&this.state==='approach'&&this.blockedT>=P.Tresolve){ this.state='leave'; this.deterredBy=mission.goal; this.setTarget(this.exitTarget()); say('intruder','I can\'t get past the drones. Leaving.'); }
     }
     while(this.path.length&&hyp(this.path[0].x-this.x,this.path[0].z-this.z)<0.25)this.path.shift();
@@ -435,7 +669,10 @@ const mission={goal:'hold',params:{},version:0,order:null,ends:[],tick:0,templat
 const RM=i=>plan.rooms[i];
 function doorPoint(d,rid,dist){ const n=doorNormal(d,rid); return {x:d.x+n.x*dist,z:d.z+n.z*dist}; }
 function at(p,y){ return {x:p.x,y,z:p.z}; }
-function nearestExit(I){ let best=exitDoors()[0],bl=Infinity; for(const e of exitDoors()){ const L=doorWalk(e.id,I); if(L<bl){ bl=L; best=e; } } return best; }
+// the nearest exit for him on foot; one where our drones stand between him and the door (within 3 m of it, nearer to it than he
+// is) counts as 12 m further per drone: he would have to pass them, and in a corridor they cannot get behind him
+function exitCost(e,I){ const wI=doorWalk(e.id,I); return wI+12*team.drones.filter(d=>d.y>0.3&&hyp(d.x-e.x,d.z-e.z)<3&&doorWalk(e.id,d)<wI-0.3).length; }
+function nearestExit(I){ let best=exitDoors()[0],bl=Infinity; for(const e of exitDoors()){ const L=exitCost(e,I); if(L<bl){ bl=L; best=e; } } return best; }
 
 function tHold(){ if(!mission.holdPts)mission.holdPts=team.drones.map(d=>{ let p={x:d.x,z:d.z}; const z=DZONE[navIdx(d.x,d.z)]; if(z){ const door=plan.doors[z-1]; const {n}=doorCoords(door,d.x,d.z); const s=Math.sign(n)||1; const nn=door.axis==='h'?{x:0,z:s}:{x:s,z:0}; p={x:door.x+nn.x*1.3,z:door.z+nn.z*1.3}; } return at(p,Math.max(settings.zNom,d.y)); });
   return {key:'hold',text:'hold',pts:mission.holdPts.map(p=>({x:p.x,y:p.y,z:p.z})),fixed:true}; }
@@ -461,6 +698,10 @@ function tKeepout(I){
       const offs=settings.gateN>=3?[1.1,0,-1.1]:[0.6,-0.6]; const gate=[];
       for(const o of offs){ const q={x:c.x+px*o,z:c.z+pz*o}; if(!FLY[navIdx(q.x,q.z)]&&losGrid(FLY,c.x,c.z,q.x,q.z))gate.push(q); }
       for(let k=1;gate.length<offs.length;k++){ const q=nearestFreeNav(FLY,c.x+gx*1.0*k,c.z+gz*1.0*k,0.6)||{x:c.x+gx*1.0*k,z:c.z+gz*1.0*k}; gate.push(q); }
+      // in a small protected room (under 40 m2, a bedroom or a site office) a drone that retreats inside ahead of him is shut in
+      // with him once he is through: those slots flank the door outside instead, on alternate sides
+      if(RM(P).area<40)gate.forEach((q,i)=>{ if(roomAt(q.x,q.z)!==P)return; const sd=i%2?1:-1, o=i<2?0.9:2.0, f={x:Dstar.x+n.x*o+t.x*(Dstar.w/2+0.9)*sd,z:Dstar.z+n.z*o+t.z*(Dstar.w/2+0.9)*sd};
+        gate[i]=nearestFreeNav(FLY,f.x,f.z,1.0)||f; });
       const pts=gate.map(q=>at(q,y)); if(pts.length<3)pts.push(second);
       return {key:'block',text:'block his way to the '+Dstar.name,pts:[pts[0],pts[1],pts[2]],door:Dstar.id,room:P,yawTo:I}; } }
   return {key:'barrier',text:'screen the '+Dstar.name+(others.length?' and the '+others[0].name:''),pts:[watch,screen,second],door:Dstar.id,room:P,yawTo:I||team.lkp||{x:Dstar.x+n.x*3,z:Dstar.z+n.z*3}}; // unseen: watch where he was last known (a door sensor counts), not straight out of the door
@@ -469,7 +710,7 @@ function tDrive(I,guide){
   if(mission.exitId==null||simT-(mission.exitT||-9)>3){ let ne=mission.params.exit!=null?mission.params.exit:nearestExit(I).id;
     // a guide must already be ahead of him on the way out: drones cannot pass a person in a corridor at the standoff
     if(guide&&mission.params.exit==null){ let bl=Infinity; for(const e of exitDoors()){ const wi=doorWalk(e.id,I); if(team.drones.some(d=>doorWalk(e.id,d)<wi-1)&&wi<bl){ bl=wi; ne=e.id; } } }
-    if(mission.exitId==null||mission.params.exit!=null||doorWalk(ne,I)<doorWalk(mission.exitId,I)-5)mission.exitId=ne; mission.exitT=simT; }
+    if(mission.exitId==null||mission.params.exit!=null||exitCost(plan.doors[ne],I)<exitCost(plan.doors[mission.exitId],I)-5)mission.exitId=ne; mission.exitT=simT; }
   const E=plan.doors[mission.exitId];
   const ahead=descend(E.id,I,2.0); let gx=ahead.x-I.x, gz=ahead.z-I.z; const L=hyp(gx,gz)||1; gx/=L; gz/=L; const nx=-gz, nz=gx, y=settings.zNom;
   if(guide&&doorWalk(E.id,I)<4.5){ const t=doorTangent(E), o=outsidePoint(E,1.0), sn=nearestFreeNav;
@@ -510,16 +751,21 @@ function tTrack(I){
 function tContain(I){
   if(!I){ const s=tSearch(2,true); s.text='lost him: '+s.text; return s; }
   const R=roomAt(I.x,I.z)>=0?roomAt(I.x,I.z):team.lkpRoom; if(R==null||R<0||R>=plan.rooms.length)return tTrack(I);
-  const q=RM(R), y=settings.zNom;
-  if(Math.min(q.x1-q.x0,q.z1-q.z0)>=7){ for(let k=0;k<12;k++){ const phi=k*Math.PI/18; const pts=[0,1,2].map(i=>({x:I.x+3*Math.sin(phi+i*2*Math.PI/3),y,z:I.z+3*Math.cos(phi+i*2*Math.PI/3)}));
+  const q=RM(R), y=settings.zNom, rr=q.rects.find(r=>I.x>=r.x0&&I.x<=r.x1&&I.z>=r.z0&&I.z<=r.z1)||q.rects[0];
+  if(Math.min(rr.x1-rr.x0,rr.z1-rr.z0)>=7){ for(let k=0;k<12;k++){ const phi=k*Math.PI/18; const pts=[0,1,2].map(i=>({x:I.x+3*Math.sin(phi+i*2*Math.PI/3),y,z:I.z+3*Math.cos(phi+i*2*Math.PI/3)}));
       if(pts.every(p=>!FLY[navIdx(p.x,p.z)]&&roomAt(p.x,p.z)===R))return {key:'ring',text:'ring around him in the '+q.name,pts,room:R,yawTo:I}; } }
   const ds=plan.doors.filter(d=>d.rooms.includes(R)).sort((a,b)=>hyp(a.x-I.x,a.z-I.z)-hyp(b.x-I.x,b.z-I.z));
   const pts=ds.slice(0,3).map(d=>at(doorPoint(d,R,0.8),y)); const busy=ds[0];
-  while(pts.length<3){ const t=doorTangent(busy), o=doorPoint(busy,R,2.0), k=pts.length===1?1:-1; pts.push({x:o.x+t.x*1.0*k,y,z:o.z+t.z*1.0*k}); }
+  // spare drones flank the busiest door 1 m out and 1.5 m to either side: along a corridor or a narrow hallway, not across it
+  while(pts.length<3){ const t=doorTangent(busy), o=doorPoint(busy,R,1.0), k=pts.length===1?1:-1; pts.push({x:o.x+t.x*1.5*k,y,z:o.z+t.z*1.5*k}); }
   return {key:'doors',text:'hold the doors of the '+q.name,pts,room:R,yawTo:I};
 }
-function viewpoints(r){ mission.vpCache=mission.vpCache||{}; if(mission.vpCache[r])return mission.vpCache[r]; const q=RM(r), w=q.x1-q.x0, d=q.z1-q.z0; let pts;
-  const L=Math.max(w,d), n=Math.max(1,Math.round(L/6)); pts=[]; for(let i=0;i<n;i++){ const f=(i+0.5)/n; pts.push(w>=d?{x:q.x0+w*f,z:q.cz}:{x:q.cx,z:q.z0+d*f}); } // one viewpoint per ~6 m of the room's long axis
+// search viewpoints, one per ~6 m: along the long axis of a narrow rectangle, a grid (walked as a snake) over a wide one,
+// for each of the room's rectangles
+function viewpoints(r){ mission.vpCache=mission.vpCache||{}; if(mission.vpCache[r])return mission.vpCache[r]; let pts=[];
+  for(const q of RM(r).rects){ const w=q.x1-q.x0, d=q.z1-q.z0, cx=(q.x0+q.x1)/2, cz=(q.z0+q.z1)/2, nx=Math.max(1,Math.round(w/6)), nz=Math.max(1,Math.round(d/6));
+    if(nx===1||nz===1){ const n=Math.max(nx,nz); for(let i=0;i<n;i++){ const f=(i+0.5)/n; pts.push(w>=d?{x:q.x0+w*f,z:cz}:{x:cx,z:q.z0+d*f}); } }
+    else for(let j=0;j<nz;j++)for(let i0=0;i0<nx;i0++){ const i=j%2?nx-1-i0:i0; pts.push({x:q.x0+w*((i+0.5)/nx),z:q.z0+d*((j+0.5)/nz)}); } }
   pts=pts.map(p=>nearestFreeNav(FLY,p.x,p.z,3)||p); mission.vpCache[r]=pts; return pts; }
 function tSearch(level,sub){
   level=level||mission.params.level||3; const thr=settings.levelCov[level]||0.8, y=settings.zNom;
@@ -597,7 +843,7 @@ function tOverwatch(){
   if(mission.params.door!=null){ const d=plan.doors[mission.params.door]; label='the '+d.name; for(let dz=-4;dz<=4;dz+=0.5)for(let dx=-4;dx<=4;dx+=0.5){ const x=d.x+dx, z=d.z+dz; if(!WALK[navIdx(x,z)])targets.push({x,z}); } }
   else { const r=mission.params.room!=null?mission.params.room:plan.home; label='the '+RM(r).name; targets=COVP[r].map(p=>({x:p.x,z:p.z})); }
   const cand=[]; for(const d of plan.doors)for(const rid of d.rooms){ if(rid>=plan.rooms.length)continue; const p=nearestFreeNav(FLY,...Object.values(doorPoint(d,rid,1.0)),1.5); if(p)cand.push(p); }
-  for(const q of plan.rooms)for(const [cx,cz] of [[q.x0+0.7,q.z0+0.7],[q.x1-0.7,q.z0+0.7],[q.x0+0.7,q.z1-0.7],[q.x1-0.7,q.z1-0.7]]){ const p=nearestFreeNav(FLY,cx,cz,1); if(p)cand.push(p); }
+  for(const rm of plan.rooms)for(const q of rm.rects)for(const [cx,cz] of [[q.x0+0.7,q.z0+0.7],[q.x1-0.7,q.z0+0.7],[q.x0+0.7,q.z1-0.7],[q.x1-0.7,q.z1-0.7]]){ const p=nearestFreeNav(FLY,cx,cz,1); if(p)cand.push(p); }
   const vis=cand.map(v=>targets.map(t=>hyp(t.x-v.x,t.z-v.z)<=settings.camRange&&los(v.x,y,v.z,t.x,1.0,t.z)));
   const covered=new Array(targets.length).fill(false), pick=[];
   for(let n=0;n<3;n++){ let bi=-1,bs=-1; vis.forEach((row,i)=>{ if(pick.includes(i))return; let s=0; row.forEach((v,j)=>{ if(v&&!covered[j])s++; }); if(s>bs){ bs=s; bi=i; } }); if(bi<0)break; pick.push(bi); vis[bi].forEach((v,j)=>{ if(v)covered[j]=true; }); }
@@ -624,12 +870,15 @@ function validate(pts,I,landing,band,doorsOk){
         pts[a].x-=ux*m; pts[a].z-=uz*m; pts[b].x+=ux*m; pts[b].z+=uz*m; for(const k of [a,b])if(!flags[k].includes('separation'))flags[k].push('separation'); fix(pts[a],a); fix(pts[b],b); } }
     if(I){ const near=pts.filter(p=>hyp(p.x-I.x,p.z-I.z)<4.05).length; const dS=band==='pressure'?settings.dPress:near>=2?settings.dS2:settings.dS;
       pts.forEach((p,k)=>{ const dx=p.x-I.x, dz=p.z-I.z, d=hyp(dx,dz); if(d<dS){ const ux=d>1e-3?dx/d:1, uz=d>1e-3?dz/d:0; p.x=I.x+ux*(dS+0.01); p.z=I.z+uz*(dS+0.01); if(!flags[k].includes('standoff'))flags[k].push('standoff'); fix(p,k); } }); } }
-  // pairs still short of the separation move apart around him, keeping their distance from him
-  if(I)for(let it=0;it<3;it++)for(let a=0;a<3;a++)for(let b=a+1;b<3;b++){ const d=hyp(pts[b].x-pts[a].x,pts[b].z-pts[a].z); if(d>=settings.sep-0.03)continue;
-    const ang=p=>Math.atan2(p.x-I.x,p.z-I.z), sg=wrapPi(ang(pts[b])-ang(pts[a]))>=0?1:-1, r=Math.max(1,Math.min(hyp(pts[a].x-I.x,pts[a].z-I.z),hyp(pts[b].x-I.x,pts[b].z-I.z))), turn=(settings.sep+0.05-d)/r;
-    for(const [k,sk] of [[a,-sg],[b,sg]]){ const p=pts[k], rr=hyp(p.x-I.x,p.z-I.z), th=ang(p)+sk*turn/2; p.x=I.x+Math.sin(th)*rr; p.z=I.z+Math.cos(th)*rr; fix(p,k); } }
-  // the rotation can bring a second slot within 4 m of him, which raises the standoff to 3 m: check it once more, last
-  if(I){ const near=pts.filter(p=>hyp(p.x-I.x,p.z-I.z)<4.05).length, dS=band==='pressure'?settings.dPress:near>=2?settings.dS2:settings.dS;
+  // pairs still short of the separation move apart around him, keeping their distance from him; the rotation can bring a second
+  // slot within 4 m of him, which raises the standoff to 3 m, and that push can close a pair again in a cramped corner, so the two
+  // passes alternate until both hold (the standoff pass, the stricter rule, always runs last)
+  const short=()=>{ for(let a=0;a<3;a++)for(let b=a+1;b<3;b++)if(hyp(pts[b].x-pts[a].x,pts[b].z-pts[a].z)<settings.sep-0.03)return true; return false; };
+  if(I)for(let round=0;round<4&&(round===0||short());round++){
+    for(let it=0;it<3;it++)for(let a=0;a<3;a++)for(let b=a+1;b<3;b++){ const d=hyp(pts[b].x-pts[a].x,pts[b].z-pts[a].z); if(d>=settings.sep-0.03)continue;
+      const ang=p=>Math.atan2(p.x-I.x,p.z-I.z), sg=wrapPi(ang(pts[b])-ang(pts[a]))>=0?1:-1, r=Math.max(1,Math.min(hyp(pts[a].x-I.x,pts[a].z-I.z),hyp(pts[b].x-I.x,pts[b].z-I.z))), turn=(settings.sep+0.05-d)/r;
+      for(const [k,sk] of [[a,-sg],[b,sg]]){ const p=pts[k], rr=hyp(p.x-I.x,p.z-I.z), th=ang(p)+sk*turn/2; p.x=I.x+Math.sin(th)*rr; p.z=I.z+Math.cos(th)*rr; fix(p,k); } }
+    const near=pts.filter(p=>hyp(p.x-I.x,p.z-I.z)<4.05).length, dS=band==='pressure'?settings.dPress:near>=2?settings.dS2:settings.dS;
     pts.forEach((p,k)=>{ const dx=p.x-I.x, dz=p.z-I.z, d=hyp(dx,dz); if(d<dS){ const ux=d>1e-3?dx/d:1, uz=d>1e-3?dz/d:0; p.x=I.x+ux*(dS+0.01); p.z=I.z+uz*(dS+0.01); if(!flags[k].includes('standoff'))flags[k].push('standoff'); fix(p,k); } }); }
   return flags.map(f=>[...new Set(f)]);
 }
@@ -685,8 +934,10 @@ function droneStep(d,dt){
   const clr=wallClearance(d); if(d.y>0.4&&clr<0.45){ const gr=clearanceGrad(d.x,d.z); const g=(0.45-clr)*8; ax+=gr.x*g; az+=gr.z*g; }
   if(d.y<0.3){ ax=0; az=0; d.vx=0; d.vz=0; }
   d.vx+=ax*dt; d.vz+=az*dt; d.vy=clamp(d.vy+ay*dt,-0.8,0.8); const vcap=pu&&pu.d<bandDist(droneBand(d))+0.5?Math.max(vlim,2.5):vlim; const v=hyp(d.vx,d.vz); if(v>vcap){ d.vx*=vcap/v; d.vz*=vcap/v; }
-  if(pu){ const toward=-(d.vx*pu.x+d.vz*pu.z); if(toward>settings.vSlow){ const ex=toward-settings.vSlow; d.vx+=pu.x*ex; d.vz+=pu.z*ex; } }
   if(d.y>0.3)for(const o of team.drones){ if(o===d||o.y<0.3)continue; const ox=o.x-d.x, oz=o.z-d.z, od=hyp(ox,oz); if(od<0.9&&od>1e-3){ const cl=(d.vx*ox+d.vz*oz)/od; if(cl>0){ d.vx-=ox/od*cl; d.vz-=oz/od*cl; } } }
+  // toward a person in sight: at most vSlow, and not at all inside the band's limit (+0.3 m), whatever else pushes the drone
+  if(pu){ const toward=-(d.vx*pu.x+d.vz*pu.z), lim=droneBand(d)==='pressure'?settings.floorPress:settings.floorComfort, cap=pu.d<lim+0.3?0:settings.vSlow;
+    if(toward>cap){ const ex=toward-cap; d.vx+=pu.x*ex; d.vz+=pu.z*ex; } }
   const nx=d.x+d.vx*dt, nz=d.z+d.vz*dt, ny=clamp(d.y+d.vy*dt,0.1,settings.ceil-0.3);
   if(d.y>0.3&&blockedAt(nx,ny,nz)){ if(!blockedAt(nx,ny,d.z)){ d.x=nx; d.vz=0; } else if(!blockedAt(d.x,ny,nz)){ d.z=nz; d.vx=0; } else { d.vx=d.vz=0; } } else { d.x=nx; d.z=nz; } d.y=ny;
   // yaw: toward the requested direction, or a slow spin while searching
@@ -718,7 +969,7 @@ function resolveParams(goal,p){ const out={};
   if(p.door!=null){ out.door=doorByName(p.door,false); if(out.door==null)delete out.door; }
   if(p.exit!=null){ out.exit=doorByName(p.exit,true); if(out.exit==null)delete out.exit; }
   if(goal==='search')out.level=[2,3,5].includes(+p.level)?+p.level:3;
-  if(goal==='overwatch'&&out.door==null&&out.room==null)out.door=doorByName('main entrance',false);
+  if(goal==='overwatch'&&out.door==null&&out.room==null){ const m=doorByName('main entrance',false); out.door=m!=null?m:exitDoors()[0].id; }
   return out; }
 function describeGoal(){ const p=mission.params, g=mission.goal;
   if(g==='keepout')return 'Keep him out of the '+RM(p.room!=null?p.room:world.scenario.protectedRoom).name;
@@ -730,7 +981,7 @@ function describeGoal(){ const p=mission.params, g=mission.goal;
 function applyOrder(goal,text,src,params){
   if(!GOALS[goal])return false;
   Object.assign(mission,{goal,params:resolveParams(goal,params||{}),status:'active',acceptedT:simT,holdPts:null,doorStar:null,exitId:null,leader:null,stall:null,trail:[],lostT:null,
-    searchRooms:{},vp:{},spinT:{},owCache:null,vpCache:null,sub:false,planT:0});
+    searchRooms:{},vp:{},spinT:{},owCache:null,vpCache:null,hubCache:null,sub:false,planT:0});
   mission.version++; mission.order={goal,text:text||null,src:src||'speech',t:+simT.toFixed(2),version:mission.version,params:mission.params};
   if(goal==='search')team.resetCoverage(); if(goal==='explore')mission.explore={t0:simT};
   if(src!=='auto'&&src!=='queued'){ metrics.orders++; say('you',text||describeGoal()+'.'); }
@@ -807,13 +1058,14 @@ function truth(dt){ const air=team.drones.filter(d=>d.y>0.5);
   for(const d of air){ if(d.y<settings.zMin-0.3)continue; const w=wallClearance(d); if(w<metrics.minWall)metrics.minWall=w; if(w<0.25)metrics.wallViol+=dt; if(d.y>settings.ceil-0.45)metrics.altViol+=dt; } }
 
 const world={endOnGone:false,ended:false,scenario:null,
-  // reset(opts): {layout:'fixed'|'random', protect:'lab', person:{role,intent,start,targetRoom,startExit,params}, goal, params, settings, endOnGone}. Call seed(n) first.
+  // reset(opts): {family:'office'|'house'|…, layout:'fixed'|'random', plan, protect:'lab', person:{role,intent,start,targetRoom,startExit,params}, goal, params,
+  // settings, endOnGone}. Call seed(n) first. `plan` (a finished plan) overrides family and layout; protect defaults to the plan's.
   reset(opts){ opts=opts||{}; Object.assign(settings,JSON.parse(JSON.stringify(SETTINGS0)),opts.settings||{});
-    buildWorld(opts.layout==='random'?makeOffice(rng):makeOffice(null));
+    buildWorld(opts.plan||makeFloor(opts.family||'office',opts.layout==='random'?rng:null));
     simT=0; talk.length=0; talkVer++; log.length=0; logVer++; radio.length=0; for(const k in doorLock)delete doorLock[k];
     for(const k in metrics)metrics[k]=k.startsWith('min')?Infinity:(k==='tFound'?null:k==='bandViol'||k==='bandT'?{pressure:0,comfort:0}:0);
-    const protect=roomByName(opts.protect)!=null?roomByName(opts.protect):plan.rooms.find(q=>q.name==='lab').id;
-    this.scenario={layout:opts.layout||'fixed',protectedRoom:protect};
+    const protect=roomByName(opts.protect)!=null?roomByName(opts.protect):(plan.protect!=null?plan.protect:0);
+    this.scenario={family:plan.family,layout:opts.plan?'given':(opts.layout||'fixed'),protectedRoom:protect};
     team.drones=plan.pads.map((p,k)=>makeDrone(k,p)); Object.assign(team,{seen:false,lkp:null,lkpT:-1,lkpRoom:-1,vel:{x:0,z:0},everSeen:false,beliefRooms:new Set(),map:new Uint8Array(NX*NZ),dets:[],percT:0,trueSeen:false,fromFP:false}); team.resetCoverage();
     const po=Object.assign({targetRoom:protect},opts.person||{}); if(typeof po.targetRoom==='string')po.targetRoom=roomByName(po.targetRoom); if(typeof po.start==='string'&&po.start!=='outside')po.start=roomByName(po.start);
     if(typeof po.startExit==='string')po.startExit=doorByName(po.startExit,true);
@@ -832,7 +1084,7 @@ const world={endOnGone:false,ended:false,scenario:null,
   queue(goal,text,params){ if(!GOALS[goal])return false; mission.queued={goal,text,params}; say('master','Queued next: '+GOALS[goal]+'.'); return true; }
 };
 if(typeof module!=='undefined')module.exports={world,simT:()=>simT,metrics,settings,team,person,mission,GOALS,talk,log,seed,rng,los,getPlan:()=>plan,
-  grids:()=>({WALK,FLY,FLYRAW,DZONE,Hg,DOORC,ROOMC,NX,NZ,GX,GZ}),planPath,pathLength,makeOffice,buildWorld,roomAt,heightAt,validate,COVP,doorLock,wallClearance,cellIdx,navIdx,roomByName,doorByName,coarseDims,coarseMap,cameraRays,detectFrame};
+  grids:()=>({WALK,FLY,FLYRAW,DZONE,Hg,DOORC,ROOMC,NX,NZ,GX,GZ}),planPath,pathLength,makeOffice,makeFloor,FAMILIES,buildWorld,roomAt,heightAt,validate,COVP,doorLock,wallClearance,cellIdx,navIdx,roomByName,doorByName,coarseDims,coarseMap,cameraRays,detectFrame};
 </script>
 <script>
 // [dan] Swarm Indoor page: top-down floor view, goal buttons, orders by voice (voice/server.py), conversation and safety metrics.
@@ -841,12 +1093,16 @@ if(typeof module!=='undefined')module.exports={world,simT:()=>simT,metrics,setti
 const $=s=>document.querySelector(s);
 const COL={M:'#22d3ee',S1:'#a3e635',S2:'#f472b6',P:'#fb7185',vec:'#fbbf24',site:'#34d399'};
 const GOAL_KEYS=['hold','keepout','driveout','guideout','track','contain','search','explore','overwatch','return'];
-const ui={running:true,speed:1,who:'intruder',layout:'fixed',seed:1,floor:null,exploreImg:null,exploreT:-9,talkVer:-1,scale:30,ox:0,oy:0,fitKey:''};
+const ui={running:true,speed:1,who:'intruder',family:'office',layout:'fixed',seed:1,floor:null,exploreImg:null,exploreT:-9,talkVer:-1,scale:30,ox:0,oy:0,fitKey:''};
 const cv=$('#cv'), ctx=cv.getContext('2d'), view=$('#view');
 
 // ---------- scenario ----------
 function personOpts(){ return ui.who==='visitor'?{role:'visitor',intent:'wander'}:ui.who==='hider'?{role:'intruder',intent:'hide'}:{role:'intruder',delay:6}; }
-function resetWorld(){ seed(ui.seed); world.reset({layout:ui.layout,person:personOpts(),goal:'hold'}); ui.floor=null; ui.exploreImg=null; ui.talkVer=-1; ui.fitKey=''; highlightGoal('hold');
+// example orders that name this floor's rooms and exits
+function updateTry(){ const P=plan.rooms[world.scenario.protectedRoom].name, ex=exitDoors(), E=ex[ex.length>1?1:0].name, M=ex[0].name, R=(plan.rooms.find(q=>q.id!==world.scenario.protectedRoom&&q.id!==plan.home)||plan.rooms[0]).name;
+  $('#tryline').textContent='Try: “keep him out of the '+P+'” · “drive him out the '+E+'” · “guide her out” · “track him” · “keep him in the '+R+'” · “search the building thoroughly” · “map the floor” · “watch the '+M+'” · “come back and land” · “search the building, then come back”.';
+  $('#ordertxt').placeholder='…or type one: keep him out of the '+P; }
+function resetWorld(){ seed(ui.seed); world.reset({family:ui.family,layout:ui.layout,person:personOpts(),goal:'hold'}); updateTry(); ui.floor=null; ui.exploreImg=null; ui.talkVer=-1; ui.fitKey=''; highlightGoal('hold');
   $('#hint').textContent='hold Space: say an order · 1–0 goals · click the floor: send the person there · p pause · r reset · n new floor (seed '+ui.seed+')'; }
 
 // ---------- drawing ----------
@@ -873,10 +1129,10 @@ function text(t,x,y,size,color,align){ ctx.font=(size*(window.devicePixelRatio||
 function render(){ fit(); const dpr=window.devicePixelRatio||1; ctx.setTransform(1,0,0,1,0,0); ctx.fillStyle='#05080e'; ctx.fillRect(0,0,cv.width,cv.height);
   if(!ui.floor)ui.floor=buildFloor(); ctx.imageSmoothingEnabled=false; ctx.drawImage(ui.floor,X(0),Y(0),GX*CELL*ui.scale,GZ*CELL*ui.scale);
   // room state: amber = he could be here, green = cleared since he was last seen
-  for(const q of plan.rooms){ const inB=team.beliefRooms.has(q.id), cl=team.cleared.has(q.id); if(!inB&&!cl)continue; ctx.fillStyle=cl?'rgba(52,211,153,0.10)':'rgba(251,191,36,0.10)'; ctx.fillRect(X(q.x0),Y(q.z0),(q.x1-q.x0)*ui.scale,(q.z1-q.z0)*ui.scale); }
+  for(const q of plan.rooms){ const inB=team.beliefRooms.has(q.id), cl=team.cleared.has(q.id); if(!inB&&!cl)continue; ctx.fillStyle=cl?'rgba(52,211,153,0.10)':'rgba(251,191,36,0.10)'; for(const r of q.rects)ctx.fillRect(X(r.x0),Y(r.z0),(r.x1-r.x0)*ui.scale,(r.z1-r.z0)*ui.scale); }
   drawExplore(); // what the drones have scanned so far (stronger while mapping the floor)
-  const P=world.scenario.protectedRoom, pq=plan.rooms[P]; if(pq&&person.role==='intruder'){ ctx.strokeStyle='rgba(251,191,36,0.55)'; ctx.setLineDash([6*dpr,5*dpr]); ctx.lineWidth=1.5*dpr; ctx.strokeRect(X(pq.x0)+3,Y(pq.z0)+3,(pq.x1-pq.x0)*ui.scale-6,(pq.z1-pq.z0)*ui.scale-6); ctx.setLineDash([]); }
-  for(const q of plan.rooms)text(q.name+(q.id===P&&person.role==='intruder'?' · protected':''),X(q.cx),Y(q.z0)+12*dpr,10.5,'rgba(200,210,225,0.55)');
+  const P=world.scenario.protectedRoom, pq=plan.rooms[P]; if(pq&&person.role==='intruder'){ ctx.strokeStyle='rgba(251,191,36,0.55)'; ctx.setLineDash([6*dpr,5*dpr]); ctx.lineWidth=1.5*dpr; for(const r of pq.rects)ctx.strokeRect(X(r.x0)+3,Y(r.z0)+3,(r.x1-r.x0)*ui.scale-6,(r.z1-r.z0)*ui.scale-6); ctx.setLineDash([]); }
+  for(const q of plan.rooms){ const br=q.rects.find(r=>q.cx>=r.x0&&q.cx<=r.x1&&q.cz>=r.z0&&q.cz<=r.z1)||q.rects[0]; text(q.name+(q.id===P&&person.role==='intruder'?' · protected':''),X(q.cx),Y(br.z0)+12*dpr,10.5,'rgba(200,210,225,0.55)'); }
   for(const d of plan.doors){ const owner=doorLock[d.id]; if(owner!=null){ const c=COL[team.drones[owner].id]; ctx.fillStyle=c+'33'; const w=d.w+0.4; if(d.axis==='h')ctx.fillRect(X(d.x-w/2),Y(d.z-0.5),w*ui.scale,1.0*ui.scale); else ctx.fillRect(X(d.x-0.5),Y(d.z-w/2),1.0*ui.scale,w*ui.scale); }
     if(d.rooms[1]===plan.OUT)text(d.name,X(d.x)+(d.axis==='v'?0:0),Y(d.z)+(d.axis==='h'?(d.z>plan.D/2?14:-14):0)*dpr,9.5,'rgba(52,211,153,0.75)'); }
   for(const p of plan.pads){ ctx.strokeStyle='rgba(255,255,255,0.25)'; ctx.lineWidth=1*dpr; ctx.strokeRect(X(p.x-0.3),Y(p.z-0.3),0.6*ui.scale,0.6*ui.scale); }
@@ -977,7 +1233,7 @@ $('#ordersend').addEventListener('click',sendTyped); $('#ordertxt').addEventList
 // ---------- buttons and clicks ----------
 for(const b of $('#goalseg').children)b.addEventListener('click',()=>{ world.setGoal(b.dataset.goal,{}); highlightGoal(b.dataset.goal); });
 const seg=(id,key,fn)=>{ for(const b of $(id).children)b.addEventListener('click',()=>{ for(const o of $(id).children)o.classList.toggle('on',o===b); fn(b.dataset[key]); }); };
-seg('#whoseg','who',v=>{ ui.who=v; resetWorld(); }); seg('#layseg','lay',v=>{ ui.layout=v; resetWorld(); }); seg('#speed','s',v=>{ ui.speed=+v; });
+seg('#whoseg','who',v=>{ ui.who=v; resetWorld(); }); seg('#layseg','lay',v=>{ ui.layout=v; resetWorld(); }); $('#famsel').addEventListener('change',e=>{ ui.family=e.target.value; resetWorld(); }); seg('#speed','s',v=>{ ui.speed=+v; });
 function togglePlay(){ ui.running=!ui.running; $('#play').textContent=ui.running?'Pause':'Play'; $('#play').classList.toggle('on',!ui.running); }
 $('#play').addEventListener('click',togglePlay); $('#reset').addEventListener('click',resetWorld);
 cv.addEventListener('click',e=>{ if(!person.alive)return; const r=cv.getBoundingClientRect(), dpr=window.devicePixelRatio||1; const x=((e.clientX-r.left)*dpr-ui.ox)/ui.scale, z=((e.clientY-r.top)*dpr-ui.oy)/ui.scale;

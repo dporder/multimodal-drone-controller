@@ -234,16 +234,27 @@ INDOOR_GOALS = {
 }
 INDOOR_OPTIONS = ("keep him out of a room, drive him out, guide them out, track him, contain him, search the building, "
                   "map the floor, watch a door, hold, or come back and land")
+# spoken words -> the floor names they can mean, in order; the first that exists on this floor wins ("hall" is the corridor
+# in the office, the hallway in a house, and itself on a floor with a room called "hall", since exact names are tried first)
 ROOM_SYNONYMS = {
-    "laboratory": "lab", "storeroom": "storage", "store room": "storage", "storage room": "storage", "stock room": "storage",
-    "hallway": "corridor", "hall": "corridor", "passage": "corridor", "conference room": "meeting room",
-    "boardroom": "meeting room", "reception": "lobby", "foyer": "lobby", "entrance hall": "lobby", "break room": "kitchen",
-    "canteen": "kitchen",
+    "laboratory": ("lab",), "storeroom": ("storage", "storeroom"), "store room": ("storage", "storeroom", "store"),
+    "storage room": ("storage", "storeroom"), "stock room": ("storage", "storeroom"), "stockroom": ("storage", "storeroom"),
+    "hallway": ("corridor", "hallway"), "hall": ("corridor", "hallway"), "passage": ("corridor", "hallway"),
+    "conference room": ("meeting room",), "boardroom": ("meeting room",), "reception": ("lobby", "reception"),
+    "foyer": ("lobby", "reception"), "entrance hall": ("lobby", "reception"), "break room": ("kitchen", "break room"),
+    "canteen": ("kitchen", "break room"), "lounge": ("living room",), "sitting room": ("living room",),
+    "open plan area": ("open office",), "open plan office": ("open office",), "shop floor": ("sales floor",),
+    "staffroom": ("staff room",), "nurse station": ("nurses station",), "warehouse floor": ("warehouse",),
 }
 DOOR_SYNONYMS = {
-    "front door": "main entrance", "main door": "main entrance", "front entrance": "main entrance", "entrance": "main entrance",
-    "emergency exit": "fire exit", "east door": "east exit", "back door": "fire exit",
+    "front door": ("main entrance", "front door", "front entrance", "main door"), "main door": ("main entrance", "main door", "front door", "front entrance"),
+    "front entrance": ("main entrance", "front entrance", "front door", "main door"), "entrance": ("main entrance", "front entrance", "front door", "main door"),
+    "emergency exit": ("fire exit",), "east door": ("east exit",), "west door": ("west exit",), "back door": ("fire exit", "back door", "back exit"),
+    "loading dock": ("loading dock door",), "dock door": ("loading dock door",), "side door": ("side exit", "side door"),
 }
+# numbered rooms ("classroom 3", "bedroom 2") may be said with the number as a word
+NUM_WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve", "thirteen",
+             "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen", "twenty"]
 PERSON_IN = r"(?:him|her|them|it|the intruder|the person|the guy|that guy|the man|the woman|the visitor|the guest)"
 I_KEEP_OUT = [
     re.compile(r"\bkeep\b.*\b(out|away)\b"), re.compile(r"\bblock\b"), re.compile(r"\b(guard|protect|defend|secure)\b"),
@@ -289,16 +300,28 @@ def _names(ctx):
     return rooms, doors
 
 
-def _find_name(c, names, synonyms):
-    """Longest floor name (or synonym) mentioned in the clause."""
-    best = None
+def spoken_variants(name):
+    """A floor name as it may be said: "classroom 3" is also "classroom three"."""
+    m = re.match(r"^(.*\D) (\d+)$", name)
+    if m and int(m.group(2)) < len(NUM_WORDS):
+        return [name, m.group(1) + " " + NUM_WORDS[int(m.group(2))]]
+    return [name]
+
+
+def find_name(c, names, synonyms):
+    """Longest floor name (or a spoken variant, or a synonym) mentioned in the clause -> (name, the words that matched)."""
     for n in sorted(names, key=len, reverse=True):
-        if re.search(r"\b" + re.escape(n) + r"(?: room)?\b", c):
-            return n
-    for syn, n in sorted(synonyms.items(), key=lambda kv: -len(kv[0])):
-        if n in names and re.search(r"\b" + re.escape(syn) + r"\b", c):
-            best = best or n
-    return best
+        for v in spoken_variants(n):
+            m = re.search(r"\b" + re.escape(v) + r"(?: room)?\b", c)
+            if m:
+                return n, m.group(0)
+    for syn, targets in sorted(synonyms.items(), key=lambda kv: -len(kv[0])):
+        m = re.search(r"\b" + re.escape(syn) + r"\b", c)
+        if m:
+            for t in targets:
+                if t in names:
+                    return t, m.group(0)
+    return None, None
 
 
 def _door_rooms(ctx, door):
@@ -310,14 +333,12 @@ def _door_rooms(ctx, door):
 
 def _slots(c, ctx):
     rooms, doors = _names(ctx)
-    door = _find_name(c, doors, DOOR_SYNONYMS)
-    if door and re.search(r"\b" + re.escape(door) + r"\b", c) is None and door not in DOOR_SYNONYMS.values():
-        door = None
+    door, said = find_name(c, doors, DOOR_SYNONYMS)
     # a room name inside a door name ("lab door") is the door, not the room
-    c_wo_door = re.sub(r"\b" + re.escape(door) + r"\b", " ", c) if door else c
-    for syn, n in DOOR_SYNONYMS.items():
+    c_wo_door = re.sub(r"\b" + re.escape(said) + r"\b", " ", c) if door else c
+    for syn in DOOR_SYNONYMS:
         c_wo_door = re.sub(r"\b" + re.escape(syn) + r"\b", " ", c_wo_door)
-    room = _find_name(c_wo_door, rooms, ROOM_SYNONYMS)
+    room, _ = find_name(c_wo_door, rooms, ROOM_SYNONYMS)
     if re.search(r"\b(this room|in here|this one)\b", c):
         room = room or "this room"
     exits = [d["name"] for d in ctx.get("doors") or [] if isinstance(d, dict) and "outside" in (d.get("rooms") or [])]

@@ -115,13 +115,16 @@ function indoorOutcome(S, t, ended) {
 function runIndoorEpisode(S, sha, ep, baseline) {
   const sc = ep.scenario, secs = sc.secs || 180, dt = 1 / 60;
   S.seed(ep.seed);
-  S.world.reset({ layout: sc.layout, protect: sc.protect, person: sc.person, goal: 'hold', settings: sc.settings, endOnGone: !!sc.endOnGone, grounded: baseline });
+  S.world.reset({ family: sc.family || 'office', layout: sc.layout, protect: sc.protect, person: sc.person, goal: 'hold', settings: sc.settings, endOnGone: !!sc.endOnGone, grounded: baseline });
   const out = [];
   if (!baseline) {
     const P = S.getPlan(), r2 = v => +v.toFixed(2);
     out.push({ type: 'header', schema: 'dmc.contract.v0', sim: 'swarm-indoor', core_sha: sha, seed: ep.seed, episode: ep.episode, split: ep.split,
       frame: `x east, z south, y up, metres; floor ${r2(P.W)} x ${r2(P.D)} m, ceiling ${P.ceil} m`,
-      floor: { W: r2(P.W), D: r2(P.D), ceil: P.ceil, lintel: S.settings.lintel, rooms: P.rooms.map(q => ({ id: q.id, name: q.name, x0: r2(q.x0), z0: r2(q.z0), x1: r2(q.x1), z1: r2(q.z1) })),
+      // a room is the union of its rectangles (x0, z0, x1, z1 also give its bounding box); walls (0.2 m) run along every room boundary
+      floor: { family: P.family, source: P.source, licence: P.licence, W: r2(P.W), D: r2(P.D), ceil: P.ceil, lintel: S.settings.lintel,
+        rooms: P.rooms.map(q => ({ id: q.id, name: q.name, x0: r2(q.x0), z0: r2(q.z0), x1: r2(q.x1), z1: r2(q.z1), rects: q.rects.map(r => [r2(r.x0), r2(r.z0), r2(r.x1), r2(r.z1)]) })),
+        home: P.home, protectable: P.protectable,
         furniture: P.furn.map(f => ({ x0: r2(f.x0), z0: r2(f.z0), x1: r2(f.x1), z1: r2(f.z1), h: f.h, kind: f.kind })), pads: P.pads.map(p => [r2(p.x), 0, r2(p.z)]), operator: [r2(P.operator.x), 0, r2(P.operator.z)] },
       doors: P.doors.map(d => ({ id: d.id, name: d.name, x: d.x, z: d.z, w: d.w, axis: d.axis, rooms: d.rooms.map(r => r < P.rooms.length ? r : 'outside') })),
       protected_room: S.world.scenario.protectedRoom, scenario: sc, person: S.world.scenario.person, orders: ep.orders,
@@ -207,6 +210,7 @@ if (!isMainThread) {
     fs.writeFileSync(path.join(outDir, name), zlib.gzipSync(body, { level: 6 }));
     const row = { episode: ep.episode, seed: ep.seed, split: ep.split, file: name, sha256: crypto.createHash('sha256').update(body).digest('hex'),
       plan_records: out.filter(r => r.type === 'plan').length, orders: out.filter(r => r.type === 'order').length,
+      family: ep.scenario && ep.scenario.family || 'office', layout: ep.scenario && ep.scenario.layout, split_by: ep.split_by,
       goal: dominantGoal(out), intent: ep.scenario && ep.scenario.person ? ep.scenario.person.intent : undefined,
       first_goal: ep.orders.length && ep.orders[0].intended.goal ? ep.orders[0].intended.goal : undefined, scheduled_orders: ep.orders.length, outcome };
     if (baseline) row.baseline = run(S, sha, ep, true).outcome;
@@ -220,13 +224,15 @@ if (!isMainThread) {
   const nWorkers = Math.max(1, parseInt(arg('workers', String(Math.max(1, os.cpus().length - 1))), 10));
   const baseline = process.argv.includes('--baseline');
   const sim = arg('sim', 'mind');
+  // --core <file>: run another build of the simulator core (a page or core.html with a sim-core script)
+  const coreFile = arg('core', null);
   const eps = fs.readFileSync(ordersFile, 'utf8').trim().split('\n').map(l => JSON.parse(l));
   fs.mkdirSync(path.join(outDir, 'episodes'), { recursive: true });
   const t0 = Date.now(); const rows = []; let done = 0;
   const chunks = Array.from({ length: nWorkers }, (_, k) => eps.filter((_, i) => i % nWorkers === k)).filter(c => c.length);
   let live = chunks.length;
   for (const episodes of chunks) {
-    const w = new Worker(__filename, { workerData: { file: SIMS[sim], episodes, outDir, baseline, sim } });
+    const w = new Worker(__filename, { workerData: { file: coreFile || SIMS[sim], episodes, outDir, baseline, sim } });
     w.on('message', row => {
       if (row === null) { if (--live === 0) finish(); return; }
       rows.push(row); done++;
@@ -258,22 +264,26 @@ if (!isMainThread) {
   function finishIndoor(rows) {
     fs.writeFileSync(path.join(outDir, 'manifest.jsonl'), rows.map(r => JSON.stringify(r)).join('\n') + '\n');
     const pct = (a, b) => b ? (100 * a / b).toFixed(0) + '%' : '—';
-    const by = {};
-    for (const r of rows) {
-      const key = r.first_goal || 'none', g = by[key] || (by[key] = { n: 0, br: 0, clean: 0, left: 0, guided: 0, found: 0, mapped: 0, view: 0, intr: 0, vis: 0, hid: 0, b: { br: 0, guided: 0, found: 0, view: 0, left: 0 }, fl: 0, sa: 0, pb: 0, sp: 0, wl: 0, det: 0, detClean: 0, pressS: 0 });
-      const o = r.outcome, b = r.baseline || {}; g.n++; g.view += o.in_view_pct; g.fl += o.floor_viol_s > 0; g.sa += o.standoff_approach_s > 0.5; g.pb += o.band_viol_s.comfort > 0; g.sp += o.sep_viol_s > 0; g.wl += o.wall_viol_s > 0; g.pressS += o.band_s.pressure;
-      if (o.role === 'visitor') { g.vis++; g.guided += o.guided > 0; g.b.guided += (b.guided || 0) > 0; }
-      else if (r.intent === 'hide') { g.hid++; g.found += o.found > 0; g.b.found += (b.found || 0) > 0; }
-      else { g.intr++; g.br += o.breaches > 0; g.clean += o.left_without_breach; g.left += o.left > 0; g.b.br += (b.breaches || 0) > 0; g.b.left += (b.left || 0) > 0; if (o.deterrable) { g.det++; g.detClean += o.breaches === 0; } }
-      g.mapped += o.mapped >= 0.9; g.b.view += b.in_view_pct || 0;
-    }
+    const aggregate = keyOf => { const by = {};
+      for (const r of rows) {
+        const key = keyOf(r), g = by[key] || (by[key] = { n: 0, recs: 0, test: 0, br: 0, clean: 0, left: 0, guided: 0, found: 0, mapped: 0, view: 0, intr: 0, vis: 0, hid: 0, b: { br: 0, guided: 0, found: 0, view: 0, left: 0 }, fl: 0, sa: 0, pb: 0, sp: 0, wl: 0, det: 0, detClean: 0, pressS: 0 });
+        const o = r.outcome, b = r.baseline || {}; g.n++; g.recs += r.plan_records; g.test += r.split === 'test'; g.view += o.in_view_pct; g.fl += o.floor_viol_s > 0; g.sa += o.standoff_approach_s > 0.5; g.pb += o.band_viol_s.comfort > 0; g.sp += o.sep_viol_s > 0; g.wl += o.wall_viol_s > 0; g.pressS += o.band_s.pressure;
+        if (o.role === 'visitor') { g.vis++; g.guided += o.guided > 0; g.b.guided += (b.guided || 0) > 0; }
+        else if (r.intent === 'hide') { g.hid++; g.found += o.found > 0; g.b.found += (b.found || 0) > 0; }
+        else { g.intr++; g.br += o.breaches > 0; g.clean += o.left_without_breach; g.left += o.left > 0; g.b.br += (b.breaches || 0) > 0; g.b.left += (b.left || 0) > 0; if (o.deterrable) { g.det++; g.detClean += o.breaches === 0; } }
+        g.mapped += o.mapped >= 0.9; g.b.view += b.in_view_pct || 0;
+      }
+      return by; };
+    const row = (g, s, extra) => `${g.padEnd(22)} ${String(s.n).padStart(4)}${extra ? extra(s) : ''} | ${s.intr ? pct(s.br, s.intr) + ' (' + pct(s.b.br, s.intr) + ') · ' + pct(s.detClean, s.det) + ' of ' + s.det : '—'} | ` +
+      `${s.hid ? pct(s.found, s.hid) + ' (' + pct(s.b.found, s.hid) + ')' : '—'} | ${s.vis ? pct(s.guided, s.vis) + ' (' + pct(s.b.guided, s.vis) + ')' : '—'} | ` +
+      `${(s.view / s.n).toFixed(0)}% (${(s.b.view / s.n).toFixed(0)}%) | ${pct(s.mapped, s.n)} | ${(s.pressS / s.n).toFixed(0)} | ${s.fl} · ${s.sa} · ${s.pb} · ${s.sp} · ${s.wl}`;
+    const head = 'eps | intruders entering: breached (baseline) · no breach if deterrable | hiders found (baseline) | visitors guided out (baseline) | in view (baseline) | mapped>=90% | pressure band s/ep | episodes with: below 1.2 m · drone closing in · comfort pass-by · separation · wall';
     const lines = [`${rows.length} indoor episodes, ${rows.reduce((a, r) => a + r.plan_records, 0)} plan records, ${rows.reduce((a, r) => a + r.orders, 0)} order events, ` +
       `${rows.filter(r => r.split === 'test').length} test episodes, ${((Date.now() - t0) / 1000).toFixed(1)} s on ${chunks.length} workers`,
-      'Paired baseline: the same seeds with the drones on their pads and no orders.', '',
-      'first order            eps | intruders entering: breached (baseline) · no breach if deterrable | hiders found (baseline) | visitors guided out (baseline) | in view (baseline) | mapped>=90% | pressure band s/ep | episodes with: below 1.2 m · drone closing in · comfort pass-by · separation · wall'];
-    for (const [g, s] of Object.entries(by).sort()) lines.push(`${g.padEnd(22)} ${String(s.n).padStart(4)} | ${s.intr ? pct(s.br, s.intr) + ' (' + pct(s.b.br, s.intr) + ') · ' + pct(s.detClean, s.det) + ' of ' + s.det : '—'} | ` +
-      `${s.hid ? pct(s.found, s.hid) + ' (' + pct(s.b.found, s.hid) + ')' : '—'} | ${s.vis ? pct(s.guided, s.vis) + ' (' + pct(s.b.guided, s.vis) + ')' : '—'} | ` +
-      `${(s.view / s.n).toFixed(0)}% (${(s.b.view / s.n).toFixed(0)}%) | ${pct(s.mapped, s.n)} | ${(s.pressS / s.n).toFixed(0)} | ${s.fl} · ${s.sa} · ${s.pb} · ${s.sp} · ${s.wl}`);
+      'Paired baseline: the same seeds with the drones on their pads and no orders.', '', 'first order            ' + head];
+    for (const [g, s] of Object.entries(aggregate(r => r.first_goal || 'none')).sort()) lines.push(row(g, s));
+    lines.push('', 'floor family           ' + head.replace('eps |', 'eps  records  test |'));
+    for (const [g, s] of Object.entries(aggregate(r => r.family || 'office')).sort()) lines.push(row(g, s, x => `  ${String(x.recs).padStart(7)}  ${pct(x.test, x.n).padStart(4)}`));
     // the first order is often replaced 10-35 s later, so the table above mixes tactics; this one keeps only episodes whose schedule
     // had a single order (not episodes that merely ended before the next order, which would favour quick breaches)
     const one = rows.filter(r => r.scheduled_orders === 1), by1 = {};

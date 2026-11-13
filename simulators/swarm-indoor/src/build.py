@@ -37,6 +37,7 @@ HEAD = r'''<!DOCTYPE html>
   .seg button:hover{background:rgba(255,255,255,.05)}
   .seg button.on{background:rgba(34,211,238,.16);color:#bff6ff;box-shadow:inset 0 0 0 1px rgba(34,211,238,.35)}
   .seg.goal button.on{background:rgba(251,191,36,.16);color:#ffe9a8;box-shadow:inset 0 0 0 1px rgba(251,191,36,.4)}
+  select.sel{border:1px solid var(--line2);background:#121722;color:var(--text);padding:5px 7px;border-radius:9px;font:inherit;font-size:11.5px;cursor:pointer}
   .btn{border:1px solid var(--line2);background:rgba(255,255,255,.02);color:var(--text);padding:6px 9px;border-radius:9px;font:inherit;font-size:11.5px;cursor:pointer;white-space:nowrap}
   .btn:hover{background:rgba(255,255,255,.05)}
   .btn.on{background:rgba(52,211,153,.16);color:#bbf7d0;box-shadow:inset 0 0 0 1px rgba(52,211,153,.4)}
@@ -118,7 +119,8 @@ HEAD = r'''<!DOCTYPE html>
       <button class="btn" id="talkbtn" title="Hold Space, or hold this button, and say an order">Talk · hold Space</button>
       <div class="spacer"></div>
       <div class="seg" id="whoseg"><button data-who="intruder" class="on">Intruder</button><button data-who="visitor">Lost visitor</button><button data-who="hider">Hiding</button></div>
-      <div class="seg" id="layseg"><button data-lay="fixed" class="on">Office</button><button data-lay="random">Random floor</button></div>
+      <select class="sel" id="famsel" title="Floor family"><option value="office">Office</option><option value="house">House</option><option value="warehouse">Warehouse</option><option value="openplan">Open-plan office</option><option value="corridor">School or hospital</option><option value="retail">Shop</option><option value="single">Single room</option><option value="irregular">Irregular</option></select>
+      <div class="seg" id="layseg"><button data-lay="fixed" class="on">Fixed floor</button><button data-lay="random">Random floor</button></div>
       <button class="btn" id="play">Pause</button>
       <button class="btn" id="reset">Reset</button>
       <div class="seg" id="speed"><button data-s="1" class="on">1×</button><button data-s="2">2×</button><button data-s="4">4×</button></div>
@@ -132,7 +134,7 @@ HEAD = r'''<!DOCTYPE html>
     <section><h3>Orders by voice <span id="speechstat" class="small" style="font-weight:400;margin-left:6px;text-transform:none;letter-spacing:0"></span></h3>
       <div class="src"><input type="text" id="ordertxt" placeholder="…or type one: keep him out of the lab" style="flex:1"><button class="btn" id="ordersend">Send</button></div>
       <div id="speechlast" class="small"></div>
-      <p class="small">Try: “keep him out of the lab” · “drive him out the east exit” · “guide her out” · “track him” · “keep him in the kitchen” · “search the building thoroughly” · “map the floor” · “watch the main entrance” · “come back and land” · “search the building, then come back”.</p></section>
+      <p class="small" id="tryline">Try: “keep him out of the lab” · “drive him out the east exit” · “guide her out” · “track him” · “keep him in the kitchen” · “search the building thoroughly” · “map the floor” · “watch the main entrance” · “come back and land” · “search the building, then come back”.</p></section>
     <section><h3>Conversation</h3><div id="talk"></div></section>
     <section><h3>Drones</h3><div id="drones"></div></section>
     <section><h3>Rooms (search record)</h3><div id="rooms" class="log"></div></section>
@@ -153,12 +155,16 @@ UI = r'''<script>
 const $=s=>document.querySelector(s);
 const COL={M:'#22d3ee',S1:'#a3e635',S2:'#f472b6',P:'#fb7185',vec:'#fbbf24',site:'#34d399'};
 const GOAL_KEYS=['hold','keepout','driveout','guideout','track','contain','search','explore','overwatch','return'];
-const ui={running:true,speed:1,who:'intruder',layout:'fixed',seed:1,floor:null,exploreImg:null,exploreT:-9,talkVer:-1,scale:30,ox:0,oy:0,fitKey:''};
+const ui={running:true,speed:1,who:'intruder',family:'office',layout:'fixed',seed:1,floor:null,exploreImg:null,exploreT:-9,talkVer:-1,scale:30,ox:0,oy:0,fitKey:''};
 const cv=$('#cv'), ctx=cv.getContext('2d'), view=$('#view');
 
 // ---------- scenario ----------
 function personOpts(){ return ui.who==='visitor'?{role:'visitor',intent:'wander'}:ui.who==='hider'?{role:'intruder',intent:'hide'}:{role:'intruder',delay:6}; }
-function resetWorld(){ seed(ui.seed); world.reset({layout:ui.layout,person:personOpts(),goal:'hold'}); ui.floor=null; ui.exploreImg=null; ui.talkVer=-1; ui.fitKey=''; highlightGoal('hold');
+// example orders that name this floor's rooms and exits
+function updateTry(){ const P=plan.rooms[world.scenario.protectedRoom].name, ex=exitDoors(), E=ex[ex.length>1?1:0].name, M=ex[0].name, R=(plan.rooms.find(q=>q.id!==world.scenario.protectedRoom&&q.id!==plan.home)||plan.rooms[0]).name;
+  $('#tryline').textContent='Try: “keep him out of the '+P+'” · “drive him out the '+E+'” · “guide her out” · “track him” · “keep him in the '+R+'” · “search the building thoroughly” · “map the floor” · “watch the '+M+'” · “come back and land” · “search the building, then come back”.';
+  $('#ordertxt').placeholder='…or type one: keep him out of the '+P; }
+function resetWorld(){ seed(ui.seed); world.reset({family:ui.family,layout:ui.layout,person:personOpts(),goal:'hold'}); updateTry(); ui.floor=null; ui.exploreImg=null; ui.talkVer=-1; ui.fitKey=''; highlightGoal('hold');
   $('#hint').textContent='hold Space: say an order · 1–0 goals · click the floor: send the person there · p pause · r reset · n new floor (seed '+ui.seed+')'; }
 
 // ---------- drawing ----------
@@ -185,10 +191,10 @@ function text(t,x,y,size,color,align){ ctx.font=(size*(window.devicePixelRatio||
 function render(){ fit(); const dpr=window.devicePixelRatio||1; ctx.setTransform(1,0,0,1,0,0); ctx.fillStyle='#05080e'; ctx.fillRect(0,0,cv.width,cv.height);
   if(!ui.floor)ui.floor=buildFloor(); ctx.imageSmoothingEnabled=false; ctx.drawImage(ui.floor,X(0),Y(0),GX*CELL*ui.scale,GZ*CELL*ui.scale);
   // room state: amber = he could be here, green = cleared since he was last seen
-  for(const q of plan.rooms){ const inB=team.beliefRooms.has(q.id), cl=team.cleared.has(q.id); if(!inB&&!cl)continue; ctx.fillStyle=cl?'rgba(52,211,153,0.10)':'rgba(251,191,36,0.10)'; ctx.fillRect(X(q.x0),Y(q.z0),(q.x1-q.x0)*ui.scale,(q.z1-q.z0)*ui.scale); }
+  for(const q of plan.rooms){ const inB=team.beliefRooms.has(q.id), cl=team.cleared.has(q.id); if(!inB&&!cl)continue; ctx.fillStyle=cl?'rgba(52,211,153,0.10)':'rgba(251,191,36,0.10)'; for(const r of q.rects)ctx.fillRect(X(r.x0),Y(r.z0),(r.x1-r.x0)*ui.scale,(r.z1-r.z0)*ui.scale); }
   drawExplore(); // what the drones have scanned so far (stronger while mapping the floor)
-  const P=world.scenario.protectedRoom, pq=plan.rooms[P]; if(pq&&person.role==='intruder'){ ctx.strokeStyle='rgba(251,191,36,0.55)'; ctx.setLineDash([6*dpr,5*dpr]); ctx.lineWidth=1.5*dpr; ctx.strokeRect(X(pq.x0)+3,Y(pq.z0)+3,(pq.x1-pq.x0)*ui.scale-6,(pq.z1-pq.z0)*ui.scale-6); ctx.setLineDash([]); }
-  for(const q of plan.rooms)text(q.name+(q.id===P&&person.role==='intruder'?' · protected':''),X(q.cx),Y(q.z0)+12*dpr,10.5,'rgba(200,210,225,0.55)');
+  const P=world.scenario.protectedRoom, pq=plan.rooms[P]; if(pq&&person.role==='intruder'){ ctx.strokeStyle='rgba(251,191,36,0.55)'; ctx.setLineDash([6*dpr,5*dpr]); ctx.lineWidth=1.5*dpr; for(const r of pq.rects)ctx.strokeRect(X(r.x0)+3,Y(r.z0)+3,(r.x1-r.x0)*ui.scale-6,(r.z1-r.z0)*ui.scale-6); ctx.setLineDash([]); }
+  for(const q of plan.rooms){ const br=q.rects.find(r=>q.cx>=r.x0&&q.cx<=r.x1&&q.cz>=r.z0&&q.cz<=r.z1)||q.rects[0]; text(q.name+(q.id===P&&person.role==='intruder'?' · protected':''),X(q.cx),Y(br.z0)+12*dpr,10.5,'rgba(200,210,225,0.55)'); }
   for(const d of plan.doors){ const owner=doorLock[d.id]; if(owner!=null){ const c=COL[team.drones[owner].id]; ctx.fillStyle=c+'33'; const w=d.w+0.4; if(d.axis==='h')ctx.fillRect(X(d.x-w/2),Y(d.z-0.5),w*ui.scale,1.0*ui.scale); else ctx.fillRect(X(d.x-0.5),Y(d.z-w/2),1.0*ui.scale,w*ui.scale); }
     if(d.rooms[1]===plan.OUT)text(d.name,X(d.x)+(d.axis==='v'?0:0),Y(d.z)+(d.axis==='h'?(d.z>plan.D/2?14:-14):0)*dpr,9.5,'rgba(52,211,153,0.75)'); }
   for(const p of plan.pads){ ctx.strokeStyle='rgba(255,255,255,0.25)'; ctx.lineWidth=1*dpr; ctx.strokeRect(X(p.x-0.3),Y(p.z-0.3),0.6*ui.scale,0.6*ui.scale); }
@@ -289,7 +295,7 @@ $('#ordersend').addEventListener('click',sendTyped); $('#ordertxt').addEventList
 // ---------- buttons and clicks ----------
 for(const b of $('#goalseg').children)b.addEventListener('click',()=>{ world.setGoal(b.dataset.goal,{}); highlightGoal(b.dataset.goal); });
 const seg=(id,key,fn)=>{ for(const b of $(id).children)b.addEventListener('click',()=>{ for(const o of $(id).children)o.classList.toggle('on',o===b); fn(b.dataset[key]); }); };
-seg('#whoseg','who',v=>{ ui.who=v; resetWorld(); }); seg('#layseg','lay',v=>{ ui.layout=v; resetWorld(); }); seg('#speed','s',v=>{ ui.speed=+v; });
+seg('#whoseg','who',v=>{ ui.who=v; resetWorld(); }); seg('#layseg','lay',v=>{ ui.layout=v; resetWorld(); }); $('#famsel').addEventListener('change',e=>{ ui.family=e.target.value; resetWorld(); }); seg('#speed','s',v=>{ ui.speed=+v; });
 function togglePlay(){ ui.running=!ui.running; $('#play').textContent=ui.running?'Pause':'Play'; $('#play').classList.toggle('on',!ui.running); }
 $('#play').addEventListener('click',togglePlay); $('#reset').addEventListener('click',resetWorld);
 cv.addEventListener('click',e=>{ if(!person.alive)return; const r=cv.getBoundingClientRect(), dpr=window.devicePixelRatio||1; const x=((e.clientX-r.left)*dpr-ui.ox)/ui.scale, z=((e.clientY-r.top)*dpr-ui.oy)/ui.scale;

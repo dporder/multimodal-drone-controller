@@ -81,13 +81,100 @@ Episodes where the person could not have been stopped are labelled "infeasible" 
 Swarm Mind is a yard with one warehouse. Its person is invisible indoors and its drones pass through walls, so it supplies the pipeline and the first data, not the indoor data.
 
 The indoor data comes from `simulators/swarm-indoor/` (milestone 2, built 12 November 2026). It follows the same conventions and contract, and adds:
-- **Floor plans:** rooms, corridors, and doors 0.9–1.8 m wide. Today: a fixed office floor and our own procedural office generator. ProcTHOR-10K layouts (Apache-2.0) later.
+- **Floor plans:** rooms, corridors, and doors 0.9–4 m wide, in eight single-level procedural families (next section). Open-source plans next: ProcTHOR-10K (Apache-2.0) and Swiss Dwellings (CC BY 4.0).
 - **Line of sight** through doors.
 - **Room-level belief.**
 - **The tactic library** in [`TACTICS.md`](TACTICS.md).
 - **A safety validator.**
 
 Extra indoor phrasing comes from IndoorUAV (Apache-2.0). Real indoor walking tracks come from THÖR-MAGNI (CC BY 4.0) later.
+
+## Layout families (single level)
+
+Since 13 November the indoor simulator builds eight families of single-level floors. Each family draws its size, its room and door counts, door positions and widths, furniture and ceiling height from the episode seed. Each also has a fixed reference floor.
+
+| Family | Rooms (mean) | Floor (mean) | What makes it different |
+|---|---|---|---|
+| Office (`office`) | 7: lab, office, kitchen, corridor, lobby, storage, meeting room | 347 m² | The first datasets' floor. Random offices draw exactly as before. |
+| House or apartment (`house`) | 6: living room, kitchen, hallway, 1–3 bedrooms, bathroom | 164 m² | Small rooms, a hallway 1.6–2.2 m wide, beds and wardrobes, front and back doors |
+| Warehouse (`warehouse`) | 3: an L-shaped hall, an office, a break room | 620 m² | Ceiling 4.5–7 m, racks up to 4 m high with 2.4–3.2 m aisles, a 3–4 m loading-dock door |
+| Open-plan office (`openplan`) | 6.4: 2–4 meeting rooms, the open office, reception, kitchen | 502 m² | One large room with desk clusters, a third of them with 1.3 m privacy screens |
+| School or hospital (`corridor`) | 13.8: classrooms or wards, a staff room or nurses' station, an office or storeroom, a lobby, all on one corridor | 618 m² | A 30–46 m corridor with exits at both ends |
+| Shop (`retail`, held out) | 3: sales floor, storeroom, office | 497 m² | Gondolas 1.4–1.8 m high with 1.8–2.4 m aisles, checkouts |
+| Single room (`single`) | 1: a hall, gym, studio, workshop or showroom | 92 m² | L-shaped 40% of the time, 1–3 outside doors, loose furniture |
+| Irregular (`irregular`, held out) | 5: an L-shaped corridor, an L-shaped hall, an office, a store, a workshop | 350 m² | L-shaped rooms round a bend |
+
+**One floor format.**
+- A room is a union of axis-aligned rectangles, so L-shaped and irregular rooms work.
+- A door sits on the wall between two rooms, or between a room and outside.
+- Furniture is boxes with a height.
+- Walls are 0.2 m thick and reach the ceiling. They run along every room boundary.
+- The header's `floor` records the family, its source and licence, each room's rectangles and bounding box, the home room, and the rooms worth protecting.
+
+**Names come from the floor.**
+- `simulators/tools/floors.js` gives the sampler each episode's room, door and exit names. Orders use those names, plus synonyms the parser reads back as the same place ("lounge" for the living room, "classroom three" for classroom 3).
+- The parser takes names from its context as before, and now also reads number words in numbered rooms.
+- The parser chooses among synonyms by what exists on the floor: "hall" is the corridor in the office, the hallway in a house, and the hall itself on a floor that has one.
+
+**Train/test split by family.**
+- Every episode on the shop and irregular floors is a test episode, so test results measure layouts that no training episode has seen.
+- The other six families keep the seed rule: seeds ending in 0 are test.
+- `--held-out-families` changes the choice.
+
+**Scenario changes.**
+- The protected room is drawn from the floor's rooms worth protecting. The floor's default is four times as likely as each other room.
+- A hider now hides in any room except the drones' home room. Before, he hid in the protected room.
+- 15% of episodes use the family's fixed floor (30% before, office only).
+
+**Tests per family.** `indoor.test.js` adds four tests:
+- **Reachability**, on the fixed floor and 7 random floors of each family:
+  - every room by air from the pads, and on foot from every exit;
+  - every door passable on foot and by air;
+  - pads free, and search points in every room.
+- **Line of sight**, on 4 floors per family: walls between rooms block, doorways do not, and lintels block above 2 m.
+- **Every order on every family:** 72 episodes of 45 s. No breach of the 1.2 m floor, no separation, wall or altitude violations, finite labels, and a sound belief.
+- **Floors depend only on the seed.**
+
+The refactor to rectangle sets was checked first against the old code. On 60 office episodes the records were byte-identical.
+
+**Bugs found on the way.**
+- **Furniture pockets.** Furniture can close off a pocket of free floor, such as behind a table or between a bed and a wall.
+  - A hider sent into one made the person's path search run every frame over the whole floor. In one warehouse episode, 75 s of simulation took 300 s of compute.
+  - Targets now snap out of such pockets. A failed path search waits a second before retrying. Search coverage counts only floor a person can reach.
+- **Stale search vantage.** The search's hub-vantage cache survived into the next episode on the same worker, so a new floor could reuse a point from the previous one. It is now cleared with every order.
+- **Hard gates on the new floors.** The first full run failed three hard gates once each, and the rerun one more. Each was replayed, fixed in the teacher and regenerated:
+  - **Separation against standoff in a cramped corner** (open-plan reception). The validator's last standoff pass left two slots 0.9 m apart. The rotation and standoff passes now alternate until both hold.
+  - **A pinned drone pushed toward a person.** Wall repulsion carried a drone pinned against a wall toward a person running past, for 0.55 s (irregular floor). The flight layer now never moves a drone toward a person in sight inside its band's limit + 0.3 m.
+  - **Keep-out shut a drone in with the intruder** (warehouse office).
+    - Its block slots retreated into a small protected room ahead of the intruder. Once he was through, the drone was cornered.
+    - It climbed to 4.4 m, but he stood 1.19 m from it (horizontally) for 3 s.
+    - Block slots in rooms under 40 m² now flank the door from outside.
+  - **Drive-out deadlock at a house's front door.**
+    - Two drones stood inside the front door, which the intruder wanted to leave by, and he stood 1.15 m from them for two minutes.
+    - In the 1.7 m hallway they could not get behind him.
+    - Drive out now avoids an exit where our drones stand between him and the door. A leaving person avoids exits with drones at them and chooses again after 3 s blocked.
+    - Over 40 controlled office runs, drive out let in 19 intruders, against 21 before.
+- **Known weakness: houses.**
+  - 8.7% of drone-ticks are stuck (other families 1.5–4.6%), mostly in the hallway, which every room opens onto and only one drone can fly along at a time. Training flags exclude those ticks, so houses keep 71% of ticks for training, against 83–95% elsewhere.
+  - Fixing it needs traffic rules for narrow passages, or tactics that send fewer drones into them.
+
+**Open-source floor plans.** Licences were checked on 13 November 2026 from the licence pages, READMEs and terms. Nothing has been downloaded.
+
+| Dataset | Licence | Use it? |
+|---|---|---|
+| ProcTHOR-10K (AI2) | Apache-2.0, data and code | **Yes.** 10,000 houses as vector JSON: room polygons, doors on walls, objects. 63 MB gzipped. Object sizes come from AI2's `asset-database.json` (Apache-2.0). |
+| Swiss Dwellings v3.0.0 (Archilyse, Zenodo) | CC BY 4.0 | **Yes, with attribution.** Vector rooms, walls, doors and fixtures in metres, but no movable furniture. 932 MB zip. |
+| MSD (TU Delft, built from Swiss Dwellings) | CC BY 4.0 on 4TU; CC BY-SA 4.0 on Kaggle | Possible from 4TU. Swiss Dwellings is the vector source. |
+| Structured3D | Non-commercial terms, no redistribution | No |
+| RPLAN | Non-commercial terms, no redistribution; raster images only | No |
+| CubiCasa5K | CC BY-NC 4.0 (GitHub), CC BY-NC-SA 4.0 (Zenodo) | No |
+| HouseExpo | MIT, but built on SUNCG (Planner 5D) content | No: provenance |
+| Gibson, Matterport3D, HM3D | Academic-only EULAs; models trained on the data count as derived data | No |
+
+Next steps:
+1. A ProcTHOR-10K converter. Its rooms are rectilinear polygons, which split into rectangles. Doors come from wall holes, and furniture boxes from object positions and asset sizes. Each converted floor keeps `source: procthor-10k` and `licence: Apache-2.0` in its header.
+2. Swiss Dwellings, which needs about 1 GB of free disk.
+3. Multi-level floors (stairs, a mezzanine, an atrium), later.
 
 ## Volumes
 
@@ -101,6 +188,7 @@ Variety of layouts and phrasings matters more than tick count.
 ## Licensing
 
 - **Our data:** CC BY 4.0. **Our code:** the repo's MIT license.
+- **Floor plans:** procedural (ours, MIT) today. Every episode header records its floor's source and licence; open-source plans are limited to the licence-clean sets in "Layout families".
 - Non-commercial or share-alike sources are kept out of anything released or used for a product.
 - Paraphrases come from a model whose terms allow training on its outputs.
 - macOS voices are for internal tests only.
@@ -139,11 +227,11 @@ These are Swarm Mind's outdoor yard and its scripted intruder. They prove the pi
 ## Generating data today (milestone 2, indoor)
 
 ```
-voice/.venv/bin/python voice/sampler.py --sim indoor --episodes 600 --seed 1 --out output/dataset/indoor1
-node simulators/tools/generate.js --sim indoor --orders output/dataset/indoor1/orders.jsonl --baseline
-node simulators/tools/check_dataset.js output/dataset/indoor1
-node simulators/tools/quality_report.js output/dataset/indoor1   # quality gates, below; exit code 1 if a hard gate fails
-node simulators/tests/indoor.test.js      # floors, line of sight, belief, no leak, records, bands, safety, determinism
+voice/.venv/bin/python voice/sampler.py --sim indoor --episodes 1200 --seed 0 --out output/dataset/indoor2
+node simulators/tools/generate.js --sim indoor --orders output/dataset/indoor2/orders.jsonl --baseline
+node simulators/tools/check_dataset.js output/dataset/indoor2
+node simulators/tools/quality_report.js output/dataset/indoor2   # quality gates, below, overall and per floor family; exit code 1 if a hard gate fails
+node simulators/tests/indoor.test.js      # floors, line of sight, belief, no leak, records, bands, safety, determinism, every floor family
 ```
 
 **Scenarios** (one per episode, drawn by the sampler):
@@ -151,9 +239,11 @@ node simulators/tests/indoor.test.js      # floors, line of sight, belief, no le
 | Field | Values |
 |---|---|
 | Who | an intruder heading for a protected room (50%), an intruder hiding (20%), a lost visitor (30%) |
-| Protected room | the lab mostly, sometimes the office, kitchen, storage or meeting room |
+| Floor family | the eight families equally often; shop and irregular floors are test only |
+| Protected room | the floor's default (the lab in the office) four times as often as each other room worth protecting |
+| Hider | hides in any room but the drones' home room |
 | Warning | an entering intruder waits 0–12 s outside before he comes in |
-| Floor | random office layout (70%) or the fixed office |
+| Floor | a random floor of the family (85%) or its fixed floor |
 | Radio | loss 0–15%, latency 0.1–0.4 s |
 | Hidden person parameters | R_react, k_fear, k_flank, T_resolve, as in `docs/TACTICS.md` |
 
@@ -290,6 +380,54 @@ Parser agreement with the sampler's intended orders:
 - **Perception costs:** episodes that started with a search found 59% of hiders, against 68% before perception. Controlled runs show no drop beyond noise (`docs/TACTICS.md`).
 - **Benchmarks:** use the controlled runs in `docs/TACTICS.md`, where one order is given at 1 s and kept.
 
+**Layout-diverse run (13 November 2026, M1 MacBook), eight floor families:**
+
+Size and quality:
+- 1,200 episodes in 24 minutes on 6 worker threads, each paired with a grounded baseline. 211,401 plan records and 2,766 order events, 58 MB gzipped.
+- 374 test episodes: 293 on the held-out shop and irregular floors, 81 by the seed rule.
+- Scenarios: 627 intruders heading for a room, 246 hiding, 327 lost visitors; 181 on a family's fixed floor.
+- Every record matches contract v0, and **all 20 quality gates pass** overall.
+
+| Measure | Eight families (`indoor2`) | Office only (`indoor1`) |
+|---|---|---|
+| Ticks fit for training (`sft`) | 85.4% | 82.7% |
+| Stuck drones | 3.9% of drone-ticks | 4.3% |
+| Hold, all causes | 18.1% | 18.7% |
+| Template flicker / follower swaps | 0.16% / 0.15% of ticks | 0.08% / 0.08% |
+| Slot jitter when nothing changed, 95th percentile | 0.05 m | 0.03 m |
+| Estimate error while in sight, median / 95th percentile | 0.17 / 0.42 m | 0.17 / 0.43 m |
+| Estimates from a false positive | 1.3% | 1.3% |
+| Closest approach, pressure / comfort band | 1.32 / 1.33 m | 1.35 / 1.38 m |
+| Comfort pass-bys | 139 episodes (11.6%) | 63 (10.5%) |
+
+Per floor family (`quality_report.js`). No family had a label rule break, an episode inside the 1.2 m floor, a drone closing in, or a separation, wall or altitude violation.
+
+| Family | Episodes (test) | Ticks | Training ticks | Stuck | Person in sight | Closest: pressure / comfort |
+|---|---|---|---|---|---|---|
+| Office | 171 (16) | 31,132 | 87% | 2.8% | 29% | 1.38 / 1.33 m |
+| House | 141 (7) | 24,354 | 71% | 8.7% | 46% | 1.32 / 1.36 m |
+| Warehouse | 147 (20) | 30,939 | 84% | 4.2% | 43% | 1.45 / 1.49 m |
+| Open-plan office | 144 (17) | 23,308 | 95% | 1.5% | 29% | 1.36 / 1.73 m |
+| School or hospital | 164 (10) | 31,600 | 83% | 4.3% | 31% | 1.46 / 1.55 m |
+| Shop (held out) | 149 (149) | 28,722 | 92% | 1.8% | 22% | 1.47 / 1.69 m |
+| Single room | 140 (11) | 16,217 | 91% | 3.5% | 52% | 1.49 / 1.65 m |
+| Irregular (held out) | 144 (144) | 25,129 | 83% | 4.6% | 42% | 1.50 / 1.54 m |
+
+The orders:
+- 3,006 sampled phrasings: 2,764 orders, 99 questions and 143 refusals, from 244 templates and 2,107 distinct texts.
+- 133 compound orders, 83 context pairs, and 75 distinct named places across the families.
+- The parser agrees with every intended order: 2,860/2,860 on seen templates, 146/146 on held-out ones, and 108/108 on the held-out sweep.
+
+**Outcomes per family** (`summary.txt`) mix tactics as before, because orders are replaced 10–35 s apart:
+- **Intruders who got in, against the grounded baseline:** 64% (83%) in houses, 65% (85%) in warehouses, 78–88% elsewhere, and 93% (99%) on open-plan floors. Open floors with several entrances are the hardest to defend.
+- **Hiders found:** 37% in shops to 63% in houses. Shelving and racks hide people at 1 m.
+- **Visitors guided out:** 11% in shops to 59% in single rooms.
+- **Single-order episodes:**
+  - Keep out let in 23 of 38 intruders, against 32 of 38 grounded.
+  - Drive out let in 12 of 17, against 17 of 17.
+  - Search found 24 of 27 hiders.
+  - Guide out got 18 of 29 visitors out.
+
 ## Open questions for Prat
 
 1. Is "slot + vector every 0.5 s" the right output for NN1, or should NN1 emit time-stamped reference points, as the 10 November briefs recommend? `swarm-indoor` logs both.
@@ -298,3 +436,4 @@ Parser agreement with the sampler's intended orders:
 4. Is the person model's range of "deterrability" right? It caps what keep out and drive out can achieve (`docs/TACTICS.md`).
 5. For the outcome labels, should episodes keep one order long enough to finish (gaps of 30–90 s), or are frequent re-orders more useful for NN1? Today's 10–35 s gaps give many transitions but blur outcomes.
 6. **NN1's inputs:** we assume NN1 consumes perception outputs, not raw frames: person detections with confidence, the scanned map, search coverage and camera views, plus the order and team state. Rendering and detector training would be a separate perception and sim-to-real workstream. Is that the split you want, and should the floor plan be an input, or should NN1 work map-free?
+7. **Held-out floor families:** shop and irregular floors are test only, a quarter of the indoor episodes. Are those the right families to hold out, or should a whole family be held out per release instead?

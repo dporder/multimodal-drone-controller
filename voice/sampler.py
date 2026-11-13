@@ -10,16 +10,20 @@ reading is stored next to it with a mismatch flag, so a parser mistake is visibl
 
 Splits: episodes whose seed ends in 0 are test episodes. About 15% of phrasing templates are held out:
 they appear only in test episodes, so test accuracy measures phrasings the grammar has not been tuned on.
+Indoor episodes also hold out whole floor families (--held-out-families, default retail and irregular): every
+episode on those floors is a test episode, so test results measure layouts no training episode has seen.
+Indoor floors come from the simulator (simulators/tools/floors.js), so orders name the rooms and doors that exist.
 """
 import argparse
 import hashlib
 import json
 import os
 import random
+import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from orders import interpret  # noqa: E402
+from orders import interpret, _slots, ROOM_SYNONYMS, DOOR_SYNONYMS, spoken_variants  # noqa: E402
 
 HIM = ["him", "him", "him", "her", "them", "the intruder", "that guy", "the person"]
 SLOTS = {
@@ -143,12 +147,30 @@ def episode(i, base_seed):
 # Indoor (simulators/swarm-indoor): scenarios with an intruder, a hiding intruder or a lost visitor,
 # goals with room / door / exit slots, and context pairs ("get him out" depends on who it is).
 
-ROOMS = ["lab", "office", "kitchen", "corridor", "lobby", "storage", "meeting room"]
-PROTECTABLE = ["lab", "office", "kitchen", "storage", "meeting room"]
-EXITS = ["main entrance", "east exit", "fire exit"]
-EXIT_WORDS = {"main entrance": ["main entrance", "front door", "main door"], "east exit": ["east exit"], "fire exit": ["fire exit", "emergency exit"]}
-ROOM_WORDS = {"lab": ["lab", "laboratory"], "office": ["office"], "kitchen": ["kitchen"], "corridor": ["corridor", "hallway"],
-              "lobby": ["lobby", "reception"], "storage": ["storage room", "storeroom"], "meeting room": ["meeting room", "conference room"]}
+FAMILIES = ["office", "house", "warehouse", "openplan", "corridor", "retail", "single", "irregular"]
+HELD_OUT_FAMILIES = ("retail", "irregular")  # default: every episode on these floors is a test episode
+FIXED_SHARE = 0.15  # episodes on the family's fixed floor; the rest draw a random floor of the family
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def floor_names(specs):
+    """[(family, seed, layout)] -> each floor's room, door and exit names, from the simulator (simulators/tools/floors.js)."""
+    tool = os.path.join(ROOT, "simulators", "tools", "floors.js")
+    out = subprocess.run(["node", tool], input=json.dumps([{"family": f, "seed": sd, "layout": lay} for f, sd, lay in specs]),
+                         capture_output=True, text=True, check=True).stdout
+    floors = json.loads(out)
+    for fl in floors:
+        ctx = {"rooms": fl["rooms"], "doors": fl["doors"]}
+        # ways to say each room and exit here: the name, a number as a word, and synonyms the parser reads back as that place
+        fl["room_words"] = {n: [w for w in spoken_variants(n) + [k for k in ROOM_SYNONYMS if k not in fl["rooms"]]
+                                if _slots("the " + w, ctx)[:2] == (n, None)] for n in fl["rooms"]}
+        fl["exit_words"] = {n: [w for w in spoken_variants(n) + [k for k in DOOR_SYNONYMS if k not in fl["exits"]] if _slots("the " + w, ctx)[2] == n]
+                            for n in fl["exits"]}
+        for k, v in list(fl["room_words"].items()) + list(fl["exit_words"].items()):
+            v[:] = v or [k]
+    return floors
+
+
 THEM = ["them", "them", "her", "him", "the visitor", "the guest"]
 I_TEMPLATES = {  # template -> params the order means (P = protected room, X = exit, R = room, D = door)
     "keepout": [("keep {him} out of the {P}", "P"), ("don't let {him} into the {P}", "P"), ("guard the {P}", "P"), ("protect the {P}", "P"),
@@ -180,38 +202,33 @@ I_CONTEXT = {"out": [("get {him} out", ""), ("get {him} out of the building", ""
 I_REFUSE = {"no-harm": ["hit {him}", "attack {him}", "ram {him}", "knock {him} down", "crash into {him}", "take {him} out"],
             "no-cornering": ["corner {him}", "trap {him} in the {R}", "box {him} in", "pin {him} against the wall"]}
 I_QUERY = ["what now", "status", "do something", "where is he", "handle it", "the door", "is he inside", "rotate left"]
-DOORS_CTX = [{"name": n, "rooms": r} for n, r in [
-    ("lab door", ["lab", "corridor"]), ("office door", ["office", "corridor"]), ("kitchen door", ["kitchen", "corridor"]),
-    ("lab side door", ["lab", "office"]), ("lobby door", ["lobby", "corridor"]), ("storage door", ["storage", "corridor"]),
-    ("meeting room door", ["meeting room", "corridor"]), ("main entrance", ["lobby", "outside"]), ("east exit", ["corridor", "outside"]),
-    ("fire exit", ["kitchen", "outside"])]]
-
-
-def indoor_context(role, protect):
+def indoor_context(fl, role, protect):
     # what the parser may know when the order is sampled: the floor, who it is, not where he will be
-    return {"sim": "swarm-indoor", "goal": "hold", "version": 1, "protected": protect, "rooms": ROOMS, "doors": DOORS_CTX,
+    return {"sim": "swarm-indoor", "goal": "hold", "version": 1, "protected": protect, "rooms": fl["rooms"], "doors": fl["doors"],
             "person": {"role": role, "seen": True, "known": True, "room": None, "inside": True}}
 
 
-def render_indoor(tpl, rng, role, protect):
-    exit_ = rng.choice(EXITS)
-    room = rng.choice(ROOMS)
+def render_indoor(tpl, rng, role, protect, fl):
+    exit_ = rng.choice(fl["exits"])
+    room = rng.choice(fl["rooms"])
     who = THEM if role == "visitor" else HIM
-    vals = {"him": rng.choice(who), "them": rng.choice(THEM), "P": rng.choice(ROOM_WORDS[protect]) if protect in ROOM_WORDS else protect,
-            "X": rng.choice(EXIT_WORDS[exit_]), "R": rng.choice(ROOM_WORDS[room])}
+    vals = {"him": rng.choice(who), "them": rng.choice(THEM), "P": rng.choice(fl["room_words"][protect]),
+            "X": rng.choice(fl["exit_words"][exit_]), "R": rng.choice(fl["room_words"][room])}
     text = tpl.format(**vals)
     if "{P} door" in tpl:  # door names use the plain room name ("storage door", not "storeroom door")
-        text = tpl.format(**dict(vals, P="storage" if protect == "storage" else protect))
+        text = tpl.format(**dict(vals, P=protect))
     name, style, _ = rng.choices(STYLES, weights=[s[2] for s in STYLES])[0]
     words = text.split()
     text = style.format(p=text, call=rng.choice(CALLS), w0=words[0] if words else "")
     return text, name, {"exit": exit_, "room": room}
 
 
-def make_indoor_order(rng, t, kind, value, test, role, protect, prev_goal=None, then=None, pool_override=None):
-    ctx = indoor_context(role, protect)
+def make_indoor_order(rng, t, kind, value, test, role, protect, fl, prev_goal=None, then=None, pool_override=None):
+    ctx = indoor_context(fl, role, protect)
     if kind == "goal":
         pool = pool_override or I_TEMPLATES[value]
+        # "hold the {P} door" needs a door named after the room (a single room's doors are "main door", "side door", ...)
+        pool = [x for x in pool if "{P} door" not in x[0] or protect + " door" in [d["name"] for d in fl["doors"]]] or pool
         tpl, slot = pick_pair(rng, pool, test)
         intended = {"action": "accept", "goal": value}
     elif kind == "context":
@@ -224,7 +241,7 @@ def make_indoor_order(rng, t, kind, value, test, role, protect, prev_goal=None, 
     else:
         tpl, slot = pick(rng, I_QUERY, test), ""
         intended = {"action": "query"}
-    text, style, chosen = render_indoor(tpl, rng, role, protect)
+    text, style, chosen = render_indoor(tpl, rng, role, protect, fl)
     params = {}
     if slot == "P":
         params["room"] = protect
@@ -240,7 +257,7 @@ def make_indoor_order(rng, t, kind, value, test, role, protect, prev_goal=None, 
         intended["params"] = params
     if then is not None and kind in ("goal", "context"):
         ttpl, tslot = pick_pair(rng, I_TEMPLATES[then], test)
-        ttext, _, tch = render_indoor(ttpl, rng, role, protect)
+        ttext, _, tch = render_indoor(ttpl, rng, role, protect, fl)
         tparams = {"P": {"room": protect}, "X": {"exit": tch["exit"]}, "XD": {"door": tch["exit"]}, "R": {"room": tch["room"]}}.get(tslot, {})
         if tslot.startswith("L"):
             tparams = {"level": int(tslot[1:])}
@@ -278,37 +295,51 @@ def wchoice(rng, table, exclude=None):
     return rng.choices([k for k, _ in items], weights=[w for _, w in items])[0]
 
 
-def indoor_episode(i, base_seed):
+def indoor_floor_spec(i, base_seed, families, weights):
+    """Which floor episode i plays on: (family, seed, layout). The seed also drives the simulator's random floor."""
     seed = base_seed * 100003 + i + 1
+    rng = random.Random(seed * 7 + 3)
+    family = rng.choices(families, weights=weights)[0]
+    return family, seed, "fixed" if rng.random() < FIXED_SHARE else "random"
+
+
+def indoor_episode(i, fl, held_out_families):
+    seed = fl["seed"]
     rng = random.Random(seed)
-    test = seed % 10 == 0
+    by_family = fl["family"] in held_out_families
+    test = by_family or seed % 10 == 0
     kind = rng.choices(["enter", "hide", "visitor"], weights=[5, 2, 3])[0]
     role = "visitor" if kind == "visitor" else "intruder"
-    protect = rng.choices(PROTECTABLE, weights=[4, 1, 1, 1, 1])[0]
+    # the floor's default protected room is likelier; any other room worth protecting can be named
+    protect = rng.choices(fl["protectable"], weights=[4 if r == fl["protect"] else 1 for r in fl["protectable"]])[0]
     person = {"role": role, "intent": {"enter": "enter", "hide": "hide", "visitor": "wander"}[kind]}
     if kind == "enter":
         person["delay"] = round(rng.uniform(0, 12), 2)
+    if kind == "hide":  # he hides anywhere but where the drones stand
+        person["targetRoom"] = rng.choice([r for r in fl["rooms"] if r != fl["home"]] or fl["rooms"])
     first = wchoice(rng, I_FIRST[kind])
-    then_pool = [g for g in I_TEMPLATES if g not in (first, "hold") and not (role == "visitor" and g in ("driveout", "contain", "keepout"))]
+    # a queued "then" goal must suit who it is: no guiding an intruder out, no driving a visitor out
+    then_pool = [g for g in I_TEMPLATES if g not in (first, "hold") and not (role == "visitor" and g in ("driveout", "contain", "keepout"))
+                 and not (role == "intruder" and g == "guideout")]
     then = rng.choice(then_pool) if rng.random() < 0.12 and first != "context" else None
-    orders = [make_indoor_order(rng, round(rng.uniform(0, 3), 2), "context" if first == "context" else "goal", first, test, role, protect, then=then)]
+    orders = [make_indoor_order(rng, round(rng.uniform(0, 3), 2), "context" if first == "context" else "goal", first, test, role, protect, fl, then=then)]
     goal = orders[0]["intended"].get("goal")
     t = orders[0]["t"]
     for _ in range(rng.choice([0, 1, 1, 2, 2, 3])):
         t += rng.uniform(10, 35)
         r = rng.random()
         if r < 0.08:
-            orders.append(make_indoor_order(rng, t, "refuse", rng.choice(list(I_REFUSE)), test, role, protect))
+            orders.append(make_indoor_order(rng, t, "refuse", rng.choice(list(I_REFUSE)), test, role, protect, fl))
         elif r < 0.14:
-            orders.append(make_indoor_order(rng, t, "query", None, test, role, protect))
+            orders.append(make_indoor_order(rng, t, "query", None, test, role, protect, fl))
         else:
             new = wchoice(rng, I_NEXT[kind], exclude=goal)
-            orders.append(make_indoor_order(rng, t, "goal", new, test, role, protect, prev_goal=goal))
+            orders.append(make_indoor_order(rng, t, "goal", new, test, role, protect, fl, prev_goal=goal))
             goal = new
-    layout = "random" if rng.random() < 0.7 else "fixed"
-    scenario = {"layout": layout, "protect": protect, "person": person, "endOnGone": kind == "enter",
+    scenario = {"family": fl["family"], "layout": fl["layout"], "protect": protect, "person": person, "endOnGone": kind == "enter",
                 "settings": {"rloss": round(rng.uniform(0.0, 0.15), 3), "rlat": round(rng.uniform(0.1, 0.4), 3)}, "secs": 180}
-    return {"episode": f"indoor-{i:06d}", "seed": seed, "split": "test" if test else "train", "sim": "indoor", "scenario": scenario, "orders": orders}
+    return {"episode": f"indoor-{i:06d}", "seed": seed, "split": "test" if test else "train",
+            "split_by": "family" if by_family else ("seed" if test else None), "family": fl["family"], "sim": "indoor", "scenario": scenario, "orders": orders}
 
 
 def indoor_sweep_pools():
@@ -324,9 +355,16 @@ def main():
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--out", default="output/dataset/run")
     p.add_argument("--sim", default="mind", choices=["mind", "indoor"])
+    p.add_argument("--families", default=",".join(FAMILIES), help="indoor floor families to draw from, equally often")
+    p.add_argument("--held-out-families", default=",".join(HELD_OUT_FAMILIES), help="families whose episodes are all test ('' for none)")
     a = p.parse_args()
     os.makedirs(a.out, exist_ok=True)
-    eps = [(indoor_episode if a.sim == "indoor" else episode)(i, a.seed) for i in range(a.episodes)]
+    if a.sim == "indoor":
+        fams, held = [f for f in a.families.split(",") if f], tuple(f for f in a.held_out_families.split(",") if f)
+        floors = floor_names([indoor_floor_spec(i, a.seed, fams, [1] * len(fams)) for i in range(a.episodes)])
+        eps = [indoor_episode(i, fl, held) for i, fl in enumerate(floors)]
+    else:
+        eps = [episode(i, a.seed) for i in range(a.episodes)]
     with open(os.path.join(a.out, "orders.jsonl"), "w") as f:
         for e in eps:
             f.write(json.dumps(e) + "\n")
@@ -344,13 +382,15 @@ def main():
     # held-out sweep: every held-out template, rendered 12 ways, independent of episode sampling
     sweep_rng, sweep = random.Random(12345), []
     if a.sim == "indoor":
+        office = floor_names([("office", 1, "fixed")])[0]
         for g, ts in I_TEMPLATES.items():
             for tpl, slot in ts:
                 if not held_out(tpl):
                     continue
                 for k in range(12):
                     o = make_indoor_order(random.Random(1000 * k + len(sweep)), 0.0, "goal", g, True,
-                                          "visitor" if g == "guideout" else "intruder", sweep_rng.choice(PROTECTABLE), pool_override=[(tpl, slot)])
+                                          "visitor" if g == "guideout" else "intruder", sweep_rng.choice(office["protectable"]), office,
+                                          pool_override=[(tpl, slot)])
                     sweep.append((tpl, o["text"], not o["mismatch"]))
         pools = []
     else:
