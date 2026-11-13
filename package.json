@@ -13,7 +13,10 @@
     "test:dashboard": "node tests/browser/hybrid-e2e.cjs",
     "test:single": "node --test tests/browser/single-drone.test.mjs",
     "test:single-browser": "node tests/browser/single-e2e.cjs",
-    "train:single": "node scripts/train-single-policy.mjs"
+    "train:single": "node scripts/train-single-policy.mjs",
+    "test:team": "node --test tests/browser/team-drone.test.mjs",
+    "test:team-browser": "node tests/browser/team-e2e.cjs",
+    "test:python-browser": "node tests/browser/team-e2e.cjs --python"
   },
   "devDependencies": {
     "playwright": "1.62.1"

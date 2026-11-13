@@ -2,6 +2,7 @@
 """Run a swarm simulator.
 
     python main.py                 # Swarm Mind in the browser (served on localhost)
+    python main.py flight          # Current three-drone flight lab; no dependencies
     python main.py seek            # Swarm Seek
     python main.py guard           # Swarm Guard
     python main.py mind --port 9000
@@ -48,6 +49,10 @@ def headless(sim: str, seconds: int) -> int:
 
 
 def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] == "flight":
+        from serve import main as flight_main
+        flight_main(sys.argv[2:])
+        return
     if len(sys.argv) > 1 and sys.argv[1] == "lab":
         try:
             from swarm_lab.__main__ import main as lab_main
@@ -56,7 +61,7 @@ def main() -> None:
             sys.exit(1)
         lab_main(sys.argv[2:])
         return
-    p = argparse.ArgumentParser(description="Run a swarm simulator")
+    p = argparse.ArgumentParser(description="Run a swarm simulator", epilog="Current flight lab: python main.py flight --help")
     p.add_argument("sim", nargs="?", default="mind", choices=sorted(SIMS), help="which simulator (default: mind)")
     p.add_argument("--port", type=int, default=8000)
     p.add_argument("--no-browser", action="store_true", help="serve only, do not open a browser")

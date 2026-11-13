@@ -125,6 +125,7 @@ export class SingleSimulation {
   if(this.manualMode){const yaw=this.yaw(),[forward,left,up,turn]=this.manual;desired=[Math.cos(yaw)*forward-Math.sin(yaw)*left,Math.sin(yaw)*forward+Math.cos(yaw)*left,up];this.desiredYaw=wrap(this.desiredYaw+turn*.05);this.holdPoint=this.position();}
   else if(this.task){this.stale=this.time>this.actionUntil;desired=this.stale?[0,0,0]:[...this.action];if(this.stale&&this.policyMode==='external')this.status='Waiting for a fresh VLA action · onboard velocity braking';}
   else{desired=scale(sub(this.holdPoint,this.position()),.8);if(norm(desired)>.5)desired=scale(desired,.5/norm(desired));}
+  if(this.coordinateVelocity)desired=this.coordinateVelocity(desired);
   const precise=this.state==='contact';if(precise&&norm(desired)>.12)desired=scale(desired,.12/norm(desired));
   // Range braking applies to every controller, including external policies.
   for(let i=0;i<16;i++){const a=i*Math.PI/8,dir=[Math.cos(a),Math.sin(a),0],toward=dot(desired,dir),range=this.ranges[i],margin=precise?.70:1.02,allowed=Math.sqrt(2*1.2*Math.max(0,range-margin));if(toward>allowed)desired=sub(desired,scale(dir,toward-allowed));}
@@ -139,13 +140,17 @@ export class SingleSimulation {
   this.commands=this.rotors.map(([x,y],k)=>clamp((thrust/4+y*torque[0]/(4*arm**2)-x*torque[1]/(4*arm**2)+this.spins[k]*torque[2]/(4*.025))/voltage**2,0,this.air.max_rotor_n));
   for(let k=0;k<4;k++){const target=Math.sqrt(this.commands[k]/1.1e-5);this.motorSpeed[k]+=(target-this.motorSpeed[k])*(1-Math.exp(-DT/.035));this.thrust[k]=1.1e-5*this.motorSpeed[k]**2*voltage**2;body.applyLocalForce(new C.Vec3(0,0,this.thrust[k]),V(this.rotors[k]));body.applyTorque(body.vectorToWorldFrame(new C.Vec3(0,0,this.spins[k]*.025*this.thrust[k])));}
  }
- step(force=false){
+ beforePhysics(force=false){
   if((!this.running&&!force)||this.state==='fault')return false;if(this.stepCount%12===0)this.control();this.motors();
-  this.gust=[this.config.wind*(.8+.15*Math.sin(this.time*.7)),this.config.wind*.15*Math.cos(this.time*.5),0];const relative=sub(this.velocity(),this.gust);this.body.applyForce(V(scale(relative,-.16*norm(relative))));this.body.applyTorque(this.body.angularVelocity.scale(-.015));this.world.step(DT);this.time=this.world.time;this.stepCount++;
+  this.gust=[this.config.wind*(.8+.15*Math.sin(this.time*.7)),this.config.wind*.15*Math.cos(this.time*.5),0];const relative=sub(this.velocity(),this.gust);this.body.applyForce(V(scale(relative,-.16*norm(relative))));this.body.applyTorque(this.body.angularVelocity.scale(-.015));return true;
+ }
+ afterPhysics(){
+  this.time=this.world.time;this.stepCount++;
   this.powerW=12+4*this.thrust.reduce((s,f)=>s+f**1.5,0)+this.budget.compute_w;this.energyWh+=this.powerW*DT/3600;this.charge=clamp(1-this.energyWh/this.air.battery_wh,0,1);
   if(this.stepCount%24===0){this.trail.push(this.position());if(this.trail.length>900)this.trail.shift();}
   if(this.position().some(v=>!Number.isFinite(v))||Math.abs(this.position()[0])>11||Math.abs(this.position()[1])>9||this.position()[2]>7||this.charge<.05){this.state='fault';this.status='Flight envelope or battery limit reached · episode stopped';this.running=false;}
   return true;
  }
+ step(force=false){if(!this.beforePhysics(force))return false;this.world.step(DT);return this.afterPhysics();}
  snapshot(){return {episode:this.episode,mission:this.missionId,time:this.time,running:this.running,state:this.state,status:this.status,selected:this.selected,task:this.task?{...this.task}:null,config:{...this.config},budget:{...this.budget},position:this.position(),velocity:this.velocity(),quaternion:[this.body.quaternion.x,this.body.quaternion.y,this.body.quaternion.z,this.body.quaternion.w],angular_velocity:A(this.body.vectorToLocalFrame(this.body.angularVelocity)),heading:this.yaw(),rotors:this.thrust.map((thrust,i)=>({thrust,command:this.commands[i],rpm:this.motorSpeed[i]*60/(2*Math.PI)})),camera:this.cameraPose(),visible:[...(this.visible||[])],observed:structuredClone(this.observed),path:this.path.map(p=>[...p]),trail:this.trail.map(p=>[...p]),policy:{mode:this.policyMode,calls:this.policy.calls,parameters:387,samples:this.policy.net.samples,validation_mae:this.policy.validation_mae,action:[...this.action],desired_velocity:this.lastDesiredVelocity||[0,0,0],expires:this.actionUntil,stale:this.stale,pending:!!this.pending,error:this.policyError},telemetry:{...this.telemetry},events:this.events.map(e=>({...e})),energy_wh:this.energyWh,battery:this.charge,power_w:this.powerW||0,manual:this.manualMode};}
 }

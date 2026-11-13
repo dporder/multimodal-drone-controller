@@ -1,9 +1,10 @@
 import {SingleSimulation} from './simulation.js';
+import {TeamSimulation} from './team.js';
 let simulation=null,last=performance.now(),accumulator=0,lastPublish=0,hidden=false;
 const publish=()=>simulation&&postMessage({type:'state',state:simulation.snapshot()});
 self.onmessage=async({data})=>{
  try{
-  if(data.type==='init'){const response=await fetch(new URL('./flight-policy.json',import.meta.url));if(!response.ok)throw Error('Could not load flight-policy weights');simulation=new SingleSimulation(await response.json(),data.config);publish();return;}
+  if(data.type==='init'){const response=await fetch(new URL('./flight-policy.json',import.meta.url));if(!response.ok)throw Error('Could not load flight-policy weights');const Simulation=data.count===1?SingleSimulation:TeamSimulation;simulation=new Simulation(await response.json(),data.config);publish();return;}
   if(!simulation)throw Error('Flight model is loading');
   if(data.type==='visibility'){hidden=data.hidden;last=performance.now();accumulator=0;simulation.manual=[0,0,0,0];return;}
   if(data.type==='vla_reply'){simulation.acceptExternal(data.reply);return;}
@@ -16,6 +17,8 @@ self.onmessage=async({data})=>{
   else if(command==='start')simulation.start(data.instruction);
   else if(command==='hold')simulation.hold();
   else if(command==='camera')simulation.setCamera(data.settings);
+  else if(command==='active')simulation.setActiveDrone(data.index);
+  else if(command==='auto_aim')simulation.autoAim=data.enabled;
   else if(command==='manual')simulation.setManual(data.enabled);
   else if(command==='input')simulation.manual=data.input;
   else if(command==='policy')simulation.setPolicyMode(data.mode);

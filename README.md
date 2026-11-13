@@ -8,15 +8,60 @@ We envision a future where a goal can be as simple as a quiet thought, and the s
 
 More to come soon.
 
-## Solo Lab — one drone, camera and onboard intelligence
+## Run this branch with Python
 
-Open **http://127.0.0.1:8766/browser/single/** after `npm start` for the separate
-single-drone simulator. Select an object visually, instruct find/inspect/gentle
-touch, and inspect its mounted camera, learned velocity policy and four physical
-rotors. Hardware choices model compute mass/power and VLA memory budgets.
-The runnable controller is a compact synthetic-flight NN; foundation VLA weights
-are not loaded. A validated camera/language/action interface supports a future
-drone-trained VLA. See [usage and tests](swarm_lab/browser/single/README.md) and
+Requires **Python 3.9+** and a browser with WebGL. No pip install, Node.js, npm,
+build step, model download, or external CDN is needed for the current flight lab.
+
+```sh
+git clone --branch scale_swarm_from_one --single-branch https://github.com/dporder/multimodal-drone-controller.git
+cd multimodal-drone-controller
+python3 serve.py
+```
+
+Open **http://127.0.0.1:8766/**. On Windows, use `py serve.py`.
+`python3 main.py flight` is an equivalent entry point. Stop with Ctrl-C.
+
+For a server, container or another computer on your network:
+
+```sh
+python3 serve.py --host 0.0.0.0 --port 8766
+```
+
+Open `http://<server-address>:8766/`. Hosting platforms can use
+`python3 serve.py --host 0.0.0.0` as the start command; the launcher reads their
+`PORT` environment variable (8766 by default). It serves only the bundled
+browser assets. The browser runs physics, drone behavior and the heuristic
+controller; Python hosts the files. Optional external VLA adapters and the older
+MuJoCo/hybrid experiments below have their own dependencies.
+
+The page opens the complete environment with exactly three drones, three live
+cameras, an equally sized shared-animation panel, vision cones and one-second
+trajectory updates. Solo mode: `/browser/single/?drones=1`.
+
+Python-only hosting checks:
+
+```sh
+python3 -S -m unittest discover -s tests -p test_static_server.py
+```
+
+## Swarm Flight Lab — three cameras, shared context and coordinated flight
+
+Open **http://127.0.0.1:8766/browser/single/** after `python3 serve.py` for
+the three-aircraft extension of Solo Lab. Three mounted cameras feed a partial
+observed-surface reconstruction in a fixed frame. A heuristic master coordinates
+search, localization and separate close views, generating three curved one-second
+flight references every second. Twelve rotors move three physical bodies in one
+browser-native Cannon ES world. No Python backend is needed for this lab.
+
+Select an object visually and instruct find, inspect or gentle touch (master
+only). The dashboard shows three live cameras, camera cones, absolute/relative
+coordinates and a separate animated reconstruction with colored trajectory traces.
+Hardware choices model compute mass/power and VLA memory budgets. NN1 fusion and
+planning are heuristic; each aircraft retains the compact learned flight baseline.
+Foundation VLA weights are not loaded. The original solo mode remains at
+**http://127.0.0.1:8766/browser/single/?drones=1**.
+See [usage and tests](swarm_lab/browser/single/README.md) and
 [primary-source hardware/VLA research](http://127.0.0.1:8766/browser/single/research.html).
 
 ## Browser-native Swarm Lab

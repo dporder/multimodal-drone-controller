@@ -1,9 +1,70 @@
-# Solo Lab — one-drone visual flight simulator
+# Swarm Flight Lab — three views, shared context and coordinated flight
 
-Run `npm start`, then open **http://127.0.0.1:8766/browser/single/**.
-The existing Node server serves this page. All simulation and the default flight
-policy run in a separate browser worker; Python is not required for this page.
-The original three-drone application remains at `/browser/`.
+From the repository root, run `python3 serve.py`, then open
+**http://127.0.0.1:8766/**. Python 3.9+ is sufficient: no pip, npm or build step.
+For network hosting use `python3 serve.py --host 0.0.0.0`; `--port` or the `PORT`
+environment variable selects the port. On Windows use `py serve.py`.
+`python3 main.py flight` and the existing `npm run start:static` also work.
+All simulation and the default flight policy run in a browser worker; Python
+only serves the bundled files. See the root README for clone/deployment commands.
+The original city/yard swarm remains at `/browser/`. This lab now defaults to
+**exactly three aircraft**. The original single-drone baseline is preserved at
+`/browser/single/?drones=1`.
+
+## Three-aircraft extension
+
+- One Cannon ES world advances once at 240 Hz. Master, drone 2 and drone 3 each
+  have their own rigid body, four motors, energy budget, camera and flight MLP.
+  They collide with the environment and one another; they are never teleported
+  along the displayed trajectories.
+- The master heuristic coordinates `search → localize → separate close views`.
+  `SEARCH_FIELDS` in `team.js` stores different survey corridors. Discovery
+  requires camera FOV and first-hit occlusion checks. Shared sightings change the
+  destination and camera aim; FOV narrows from 78° to 55° near the observed goal.
+  Find confirms a shared sighting; inspect requires all three aircraft to settle
+  at distinct viewpoints with the target visible. Only the master performs touch.
+- **NN1 is an interface name, not a trained reconstruction network.** Its current
+  implementation is heuristic semantic/depth fusion, route planning and cubic
+  trajectory generation. It uses simulated RGB-D/semantic observations and exact
+  simulator localization. It does not run an RGB detector or learned SLAM.
+- Each camera has its own extrinsics and FOV. Other drones are rendered in that
+  camera and participate in first-hit ray occlusion. The camera owner and all
+  route/selection/cone annotations are excluded from raw RGB.
+- The reconstruction accumulates only observed surface samples from a 24×14
+  depth grid per camera at 20 Hz. Unseen faces are never filled with full meshes.
+  Dim points indicate remembered surfaces. Moving drones are live telemetry poses,
+  rather than permanent geometry in the map. This is a partial point-cloud scene,
+  not a photorealistic reconstruction.
+- The fixed frame starts at the master's initial position, with world-aligned
+  XYZ axes and Z up. It never translates or rotates with the master. The dashboard
+  shows all three absolute positions and their offsets from the master; exports
+  also include the complete 3×3 pairwise relative-position matrix. Because the
+  origin starts in flight, floor coordinates have negative Z in this frame.
+- Every simulated second, the master generates three one-second cubic Bézier
+  paths with 21 samples each, initial position/velocity, timestamp, revision and
+  goal. The local learned velocity baseline supplies endpoint velocity; 20 Hz
+  trajectory following supplies feedback plus feedforward to the 240 Hz rotor
+  controllers. Static-geometry checks, timed inter-drone checks and a reciprocal
+  separation supervisor can slow or stop execution. These are tracking references,
+  not guarantees of exact future motion under wind and motor lag.
+- The full simulation environment is always visible as the large main view,
+  including each drone's translucent camera cone. Directly below, three camera
+  feeds and the shared animation occupy four equal 16:9 panels (a 2×2 grid on
+  narrow screens). Both world views render continuously; there is no tab switch.
+  The animation retains three colored one-second trajectories refreshed every
+  second. Its expand button opens a larger view; Escape restores the compact panel.
+  Camera pixels never contain the cone or trajectory overlays.
+- Controls, positions, hardware and telemetry are collapsed below the animation.
+  Open **Controls** to choose an aircraft or change its camera. Teal / amber / blue
+  identify master / drone 2 / drone 3. Cone previews extend 2.7 m for readability;
+  sensor range remains 16 m, with object and aircraft occlusion.
+
+
+Camera capture targets 20 Hz; actual display rate depends on GPU/browser load.
+Physics and sensing use simulation time. Pausing freezes that time; single-step
+advances all aircraft by 50 ms. Reset clears observations, recordings and plans.
+The static server serves assets only; the default team needs no Python/backend.
+
 
 ## Use
 
@@ -15,7 +76,9 @@ The original three-drone application remains at `/browser/`.
 3. Execute. The camera must actually observe the object before its position
    enters the agent's observation memory. Find confirms sight, inspect holds a
    stand-off, and touch approaches the fixture with a forward contact probe.
-4. Choose front/underslung camera mounts, pitch/yaw/FOV and inspection light.
+4. Choose the control aircraft, then its front/underslung mount, pitch/yaw/FOV
+   and inspection light. Manual camera edits disable auto aim. Re-enable auto aim
+   to let the master orient all three cameras toward an observed task object.
    Use Airframe view to inspect the actual camera mount, compute package, probe
    and four spinning rotors. Overview, Follow and Top are also available.
 5. Hold (H), manual WASD + Q/E altitude + arrow yaw, pause (Space), single-step
@@ -28,7 +91,10 @@ successful touch the drone holds slightly back from the fixture.
 
 ## Implementation and fidelity
 
-- `simulation.js`: exactly one dynamic 6-DoF drone, four force application points,
+- `team.js`: shared world, three independent agents, observed-map fusion, task
+  fields, viewpoint allocation, cubic plans and separation supervision.
+- `team-view.js`: camera cones, partial 3D surface map and animated trajectories.
+- `simulation.js`: reusable single-aircraft controller with exactly one dynamic 6-DoF drone, four force application points,
   reaction torques, motor lag, gravity, drag, energy, camera FOV/ray observations,
   task transitions, geometric routing and manual/autonomous control. Body FLU
   is forward/left/up; world XYZ is Z up. State quaternions in UI snapshots use
@@ -65,7 +131,9 @@ and the separation between module specifications and integration assumptions.
 
 ## External VLA
 
-Select External drone-trained VLA, enter a CORS-enabled HTTP(S) endpoint, and
+In team mode the external adapter controls the **master only**; the two partners
+continue using heuristic plans. External master actions override its local curve
+reference. Select External drone-trained VLA, enter a CORS-enabled HTTP(S) endpoint, and
 execute a mission. A synchronized request carries current PNG RGB, reference
 crop, instruction, camera calibration/pose, ideal local vehicle state, ranges,
 observed semantic objects and episode/mission/sequence/time. It excludes the
@@ -88,12 +156,17 @@ those action dimensions cannot be sent directly as motor forces.
 
 ## Recordings and tests
 
-Export saves up to 1,000 synchronized RGB/state/action records at approximately
-4 Hz, plus latest state, visual reference and current RGB. Image pixels contain
+Export saves up to 600 team records (1,000 in solo mode) at approximately
+4 Hz, plus latest state, visual reference and current RGB. Team records contain
+three synchronized camera images/poses, twelve rotor forces, absolute/relative
+positions and all three local trajectory plans. Image pixels contain
 no trajectory/bounding-box overlay. This is a JSON research format; conversion
 is needed before using it as a LeRobot training dataset.
 
 ```sh
+npm run test:team             # shared physics / mapping / planning / three-view tasks
+npm run test:team-browser     # real three-camera dashboard / reconstruction / export
+npm run test:python-browser   # same browser checks through dependency-free Python hosting
 npm run train:single          # regenerate reproducible baseline weights
 npm run test:single           # deterministic physics / task / contract tests
 npm run test:single-browser   # real Chrome / WebGL / worker / camera / export
@@ -107,13 +180,16 @@ braking and external-action validation. Chrome tests exercise camera-based visua
 selection, reference capture, mission completion, synchronized dataset export,
 mount changes, payload warnings, adapter requests, disconnection and mobile layout.
 
-Verified in the implementation session: all 60 JavaScript regressions passed
-(14 for this simulator, 46 existing swarm regressions). Chrome completed visual
-selection, find and gentle contact with no page errors; contact was approximately
-0.006 m/s after 43 simulated seconds. The exported recording contained synchronized
-RGB and four-rotor actions. A mock external VLA adapter exercised actual POST
-requests and action handling, followed by disconnection with physics continuing.
-Additional headless checks completed the orange-fixture touch at 4.62 kg and
-5.42 kg total takeoff mass with 1.2 m/s wind, and the default profile at 2 m/s
-wind. These tests establish simulator behavior, not performance of real hardware
-or an actual foundation VLA checkpoint.
+The team regressions cover one-world integration, 12 independent motors, peer
+visibility and occlusion, partial-only map samples, fixed-origin coordinates,
+1 Hz trajectory updates that actually drive flight, search/reacquisition, all
+four three-view inspections, gentle master contact, inter-drone separation,
+manual control, pause/step, and stale-action braking. Browser tests verify three
+distinct synchronized RGB images, other drones appearing in view, live partial
+reconstruction, mission completion, recording export and responsive layout.
+The original single-flight and city/yard swarm regression suites remain in
+`npm test`; the original solo Chrome test explicitly uses `?drones=1`.
+
+These tests establish simulator behavior, not real hardware performance or the
+capability of a foundation VLA checkpoint. Known bay geometry is a navigation
+prior. The partial reconstruction itself is never seeded with hidden meshes.
