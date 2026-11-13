@@ -139,6 +139,7 @@ HEAD = r'''<!DOCTYPE html>
     <section><h3>About</h3>
       <details><summary>What you are looking at</summary>
         <p>A floor seen from above. Rooms, 0.2 m walls, doors under a 2.0 m lintel, tables (0.8 m) and shelves (2.2 m). The coloured cones show what each drone camera can see at its height: walls, shelves and door lintels block it.</p>
+        <p>The drones do not know where the person is: each camera runs a detector (10 Hz) that misses more with distance, toward the edge of the view and when he is partly hidden, adds position noise and confidence, and now and then reports something that is not there. Amber dots are detections (filled ones count); the faint cyan wash is the map the drones have scanned so far.</p>
         <p>Every 0.5 s the master (M) picks a tactic template for the current order and sends each follower a vector over a lossy radio. Yellow dashed lines are those vectors; squares are the slots. Amber rooms are where the person could be, green rooms were cleared since he was last seen.</p>
         <p>Safety rules run on board: never closer than 1.2 m to a person; 1.5 m in pressure tactics (drive out, keep out at the door) and 2.5 m otherwise (the dashed ring); 1 m between drones, 0.4 m from walls, one drone per doorway, slow in doors. The person model and the tactics are explained in docs/TACTICS.md; the training records in docs/DATASET_PLAN.md.</p></details></section>
   </aside>
@@ -176,8 +177,8 @@ function visPoly(d){ const pts=[[X(d.x),Y(d.z)]], half=settings.camFov/2*Math.PI
   for(let k=0;k<=30;k++){ const a=d.yaw-half+2*half*k/30, sx=Math.sin(a), sz=Math.cos(a); let s=0.1;
     for(;s<settings.camRange;s+=0.1){ const c=cellIdx(d.x+sx*s,d.z+sz*s); if(Hg[c]>=d.y-0.05||(DOORC[c]&&d.y>settings.lintel))break; }
     pts.push([X(d.x+sx*s),Y(d.z+sz*s)]); } return pts; }
-function drawExplore(){ const ex=mission.explore; if(!ex)return; if(!ui.exploreImg||simT-ui.exploreT>0.5){ ui.exploreT=simT; const c=ui.exploreImg||document.createElement('canvas'); c.width=NX; c.height=NZ;
-    const g=c.getContext('2d'), im=g.createImageData(NX,NZ), a=im.data; for(let k=0;k<NX*NZ;k++){ const o=4*k; if(ex.bel[k]===1){ a[o]=34; a[o+1]=211; a[o+2]=238; a[o+3]=46; } else if(ex.bel[k]===2){ a[o]=251; a[o+1]=191; a[o+2]=36; a[o+3]=120; } }
+function drawExplore(){ const ex={bel:team.map}; if(!ex.bel)return; if(!ui.exploreImg||simT-ui.exploreT>0.5){ ui.exploreT=simT; const c=ui.exploreImg||document.createElement('canvas'); c.width=NX; c.height=NZ;
+    const g=c.getContext('2d'), im=g.createImageData(NX,NZ), a=im.data, strong=mission.goal==='explore'; for(let k=0;k<NX*NZ;k++){ const o=4*k; if(ex.bel[k]===1){ a[o]=34; a[o+1]=211; a[o+2]=238; a[o+3]=strong?46:18; } else if(ex.bel[k]===2){ a[o]=251; a[o+1]=191; a[o+2]=36; a[o+3]=strong?120:60; } }
     g.putImageData(im,0,0); ui.exploreImg=c; }
   ctx.imageSmoothingEnabled=false; ctx.drawImage(ui.exploreImg,X(0),Y(0),NX*NAV*ui.scale,NZ*NAV*ui.scale); }
 function text(t,x,y,size,color,align){ ctx.font=(size*(window.devicePixelRatio||1))+'px Inter, system-ui, sans-serif'; ctx.fillStyle=color; ctx.textAlign=align||'center'; ctx.textBaseline='middle'; ctx.fillText(t,x,y); }
@@ -185,7 +186,7 @@ function render(){ fit(); const dpr=window.devicePixelRatio||1; ctx.setTransform
   if(!ui.floor)ui.floor=buildFloor(); ctx.imageSmoothingEnabled=false; ctx.drawImage(ui.floor,X(0),Y(0),GX*CELL*ui.scale,GZ*CELL*ui.scale);
   // room state: amber = he could be here, green = cleared since he was last seen
   for(const q of plan.rooms){ const inB=team.beliefRooms.has(q.id), cl=team.cleared.has(q.id); if(!inB&&!cl)continue; ctx.fillStyle=cl?'rgba(52,211,153,0.10)':'rgba(251,191,36,0.10)'; ctx.fillRect(X(q.x0),Y(q.z0),(q.x1-q.x0)*ui.scale,(q.z1-q.z0)*ui.scale); }
-  if(mission.goal==='explore')drawExplore();
+  drawExplore(); // what the drones have scanned so far (stronger while mapping the floor)
   const P=world.scenario.protectedRoom, pq=plan.rooms[P]; if(pq&&person.role==='intruder'){ ctx.strokeStyle='rgba(251,191,36,0.55)'; ctx.setLineDash([6*dpr,5*dpr]); ctx.lineWidth=1.5*dpr; ctx.strokeRect(X(pq.x0)+3,Y(pq.z0)+3,(pq.x1-pq.x0)*ui.scale-6,(pq.z1-pq.z0)*ui.scale-6); ctx.setLineDash([]); }
   for(const q of plan.rooms)text(q.name+(q.id===P&&person.role==='intruder'?' · protected':''),X(q.cx),Y(q.z0)+12*dpr,10.5,'rgba(200,210,225,0.55)');
   for(const d of plan.doors){ const owner=doorLock[d.id]; if(owner!=null){ const c=COL[team.drones[owner].id]; ctx.fillStyle=c+'33'; const w=d.w+0.4; if(d.axis==='h')ctx.fillRect(X(d.x-w/2),Y(d.z-0.5),w*ui.scale,1.0*ui.scale); else ctx.fillRect(X(d.x-0.5),Y(d.z-w/2),1.0*ui.scale,w*ui.scale); }
@@ -200,12 +201,15 @@ function render(){ fit(); const dpr=window.devicePixelRatio||1; ctx.setTransform
     ctx.fillStyle=COL.P; ctx.beginPath(); ctx.arc(X(person.x),Y(person.z),0.28*ui.scale,0,2*Math.PI); ctx.fill(); const h=person.heading; ctx.strokeStyle='#fff'; ctx.lineWidth=2*dpr; ctx.beginPath(); ctx.moveTo(X(person.x),Y(person.z)); ctx.lineTo(X(person.x+Math.sin(h)*0.45),Y(person.z+Math.cos(h)*0.45)); ctx.stroke();
     text((person.role==='visitor'?'visitor':'intruder')+' · '+person.state+(seen?'':' · not seen'),X(person.x),Y(person.z)-0.55*ui.scale,10.5,'#fecdd3'); ctx.globalAlpha=1; }
   const I=team.est(); if(I&&!team.seen){ ctx.strokeStyle='rgba(251,113,133,0.8)'; ctx.lineWidth=1.5*dpr; ctx.beginPath(); ctx.arc(X(I.x),Y(I.z),0.4*ui.scale,0,2*Math.PI); ctx.stroke(); text('last seen '+(simT-team.lkpT).toFixed(1)+' s',X(I.x),Y(I.z)+0.7*ui.scale,9.5,'rgba(251,113,133,0.9)'); }
+  // detections from the last camera frame: filled when confident enough to count, hollow otherwise
+  for(const x of team.dets||[]){ ctx.globalAlpha=0.35+0.6*x.conf; ctx.fillStyle=x.conf>=settings.acceptConf?'#fbbf24':'transparent'; ctx.strokeStyle='#fbbf24'; ctx.lineWidth=1.2*dpr; ctx.beginPath(); ctx.arc(X(x.x),Y(x.z),0.16*ui.scale,0,2*Math.PI); if(x.conf>=settings.acceptConf)ctx.fill(); ctx.stroke(); }
+  ctx.globalAlpha=1;
   // drones: path, vector to slot, sight line, body
   for(const d of team.drones){ const c=COL[d.id];
     if(d.path&&d.path.length&&d.y>0.3){ ctx.strokeStyle=c+'55'; ctx.lineWidth=1*dpr; ctx.beginPath(); ctx.moveTo(X(d.x),Y(d.z)); for(const p of d.path)ctx.lineTo(X(p.x),Y(p.z)); ctx.stroke(); }
     if(d.slot&&hyp(d.slot.x-d.x,d.slot.z-d.z)>0.15){ ctx.strokeStyle='rgba(251,191,36,0.75)'; ctx.setLineDash([3*dpr,3*dpr]); ctx.lineWidth=1.2*dpr; ctx.beginPath(); ctx.moveTo(X(d.x),Y(d.z)); ctx.lineTo(X(d.slot.x),Y(d.slot.z)); ctx.stroke(); ctx.setLineDash([]);
       ctx.strokeStyle=c; ctx.strokeRect(X(d.slot.x)-4*dpr,Y(d.slot.z)-4*dpr,8*dpr,8*dpr); }
-    if(d.sees&&person.alive){ ctx.strokeStyle=c+'aa'; ctx.lineWidth=1*dpr; ctx.beginPath(); ctx.moveTo(X(d.x),Y(d.z)); ctx.lineTo(X(person.x),Y(person.z)); ctx.stroke(); }
+    for(const x of team.dets||[])if(x.drone===d.id&&x.conf>=settings.acceptConf){ ctx.strokeStyle=c+'aa'; ctx.lineWidth=1*dpr; ctx.beginPath(); ctx.moveTo(X(d.x),Y(d.z)); ctx.lineTo(X(x.x),Y(x.z)); ctx.stroke(); }
     ctx.fillStyle=d.y<0.3?c+'66':c; ctx.beginPath(); ctx.arc(X(d.x),Y(d.z),0.22*ui.scale,0,2*Math.PI); ctx.fill(); ctx.strokeStyle='#05080e'; ctx.lineWidth=1.5*dpr; ctx.beginPath(); ctx.moveTo(X(d.x),Y(d.z)); ctx.lineTo(X(d.x+Math.sin(d.yaw)*0.3),Y(d.z+Math.cos(d.yaw)*0.3)); ctx.stroke();
     text(d.id+' '+d.y.toFixed(1)+' m',X(d.x),Y(d.z)+0.48*ui.scale,9.5,c); } }
 

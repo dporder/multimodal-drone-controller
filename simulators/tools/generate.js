@@ -101,7 +101,7 @@ function applyIndoorOrder(S, o, t) {
 
 function indoorOutcome(S, t, ended) {
   const m = S.metrics, pp = S.person.params;
-  return { type: 'outcome', t_end: +t.toFixed(2), end: ended ? 'gone' : 'timeout', role: S.person.role, breaches: m.breaches, left: m.left,
+  return { type: 'outcome', t_end: +t.toFixed(2), end: ended ? 'gone' : 'timeout', role: S.person.role, breaches: m.breaches, left: m.left, false_found: m.falseFound, fp_frames: m.fpFrames,
     left_without_breach: m.left > 0 && m.breaches === 0, guided: m.guided, found: m.found, t_found: m.tFound, mapped: m.mapped,
     in_view_pct: m.totT ? +(100 * m.seenT / m.totT).toFixed(1) : 0, min_standoff: Number.isFinite(m.minStandoff) ? +m.minStandoff.toFixed(2) : null,
     min_separation: Number.isFinite(m.minSep) ? +m.minSep.toFixed(2) : null, min_wall: Number.isFinite(m.minWall) ? +m.minWall.toFixed(2) : null,
@@ -124,7 +124,12 @@ function runIndoorEpisode(S, sha, ep, baseline) {
       floor: { W: r2(P.W), D: r2(P.D), ceil: P.ceil, lintel: S.settings.lintel, rooms: P.rooms.map(q => ({ id: q.id, name: q.name, x0: r2(q.x0), z0: r2(q.z0), x1: r2(q.x1), z1: r2(q.z1) })),
         furniture: P.furn.map(f => ({ x0: r2(f.x0), z0: r2(f.z0), x1: r2(f.x1), z1: r2(f.z1), h: f.h, kind: f.kind })), pads: P.pads.map(p => [r2(p.x), 0, r2(p.z)]), operator: [r2(P.operator.x), 0, r2(P.operator.z)] },
       doors: P.doors.map(d => ({ id: d.id, name: d.name, x: d.x, z: d.z, w: d.w, axis: d.axis, rooms: d.rooms.map(r => r < P.rooms.length ? r : 'outside') })),
-      protected_room: S.world.scenario.protectedRoom, scenario: sc, person: S.world.scenario.person, orders: ep.orders });
+      protected_room: S.world.scenario.protectedRoom, scenario: sc, person: S.world.scenario.person, orders: ep.orders,
+      // the floor plan above is a prior map: an optional model input (switch it off to train map-free); obs.map is what the drones scanned
+      floor_role: 'prior_map_optional',
+      map: Object.assign(S.coarseDims(), { legend: "'#' known blocked, '.' known free, '?' unknown; row-major, x then z, from (0,0)" }),
+      perception: { detector_hz: S.settings.percHz, cam_fov_deg: S.settings.camFov, cam_range_m: S.settings.camRange, p_detect_near: S.settings.pNear, p_detect_at_range: S.settings.pFar,
+        p_edge_factor: S.settings.pEdge, false_positive_per_frame: S.settings.fpRate, accept_conf: S.settings.acceptConf, noise_m: `${S.settings.noise0} + ${S.settings.noiseK} x distance`, depth_range_m: S.settings.depthRange } });
     S.mission.onPlan = r => out.push(r);
   }
   const queue = baseline ? [] : ep.orders.slice();

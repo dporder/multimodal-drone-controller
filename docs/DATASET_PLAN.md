@@ -23,8 +23,10 @@ The **context window** holds only what the team could know:
 - estimated team state;
 - the person's position if seen, otherwise the time since last seen;
 - the belief summary;
-- the map, from the episode header;
+- the map the drones have scanned so far; the floor plan from the episode header is an optional prior;
 - goal memory: goal, version, order text.
+
+In `swarm-indoor`, "seen" comes from simulated detections, not from geometry. See "Inputs: perception outputs, not truth" below.
 
 The simulator's ground truth is logged under `truth`. It is for metrics only and is never an input.
 
@@ -165,19 +167,38 @@ node simulators/tests/indoor.test.js      # floors, line of sight, belief, no le
 ```jsonc
 {"type":"plan","t":12.5,"tick":25,
  "order":{"goal":"keepout","version":1,"text":"keep him out of the lab","src":"sampler","params":{"room":0},"status":"active"},
- "obs":{"seen":true,"p":[6.1,0,11.0],"v":[0.4,0,-1.1],"last_seen_age":0,"room":4,"belief_rooms":[4],"cleared":[]},
- "team":[{"id":"M","pos":[…],"vel":[…],"yaw":3.1,"room":3,"link_age":0}, …],
+ "obs":{"seen":true,"p":[6.1,0,11.0],"v":[0.4,0,-1.1],"last_seen_age":0,"room":4,"belief_rooms":[4],"cleared":[],
+        "detections":[{"drone":"S1","p":[6.07,0,10.93],"conf":0.91}, …],"coverage":[0,0,0,0,0.42,0,0],"map":"??..##..??…"},
+ "team":[{"id":"M","pos":[…],"vel":[…],"yaw":3.1,"room":3,"link_age":0,"wait_door":null,"cam":[4.5,4.4,…]}, …],
  "label":{"template":"block","text":"block his way to the lab door","band":"pressure","door":0,"room":0,"exit":null,
           "slots":[[…],[…],[…]],"vectors":[[…],[…],[…]],"yaw":[…],"spin":[false,false,false],
           "refs":[[[x,y,z] at +0.5 s, +1 s, +1.5 s, +2 s], …],"flags":[[],["standoff"],[]]},
  "radio":[{"to":"S1","dropped":false,"latency":0.18}, …],
- "truth":{"person":{"pos":[…],"room":4,"state":"approach","role":"intruder","alive":true},"margin":0.62}}
+ "truth":{"person":{"pos":[…],"room":4,"state":"approach","role":"intruder","alive":true},"margin":0.62,
+          "detections_tp":[true, …],"estimate_from_fp":false},
+ "sft":true}
 ```
 
 - **Header:** the floor (rooms, doors, furniture, pads), the protected room, the scenario and the order schedule.
 - **Standoff band:** `label.band` names the band the teacher used: `pressure` (1.5 m; drive out, and keep out once he is at the door) or `comfort` (2.5 m). A student can learn it with the slots. Outcomes count true distances per band: never below 1.2 m in pressure, 2.0 m in comfort (`docs/TACTICS.md`, safety envelope).
 - **Metric-only:** `header.person` (the hidden parameters) and `truth`, never model inputs.
 - **No leak:** the person has his own random stream, so his hidden choices never shift the team's random draws. A test checks that where an unseen person hides does not change any label.
+
+**Inputs: perception outputs, not truth.** NN1 is meant to consume what an on-board perception stack outputs: person detections and a map. It does not take raw camera frames.
+- **Out of scope here:** rendering images and depth (Isaac Sim, AirSim, or Habitat with ProcTHOR scenes) and training the detector belong to a separate perception and sim-to-real workstream. That workstream produces these same outputs from pixels.
+- **Detections** (`obs.detections`): each drone's camera runs a simulated person detector at 10 Hz.
+  - **Hit rate:** it falls with distance (97% within 3 m, 35% at the 8 m range), toward the edge of the 90° view (×0.6 at the edge), and with occlusion (the share of head, chest and hip the camera can see; lower when he is crouched hiding). Measured per frame: 96% at 2 m, 84% at 4 m, 54% at 6.5 m, 37% at 7.8 m, and 72% at 40° off axis.
+  - **Errors:** position noise grows with distance (0.17 m mean error at 2 m, 0.40 m at 7.8 m). Each detection has a confidence. About 0.1% of frames add a false positive somewhere on open floor in the cone, mostly with low confidence.
+  - **Use:** the record keeps every detection from each camera's latest frame. `truth.detections_tp` says which were the person.
+- **Seen and the estimate:** a detection counts when its confidence is at least 0.5. The estimate is the most confident detection, averaged with others within 1.5 m. `obs.seen`, `obs.p` and `obs.v` come only from these; the estimate is held for 4 s after the last sighting. `truth.estimate_from_fp` marks estimates that came from a false positive.
+- **Scanned map** (`obs.map`): depth rays (90°, 5 m) build a map in every episode, not only while exploring.
+  - **Format:** cells of 0.6 m, `#` known blocked, `.` known free, `?` unknown, row-major in x then z. Size and legend are in `header.map`.
+  - **Other fields:** `obs.coverage` gives each room's search coverage (it counts during searches only), and `team[i].cam` gives 31 ray lengths across each camera's view, which is what that camera can see.
+- **Floor plan:** the header's floor plan is a prior map (`header.floor_role = prior_map_optional`). Use it as an input only if real deployments will have floor plans; otherwise train map-free on `obs.map`.
+- **Still idealized:**
+  - **The teacher plans on the full floor plan.** It is a privileged teacher, so a map-free student sees less than its teacher did.
+  - **The drones' close-range back-away reflex** uses the person's true position within 4.5 m in line of sight, standing in for a short-range proximity sensor.
+  - **Door contact sensors** are exact.
 
 **Episodes end soon after the work is done.** Before, finished orders left long stretches of automatic hold in the labels: 22% of all ticks. Now:
 - When an order finishes, the next scheduled order is brought forward to 3–5 s later, as an operator watching would. Its order event keeps the original time as `scheduled_t`.
@@ -217,53 +238,56 @@ Every plan record carries `sft`, whether to train on it. It is false when its se
 
 Changing the order time, the radio, the floor or the order's room name changed nothing. So the gap was in what was winnable, not in the pipeline: use `deterrable` and the segments to tell the two apart.
 
-**First indoor run (13 November 2026, M1 MacBook), after the quality fixes:**
+**First indoor run (13 November 2026, M1 MacBook), with the quality fixes and simulated perception:**
 
 Size and quality:
-- 600 episodes in 8 minutes on 7 worker threads, each paired with a grounded baseline on the same seed. 111,084 plan records and 1,412 order events, 18 MB gzipped.
-- Before the fixes the same schedule gave 139,387 records; the difference is mostly automatic hold that no longer trails finished orders.
+- 600 episodes in 16 minutes on 7 worker threads, each paired with a grounded baseline on the same seed. 114,261 plan records and 1,406 order events, 29 MB gzipped. The scanned map takes about 11 MB of that.
 - The scenarios: 296 intruders heading for a room, 127 hiding, 177 lost visitors; 419 random floors and 181 on the fixed office.
 - Every record matches contract v0. The same seed gives the same records (`indoor.test.js`).
-- **All 13 quality gates pass.** `quality_report.js` reports:
+- **All 20 quality gates pass.** `quality_report.js` reports:
 
   | Measure | Result |
   |---|---|
-  | Template flicker | 0.02% of ticks |
-  | Follower swaps | 0.09% |
-  | Slot jitter when nothing changed, 95th percentile | 0.13 m |
-  | Stuck drones | 4.6% of drone-ticks |
-  | Doorway queues | 2.5% |
-  | Automatic hold | 2.5% of ticks |
-  | Hold, all causes | 19.5% (was 35%) |
-  | Ticks fit for training (`sft`) | 81.9% |
+  | Template flicker | 0.08% of ticks |
+  | Follower swaps | 0.08% |
+  | Slot jitter when nothing changed, 95th percentile | 0.03 m |
+  | Stuck drones | 4.3% of drone-ticks |
+  | Doorway queues | 2.3% |
+  | Automatic hold | 2.4% of ticks |
+  | Hold, all causes | 18.7% (35% before the fixes) |
+  | Estimate error while in sight | 0.17 m median, 0.43 m 95th percentile |
+  | Estimates from a false positive | 1.3% of ticks with an estimate |
+  | Ticks fit for training (`sft`) | 82.7% |
 
-- **Templates in the labels:** search 25,700 · hold 21,628 · track 15,746 · lead (guide out) 10,293 · explore 8,503 · overwatch 8,246 · push (drive out) 6,867 · barrier 4,614 · doors (contain) 3,925 · return 3,736 · block 1,803 · ring 23.
+- **Perception:** the records' latest camera frames hold 67,359 true and 248 false detections. 44 of the false ones were confident enough to count, and 4 searches ended on one.
+- **What the team knew:** at 33% of ticks the person was in sight, at 15% only an estimate from the last 4 s was known, and at 52% his position was unknown.
+- **Templates in the labels:** search 27,051 · hold 21,361 · track 14,609 · lead (guide out) 11,107 · explore 8,749 · overwatch 8,157 · push (drive out) 6,603 · doors (contain) 5,031 · barrier 4,954 · return 4,098 · block 2,527 · ring 14.
   - Search includes the short searches that drive out, track and contain run when they lose him.
   - The contain ring needs a room at least 7 m across, so it is rare.
-- **Bands:** comfort 98,337 ticks (89%), pressure 12,747 (11%).
-- **What the team knew:** at 37% of ticks the person was in sight, at 12% only an estimate from the last 4 s was known, and at 51% his position was unknown.
+- **Bands:** comfort 101,348 ticks (89%), pressure 12,913 (11%).
 
 The orders:
 - 1,535 sampled phrasings: 1,406 orders, 59 questions and 70 refusals, from 185 templates and 1,199 distinct texts.
 - 77 compound orders and 39 context pairs.
-- 1,412 order events reached an episode; the rest were scheduled after the person had already left.
+- 1,406 order events reached an episode; the rest were scheduled after the person had already left.
 
 Parser agreement with the sampler's intended orders:
 - 1,501/1,501 on seen phrasing templates and 34/34 on held-out ones; 108/108 on the held-out sweep.
 - These numbers are optimistic: the grammar was fixed using earlier runs of this report.
 
 **Safety on true positions, all 600 episodes:**
-- No drone came within the 1.2 m floor; the closest in the pressure band was 1.21 m.
+- No drone came within the 1.2 m floor; the closest in the pressure band was 1.35 m.
 - No drone moved toward a person inside its band's limit for more than 0.5 s.
 - No separation, wall or altitude violations.
-- In 70 episodes (12%) a person came within 2.0 m of a comfort-band drone that was giving way, closest 1.47 m. This happens in corridors.
+- In 63 episodes (10.5%) a person came within 2.0 m of a comfort-band drone that was giving way, closest 1.38 m. This happens in corridors.
 - Earlier runs of this set found three floor breaches and a climb above the altitude band; the fixes are in `docs/TACTICS.md`.
 
 **Outcomes need care.** `summary.txt` gives outcomes by first order and for the 92 episodes scheduled with a single order. They are not tactic benchmarks:
 - **Re-orders:** the first order is usually replaced 10–35 s later, often before an intruder arrives, so most episodes mix tactics.
 - **Single-order episodes:**
   - Keep out let in 10 of 13 intruders, and drive out 9 of 12, against 11 of 13 and 11 of 12 with the drones grounded. That is mostly what was winnable: see "Why the first run's keep-out looked weak" above.
-  - Guide out got 13 of 21 visitors out (8 of 21 before the guide fixes), and search found 9 of 12 hiders.
+  - Guide out got 12 of 21 visitors out, and search found 8 of 12 hiders.
+- **Perception costs:** episodes that started with a search found 59% of hiders, against 68% before perception. Controlled runs show no drop beyond noise (`docs/TACTICS.md`).
 - **Benchmarks:** use the controlled runs in `docs/TACTICS.md`, where one order is given at 1 s and kept.
 
 ## Open questions for Prat
@@ -273,3 +297,4 @@ Parser agreement with the sampler's intended orders:
 3. Which goals should v1 support beyond keep out, drive out, track and hold? Swarm Indoor has ten; guide out and search are the strongest teachers today.
 4. Is the person model's range of "deterrability" right? It caps what keep out and drive out can achieve (`docs/TACTICS.md`).
 5. For the outcome labels, should episodes keep one order long enough to finish (gaps of 30–90 s), or are frequent re-orders more useful for NN1? Today's 10–35 s gaps give many transitions but blur outcomes.
+6. **NN1's inputs:** we assume NN1 consumes perception outputs, not raw frames: person detections with confidence, the scanned map, search coverage and camera views, plus the order and team state. Rendering and detector training would be a separate perception and sim-to-real workstream. Is that the split you want, and should the floor plan be an input, or should NN1 work map-free?

@@ -203,6 +203,19 @@ No public study shows how an *unwilling* person reacts to drones; all the eviden
 | Keep out on random floors, 16 intruders for each of 5 protected rooms | 47 of 80 breached (storage 4 of 16, kitchen and meeting room 12 of 16) | 74 of 80 breached |
 | Safety (all of the above) | never within the 1.2 m floor (closest in the pressure band: 1.34 m); no separation, wall or altitude violations; no drone moved toward a person inside its band's limit for more than 0.5 s | — |
 
+**With simulated perception (13 November 2026).** The teacher now acts only on simulated detections: misses, position noise, confidence and rare false positives (`docs/DATASET_PLAN.md`, "Inputs"). Same seeds and the same order kept from 1 s, on the office floor:
+
+| Goal | Before | With perception |
+|---|---|---|
+| Keep out, 40 intruders | 27 breached | 22 breached |
+| Drive out, 40 intruders | 22 breached | 22 breached |
+| Search, 12 hiders | 10 found | 11 found |
+| Track, 12 intruders | in view 47% | in view 49% |
+| Guide out, 12 visitors | 6 outside | 8 outside |
+
+- **Controlled runs:** none got worse beyond run-to-run noise. Short misses barely matter, because the estimate is held for 4 s and the tactics already work from estimates.
+- **The mixed dataset:** perception does cost something there. Searches that started the episode found 59% of hiders, down from 68%. 4 of the 600 episodes had a search end on a false positive. The person was in sight 33% of the time, down from 37%. "In view" now counts only confident true detections, so it is not directly comparable to the old geometric number.
+
 **What this does and does not show:**
 - **Keep out and drive out mostly measure our person model.** A drone that must give way cannot physically stop anyone, so success depends on whether he is put off. The pressure band helps drive out most: 23 of 40 breached, down from 25 with a single 2.5 m standoff. With the parameter ranges above, most people are not put off even by all three drones at 3 m. The plan's target was keep-out breaches 30 points below the baseline. On 40 seeds keep out now reaches 32 points (26 against 39 breached), but it stops 11 of 20 deterrable intruders and only 3 of the other 20, so results are reported split by "deterrable". If practitioners say real intruders are more easily deterred, the ranges should change, not the tactic.
 - **Corridors are narrower than the comfort standoff.** A person walking or running past a drone in a 2.4 m corridor can come within 2 m while the drone gives way.

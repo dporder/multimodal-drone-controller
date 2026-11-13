@@ -16,7 +16,7 @@ const rows = fs.readFileSync(path.join(dir, 'manifest.jsonl'), 'utf8').trim().sp
 const C = {
   ticks: 0, episodes: rows.length,
   vecBad: 0, standoffBad: 0, standoffChecked: 0, sepBad: 0, boundsBad: 0, altBad: 0, refsBad: 0,
-  flicker: 0, swaps: 0, stuck: 0, doorWait: 0, sft: 0, sftStuck: 0, sftUnsafe: 0, autoHold: 0, hold: 0, seen: 0, estimate: 0, unknown: 0,
+  flicker: 0, swaps: 0, stuck: 0, doorWait: 0, sft: 0, sftStuck: 0, sftUnsafe: 0, estErr: [], estTicks: 0, estFromFP: 0, tp: 0, fp: 0, fpAccepted: 0, falseFound: 0, autoHold: 0, hold: 0, seen: 0, estimate: 0, unknown: 0,
   goal: {}, template: {}, band: {}, jitter: [], jitterByTemplate: {}, worst: {},
   floor: 0, approach: 0, sepViol: 0, wallViol: 0, altViol: 0, passBy: 0, segments: 0,
 };
@@ -32,6 +32,9 @@ for (const r of rows) {
     if (p.order.goal === 'hold') C.hold++;
     if (p.order.src === 'auto') C.autoHold++;
     if (p.obs.seen) C.seen++; else if (p.obs.p) C.estimate++; else C.unknown++;
+    // perception: how far the team's estimate is from the truth, and how often it came from a false positive
+    if (p.obs.p) { C.estTicks++; if (p.truth.estimate_from_fp) C.estFromFP++; else if (p.obs.seen && p.truth.person.alive) C.estErr.push(D(p.obs.p, p.truth.person.pos)); }
+    p.obs.detections.forEach((x, k) => { if (p.truth.detections_tp[k]) C.tp++; else { C.fp++; if (x.conf >= 0.5) C.fpAccepted++; } });
     const landing = L.template === 'return';
     // 1. vector = slot - position at plan time, for every drone
     for (let i = 0; i < 3; i++) { const v = L.vectors[i], s = L.slots[i], x = p.team[i].pos;
@@ -68,7 +71,7 @@ for (const r of rows) {
       if (far && D(p.team[i].pos, a.team[i].pos) < 0.1 && p.team[i].link_age < 1 && p.team[i].pos[1] > 0.5) { C.stuck++; if (p.sft) C.sftStuck++; note('stuck', `${r.episode} t ${p.t} ${p.team[i].id} ${L.template}`); } } }
     if (p.sft) { C.sft++; if (p.truth.person.alive && p.team.some(d => d.pos[1] > 0.5 && D(d.pos, p.truth.person.pos) < 1.2)) C.sftUnsafe++; }
   }
-  if (out.segments) C.segments += out.segments.length;
+  if (out.segments) C.segments += out.segments.length; C.falseFound += out.false_found || 0;
   C.floor += out.floor_viol_s > 0; C.approach += out.standoff_approach_s > 0.5; C.sepViol += out.sep_viol_s > 0; C.wallViol += out.wall_viol_s > 0; C.altViol += out.alt_viol_s > 0; C.passBy += out.band_viol_s.comfort > 0;
 }
 
@@ -93,11 +96,14 @@ const gates = [
   { hard: true, name: 'training ticks (sft) with a drone inside 1.2 m of the person', value: C.sftUnsafe, ok: C.sftUnsafe === 0 },
   { hard: false, name: 'stuck drones, all ticks (share of drone-ticks)', value: +(C.stuck / (3 * C.ticks)).toFixed(4), ok: C.stuck / (3 * C.ticks) < 0.05 },
   { hard: false, name: 'ticks fit for training (sft share)', value: +share(C.sft).toFixed(3), ok: share(C.sft) > 0.8 },
+  { hard: false, name: 'estimate error while in sight, p95 (m)', value: q(C.estErr, 0.95) === null ? null : +q(C.estErr, 0.95).toFixed(2), ok: q(C.estErr, 0.95) !== null && q(C.estErr, 0.95) < 1.0 },
+  { hard: false, name: 'ticks whose estimate came from a false positive (share of ticks with an estimate)', value: +(C.estFromFP / Math.max(1, C.estTicks)).toFixed(4), ok: C.estFromFP / Math.max(1, C.estTicks) < 0.02 },
   { hard: false, name: 'queuing for a doorway (share of drone-ticks)', value: +(C.doorWait / (3 * C.ticks)).toFixed(4), ok: C.doorWait / (3 * C.ticks) < 0.05 },
   { hard: false, name: 'automatic hold after an order finished (share of ticks)', value: +share(C.autoHold).toFixed(3), ok: share(C.autoHold) < 0.15 },
   { hard: false, name: 'hold, all causes (share of ticks)', value: +share(C.hold).toFixed(3), ok: share(C.hold) < 0.25 },
 ];
 const report = { dir, episodes: C.episodes, ticks: C.ticks, gates, standoff_checked: C.standoffChecked, jitter_p50: J50, jitter_by_template: jitterBy,
+  perception: { detections_true: C.tp, detections_false: C.fp, false_accepted: C.fpAccepted, estimate_error_p50: q(C.estErr, 0.5), estimate_error_p95: q(C.estErr, 0.95), searches_ended_on_a_false_positive: C.falseFound },
   obs: { seen: +share(C.seen).toFixed(3), estimate_only: +share(C.estimate).toFixed(3), unknown: +share(C.unknown).toFixed(3) },
   goals: C.goal, templates: C.template, bands: C.band, comfort_pass_by_episodes: C.passBy, examples: C.worst };
 if (asJson) console.log(JSON.stringify(report, null, 1));
@@ -105,6 +111,7 @@ else {
   console.log(`${dir}: ${C.episodes} episodes, ${C.ticks} plan ticks (${C.standoffChecked} with a person estimate)`);
   for (const g of gates) console.log(`${g.ok ? 'PASS' : 'FAIL'} ${g.hard ? 'hard' : 'soft'}  ${g.name}: ${g.value}${!g.ok && C.worst[{ 'vector = slot - position': 'vec', 'slots keep the band standoff from the estimate': 'standoff', 'slots at least 1 m apart': 'sep', 'reference points reachable': 'refs', 'one-tick template flicker (share of ticks)': 'flicker', 'stuck drones, all ticks (share of drone-ticks)': 'stuck' }[g.name]] ? '   e.g. ' + C.worst[{ 'vector = slot - position': 'vec', 'slots keep the band standoff from the estimate': 'standoff', 'slots at least 1 m apart': 'sep', 'reference points reachable': 'refs', 'one-tick template flicker (share of ticks)': 'flicker', 'stuck drones, all ticks (share of drone-ticks)': 'stuck' }[g.name]] : ''}`);
   console.log(`observations: seen ${report.obs.seen}, estimate only ${report.obs.estimate_only}, unknown ${report.obs.unknown}; comfort pass-bys in ${C.passBy} episodes`);
+  console.log(`perception (records' last frames): ${C.tp} true and ${C.fp} false detections (${C.fpAccepted} false ones confident enough to count); estimate error in sight p50 ${q(C.estErr, 0.5) && q(C.estErr, 0.5).toFixed(2)} m, p95 ${q(C.estErr, 0.95) && q(C.estErr, 0.95).toFixed(2)} m; searches ended on a false positive: ${C.falseFound}`);
   console.log('slot jitter p50/p95 by template:', Object.entries(jitterBy).map(([k, v]) => `${k} ${v.p50}/${v.p95}`).join(', '));
 }
 fs.writeFileSync(path.join(dir, 'quality.json'), JSON.stringify(report, null, 1));

@@ -8,12 +8,14 @@
 
 // ---------- settings (indoor safety envelope from docs/TACTICS.md) ----------
 const settings={ceil:3.0,lintel:2.0,wallT:0.2,
-  dS:2.5,dS2:3.0,dPress:1.5,floorPress:1.2,floorComfort:2.0,reflex:0.3,atDoor:4.0,pathAvoid:'comfort',doorGuard:true,escape:true,rPush:2.5,fearCap:3,sep:1.0,wallClr:0.4,zMin:1.2,zNom:1.6,zDoor:1.6,vMax:1.5,vSlow:0.5,aMax:2.0,
+  dS:2.5,dS2:3.0,dPress:1.5,floorPress:1.2,floorComfort:2.0,reflex:0.3,atDoor:4.0,pathAvoid:'comfort',doorGuard:true,escape:true,
+  percHz:10,pNear:0.97,pFar:0.35,pEdge:0.6,fpRate:0.002,acceptConf:0.5,noise0:0.08,noiseK:0.03,mapRes:0.6,depthRange:5,rPush:2.5,fearCap:3,sep:1.0,wallClr:0.4,zMin:1.2,zNom:1.6,zDoor:1.6,vMax:1.5,vSlow:0.5,aMax:2.0,
   camFov:90,camRange:8,chestH:1.3,hideH:1.0,walk:1.2,run:2.0,visitorWalk:0.9,
   rloss:0.05,rlat:0.2,linkTimeout:1.0,yawRate:120,spinRate:90,mass:0.45,twr:2.2,tiltMax:30,levelCov:{2:0.6,3:0.8,5:0.95},gateN:3,gateRange:9};
 const SETTINGS0=JSON.parse(JSON.stringify(settings)); // reset() starts every episode from these, so settings never leak between episodes
 let simT=0;
-let rngState=12345, prngState=7; function seed(n){ let h=(n>>>0)^0x9e3779b9; h=Math.imul(h^(h>>>16),0x85ebca6b); h=Math.imul(h^(h>>>13),0xc2b2ae35); h^=h>>>16; rngState=(h>>>0)||1; prngState=(Math.imul(h^0x5bd1e995,0x27d4eb2d)>>>0)||7; } function rng(){ rngState^=rngState<<13; rngState>>>=0; rngState^=rngState>>>17; rngState^=rngState<<5; rngState>>>=0; return rngState/4294967296; } // seeds are mixed so small seeds still give varied layouts
+let rngState=12345, prngState=7, crngState=11; function seed(n){ let h=(n>>>0)^0x9e3779b9; h=Math.imul(h^(h>>>16),0x85ebca6b); h=Math.imul(h^(h>>>13),0xc2b2ae35); h^=h>>>16; rngState=(h>>>0)||1; prngState=(Math.imul(h^0x5bd1e995,0x27d4eb2d)>>>0)||7; crngState=(Math.imul(h^0x68e31da4,0x165667b1)>>>0)||11; } function rng(){ rngState^=rngState<<13; rngState>>>=0; rngState^=rngState>>>17; rngState^=rngState<<5; rngState>>>=0; return rngState/4294967296; } // seeds are mixed so small seeds still give varied layouts
+function crng(){ crngState^=crngState<<13; crngState>>>=0; crngState^=crngState>>>17; crngState^=crngState<<5; crngState>>>=0; return crngState/4294967296; } // the camera detector's own stream
 function prng(){ prngState^=prngState<<13; prngState>>>=0; prngState^=prngState>>>17; prngState^=prngState<<5; prngState>>>=0; return prngState/4294967296; } // the person's own stream
 const clamp=(v,a,b)=>v<a?a:v>b?b:v;
 const hyp=Math.hypot;
@@ -178,7 +180,7 @@ function outsidePoint(d,dist){ const n=doorNormal(d,d.rooms[0]); const k=Math.mi
 function randomPointIn(rid,grid,rnd){ rnd=rnd||rng; const q=plan.rooms[rid]; for(let k=0;k<60;k++){ const x=q.x0+0.5+rnd()*(q.x1-q.x0-1), z=q.z0+0.5+rnd()*(q.z1-q.z0-1); if(!grid[navIdx(x,z)])return {x,z}; } return nearestFreeNav(grid,q.cx,q.cz,4)||{x:q.cx,z:q.cz}; }
 
 // ---------- metrics ----------
-const metrics={breaches:0,left:0,deterred:0,guided:0,found:0,tFound:null,seenT:0,totT:0,minStandoff:Infinity,minSep:Infinity,minWall:Infinity,
+const metrics={breaches:0,left:0,deterred:0,guided:0,found:0,falseFound:0,fpFrames:0,tFound:null,seenT:0,totT:0,minStandoff:Infinity,minSep:Infinity,minWall:Infinity,
   standoffViol:0,standoffApproach:0,floorViol:0,bandViol:{pressure:0,comfort:0},bandT:{pressure:0,comfort:0},minPressure:Infinity,minComfort:Infinity,sepViol:0,wallViol:0,altViol:0,doorWait:0,doorShare:0,radioDrops:0,linkHolds:0,orders:0,maxMargin:0,coverage:0,mapped:0};
 
 // ---------- the person (simulated; an explicit assumption, see docs/TACTICS.md) ----------
@@ -254,14 +256,21 @@ const team={drones:[],seen:false,lkp:null,lkpT:-1,vel:{x:0,z:0},trail:[],beliefR
   sees(d){ if(!person.alive||d.y<0.4)return false; const dx=person.x-d.x, dz=person.z-d.z, dd=hyp(dx,dz); if(dd>settings.camRange)return false;
     if(dd>0.5&&Math.abs(wrapPi(Math.atan2(dx,dz)-d.yaw))>settings.camFov*Math.PI/360)return false;
     return los(d.x,d.y,d.z,person.x,person.state==='hiding'?settings.hideH:settings.chestH,person.z); },
+  // The team sees only what the detectors report (detectFrame): a sighting is a detection with confidence >= acceptConf.
+  // The estimate is the most confident detection averaged with others within 1.5 m of it. `trueSeen` and `fromFP`
+  // say whether that was really the person; they feed metrics and the record's truth, never a decision.
   perceive(dt){
-    let seenNow=false; for(const d of this.drones){ d.sees=this.sees(d); if(d.sees)seenNow=true; }
-    if(seenNow){ const mx=person.x+(rng()-0.5)*0.1, mz=person.z+(rng()-0.5)*0.1;
-      if(this.lkp&&simT-this.lkpT<1){ const k=Math.min(1,dt/0.3); this.vel.x+=((mx-this.lkp.x)/Math.max(dt,1e-3)-this.vel.x)*k*0.2; this.vel.z+=((mz-this.lkp.z)/Math.max(dt,1e-3)-this.vel.z)*k*0.2; }
-      this.lkp={x:mx,z:mz}; this.lkpT=simT; this.lkpRoom=roomAt(mx,mz)>=0?roomAt(mx,mz):(this.lkpRoom!=null?this.lkpRoom:-1); this.everSeen=true;
+    metrics.totT+=dt; if(person.alive&&person.inBuilding()&&this.trueSeen)metrics.seenT+=dt;
+    this.percT=(this.percT||0)+dt; if(this.percT<1/settings.percHz-1e-9)return; const fdt=this.percT; this.percT=0;
+    const dets=[]; for(const d of this.drones)for(const x of detectFrame(d))dets.push(x); this.dets=dets;
+    const acc=dets.filter(x=>x.conf>=settings.acceptConf); for(const d of this.drones)d.sees=acc.some(x=>x.drone===d.id);
+    const seenNow=acc.length>0;
+    if(seenNow){ const top=acc.reduce((a,b)=>b.conf>a.conf?b:a), grp=acc.filter(x=>hyp(x.x-top.x,x.z-top.z)<1.5); let w=0,mx=0,mz=0; for(const x of grp){ w+=x.conf; mx+=x.x*x.conf; mz+=x.z*x.conf; } mx/=w; mz/=w;
+      if(this.lkp&&simT-this.lkpT<1){ const a=Math.min(1,fdt/0.3)*0.35; this.vel.x+=((mx-this.lkp.x)/Math.max(fdt,1e-3)-this.vel.x)*a; this.vel.z+=((mz-this.lkp.z)/Math.max(fdt,1e-3)-this.vel.z)*a; }
+      this.lkp={x:mx,z:mz}; this.lkpT=simT; this.lkpRoom=roomAt(mx,mz)>=0?roomAt(mx,mz):(this.lkpRoom!=null?this.lkpRoom:-1); this.everSeen=true; this.fromFP=!grp.some(x=>x.tp);
       if(!this.seen)logLine('Person in view ('+this.drones.filter(d=>d.sees).map(d=>d.name).join(', ')+').','good'); }
     else if(this.seen){ logLine('Person out of view.','warn'); }
-    this.seen=seenNow; metrics.totT+=dt; if(person.alive&&person.inBuilding()){ if(seenNow)metrics.seenT+=dt; }
+    this.seen=seenNow; this.trueSeen=acc.some(x=>x.tp); if(seenNow&&!this.trueSeen)metrics.fpFrames++;
   },
   est(){ return this.lkp&&(this.seen||simT-this.lkpT<4)?{x:this.lkp.x,z:this.lkp.z}:null; },
   // rooms he could be in: within running distance of the last-known room, minus rooms cleared since (docs/TACTICS.md, search)
@@ -405,7 +414,7 @@ function tSearch(level,sub){
 }
 // explore maps the building only: frontier cells outside the rooms are ignored
 function tExplore(){
-  const ex=mission.explore; const N=NX*NZ, y=settings.zNom;
+  const ex={bel:team.map,t0:mission.explore.t0}; const N=NX*NZ, y=settings.zNom;
   const front=[]; for(let k=0;k<N;k++){ if(ex.bel[k]!==1||FLY[k]||ROOMN[k]<0||ROOMN[k]>=plan.rooms.length)continue; const i=k%NX, j=(k-i)/NX; if((i>0&&ex.bel[k-1]===0)||(i<NX-1&&ex.bel[k+1]===0)||(j>0&&ex.bel[k-NX]===0)||(j<NZ-1&&ex.bel[k+NX]===0))front.push(k); }
   const seen=new Uint8Array(N), isF=new Uint8Array(N); for(const k of front)isF[k]=1; const clusters=[];
   for(const k0 of front){ if(seen[k0])continue; const cl=[]; const st=[k0]; seen[k0]=1; while(st.length){ const k=st.pop(); cl.push(k); const i=k%NX, j=(k-i)/NX; for(let dj=-1;dj<=1;dj++)for(let di=-1;di<=1;di++){ const ii=i+di, jj=j+dj; if(ii<0||jj<0||ii>=NX||jj>=NZ)continue; const kk=jj*NX+ii; if(isF[kk]&&!seen[kk]){ seen[kk]=1; st.push(kk); } } }
@@ -418,10 +427,36 @@ function tExplore(){
     if(best){ chosen.push(best.p); pts.push(at(best.p,y)); } else pts.push(at(d,Math.max(settings.zMin,d.y))); }
   return {key:'explore',text:'explore '+clusters.length+' frontier'+(clusters.length>1?'s':''),pts,fixed:true,spin:[true,true,true]};
 }
-function exploreObserve(){ const ex=mission.explore; for(const d of team.drones){ if(d.y<0.4)continue;
+// ---------- simulated perception (docs/DATASET_PLAN.md, inputs) ----------
+// One frame per drone at percHz. The chance to detect the person falls with distance (pNear within 3 m, pFar at camRange),
+// toward the edge of the 90 degree view (pEdge at the edge), and with occlusion: the share of three body points
+// (head, chest, hip; lower when he is crouched hiding) the camera can see. A detection's position error grows with
+// distance (noise0 + noiseK x d metres) and its confidence follows the detection odds. A rare false positive appears in the
+// cone on open floor, mostly with low confidence. The camera stream draws the same 8 numbers every frame, so a person the
+// team cannot see never changes any other draw. `tp` (was it the person) is truth only.
+function detectFrame(d){ const u=[]; for(let k=0;k<8;k++)u.push(crng()); const out=[]; if(d.y<0.4)return out; const half=settings.camFov*Math.PI/360;
+  if(person.alive){ const dx=person.x-d.x, dz=person.z-d.z, dd=hyp(dx,dz), off=dd>0.3?Math.abs(wrapPi(Math.atan2(dx,dz)-d.yaw)):0;
+    if(dd<=settings.camRange&&off<=half){ const hs=person.state==='hiding'?[1.0,0.7,0.4]:[1.7,1.3,0.9]; let v=0; for(const h of hs)if(los(d.x,d.y,d.z,person.x,h,person.z))v++; v/=hs.length;
+      if(v>0){ const e30=30*Math.PI/180, pd=dd<=3?settings.pNear:settings.pNear-(settings.pNear-settings.pFar)*(dd-3)/(settings.camRange-3), pa=off<=e30?1:1-(1-settings.pEdge)*(off-e30)/(half-e30), pr=pd*pa*v;
+        if(u[0]<pr){ const sg=settings.noise0+settings.noiseK*dd, r=Math.sqrt(-2*Math.log(Math.max(1e-9,u[2]))), n1=r*Math.cos(2*Math.PI*u[3]), n2=r*Math.sin(2*Math.PI*u[3]);
+          out.push({drone:d.id,x:person.x+n1*sg,z:person.z+n2*sg,conf:clamp(0.3+0.65*pr+0.2*(u[1]-0.5),0.05,0.99),tp:true}); } } } }
+  if(u[4]<settings.fpRate){ const a=d.yaw+(u[6]-0.5)*2*half, rr=1+u[5]*(settings.camRange-1), x=d.x+Math.sin(a)*rr, z=d.z+Math.cos(a)*rr;
+    if(x>0&&z>0&&x<plan.W&&z<plan.D&&!WALK[navIdx(x,z)]&&los(d.x,d.y,d.z,x,1.0,z))out.push({drone:d.id,x,z,conf:clamp(0.1+0.45*u[7],0.05,0.99),tp:false}); }
+  return out; }
+// the scanned map at mapRes: '#' known blocked, '.' known free, '?' unknown (row-major, x then z)
+function coarseMap(){ const f=Math.max(1,Math.round(settings.mapRes/NAV)), W=Math.ceil(NX/f), H=Math.ceil(NZ/f), M=team.map; let s='';
+  for(let j=0;j<H;j++)for(let i=0;i<W;i++){ let free=0,blk=0,n=0; for(let dj=0;dj<f;dj++)for(let di=0;di<f;di++){ const ii=i*f+di, jj=j*f+dj; if(ii>=NX||jj>=NZ)continue; n++; const v=M[jj*NX+ii]; if(v===2)blk++; else if(v===1)free++; }
+    s+=blk?'#':free*2>=n?'.':'?'; } return s; }
+function coarseDims(){ const f=Math.max(1,Math.round(settings.mapRes/NAV)); return {res:+(f*NAV).toFixed(2),w:Math.ceil(NX/f),h:Math.ceil(NZ/f)}; }
+// how far each camera sees at its own height: 31 rays across the view, cut by walls, shelves and door lintels
+function cameraRays(d){ if(d.y<0.4)return null; const half=settings.camFov*Math.PI/360, out=[];
+  for(let k=0;k<=30;k++){ const a=d.yaw-half+2*half*k/30, sx=Math.sin(a), sz=Math.cos(a); let s=0.1; for(;s<settings.camRange;s+=0.1){ const c=cellIdx(d.x+sx*s,d.z+sz*s); if(Hg[c]>=d.y-0.05||(DOORC[c]&&d.y>settings.lintel))break; } out.push(+Math.min(s,settings.camRange).toFixed(1)); }
+  return out; }
+// the scanned map grows in every episode (depth rays, depthRange), not only while exploring
+function exploreObserve(){ const ex={bel:team.map}; for(const d of team.drones){ if(d.y<0.4)continue;
     for(let dz=-0.6;dz<=0.6;dz+=NAV)for(let dx=-0.6;dx<=0.6;dx+=NAV){ const k=navIdx(d.x+dx,d.z+dz); if(!FLY[k]&&ex.bel[k]===0)ex.bel[k]=1; }
     for(let a=-45;a<=45;a+=3){ const ang=d.yaw+a*Math.PI/180; const sx=Math.sin(ang), sz=Math.cos(ang);
-      for(let s=0.1;s<=5;s+=0.1){ const x=d.x+sx*s, z=d.z+sz*s; const c=cellIdx(x,z); const k=navIdx(x,z); if(Hg[c]>=d.y-0.2){ ex.bel[k]=2; break; } if(ex.bel[k]===0)ex.bel[k]=1; } } } }
+      for(let s=0.1;s<=settings.depthRange;s+=0.1){ const x=d.x+sx*s, z=d.z+sz*s; const c=cellIdx(x,z); const k=navIdx(x,z); if(Hg[c]>=d.y-0.2){ ex.bel[k]=2; break; } if(ex.bel[k]===0)ex.bel[k]=1; } } } }
 function tOverwatch(){
   if(mission.owCache&&simT-mission.owCache.t<5)return mission.owCache.out;
   const y=Math.min(2.2,settings.ceil-0.5); let targets=[], label;
@@ -453,12 +488,15 @@ function validate(pts,I,landing,band,doorsOk){
   for(let it=0;it<6;it++){
     for(let a=0;a<3;a++)for(let b=a+1;b<3;b++){ const dx=pts[b].x-pts[a].x, dz=pts[b].z-pts[a].z, d=hyp(dx,dz); if(d<settings.sep){ const ux=d>1e-3?dx/d:1, uz=d>1e-3?dz/d:0, m=(settings.sep-d)/2+0.02;
         pts[a].x-=ux*m; pts[a].z-=uz*m; pts[b].x+=ux*m; pts[b].z+=uz*m; for(const k of [a,b])if(!flags[k].includes('separation'))flags[k].push('separation'); fix(pts[a],a); fix(pts[b],b); } }
-    if(I){ const near=pts.filter(p=>hyp(p.x-I.x,p.z-I.z)<4).length; const dS=band==='pressure'?settings.dPress:near>=2?settings.dS2:settings.dS;
+    if(I){ const near=pts.filter(p=>hyp(p.x-I.x,p.z-I.z)<4.05).length; const dS=band==='pressure'?settings.dPress:near>=2?settings.dS2:settings.dS;
       pts.forEach((p,k)=>{ const dx=p.x-I.x, dz=p.z-I.z, d=hyp(dx,dz); if(d<dS){ const ux=d>1e-3?dx/d:1, uz=d>1e-3?dz/d:0; p.x=I.x+ux*(dS+0.01); p.z=I.z+uz*(dS+0.01); if(!flags[k].includes('standoff'))flags[k].push('standoff'); fix(p,k); } }); } }
   // pairs still short of the separation move apart around him, keeping their distance from him
   if(I)for(let it=0;it<3;it++)for(let a=0;a<3;a++)for(let b=a+1;b<3;b++){ const d=hyp(pts[b].x-pts[a].x,pts[b].z-pts[a].z); if(d>=settings.sep-0.03)continue;
     const ang=p=>Math.atan2(p.x-I.x,p.z-I.z), sg=wrapPi(ang(pts[b])-ang(pts[a]))>=0?1:-1, r=Math.max(1,Math.min(hyp(pts[a].x-I.x,pts[a].z-I.z),hyp(pts[b].x-I.x,pts[b].z-I.z))), turn=(settings.sep+0.05-d)/r;
     for(const [k,sk] of [[a,-sg],[b,sg]]){ const p=pts[k], rr=hyp(p.x-I.x,p.z-I.z), th=ang(p)+sk*turn/2; p.x=I.x+Math.sin(th)*rr; p.z=I.z+Math.cos(th)*rr; fix(p,k); } }
+  // the rotation can bring a second slot within 4 m of him, which raises the standoff to 3 m: check it once more, last
+  if(I){ const near=pts.filter(p=>hyp(p.x-I.x,p.z-I.z)<4.05).length, dS=band==='pressure'?settings.dPress:near>=2?settings.dS2:settings.dS;
+    pts.forEach((p,k)=>{ const dx=p.x-I.x, dz=p.z-I.z, d=hyp(dx,dz); if(d<dS){ const ux=d>1e-3?dx/d:1, uz=d>1e-3?dz/d:0; p.x=I.x+ux*(dS+0.01); p.z=I.z+uz*(dS+0.01); if(!flags[k].includes('standoff'))flags[k].push('standoff'); fix(p,k); } }); }
   return flags.map(f=>[...new Set(f)]);
 }
 
@@ -560,7 +598,7 @@ function applyOrder(goal,text,src,params){
   Object.assign(mission,{goal,params:resolveParams(goal,params||{}),status:'active',acceptedT:simT,holdPts:null,doorStar:null,exitId:null,leader:null,stall:null,trail:[],lostT:null,
     searchRooms:{},vp:{},spinT:{},owCache:null,vpCache:null,sub:false,planT:0});
   mission.version++; mission.order={goal,text:text||null,src:src||'speech',t:+simT.toFixed(2),version:mission.version,params:mission.params};
-  if(goal==='search')team.resetCoverage(); if(goal==='explore')mission.explore={bel:new Uint8Array(NX*NZ),t0:simT};
+  if(goal==='search')team.resetCoverage(); if(goal==='explore')mission.explore={t0:simT};
   if(src!=='auto'&&src!=='queued'){ metrics.orders++; say('you',text||describeGoal()+'.'); }
   say('master','Order v'+mission.version+' accepted: '+describeGoal()+'.'); return true; }
 function complete(status,reason){ mission.status=status; mission.ends.push({version:mission.version,goal:mission.goal,status,reason,t:+simT.toFixed(2)}); say('master',(status==='failed'?'Order failed: ':'Done: ')+reason+'.');
@@ -585,8 +623,8 @@ function planTick(){
     if(['keepout','driveout','guideout','track','contain'].includes(g)&&!person.alive){ complete('done',person.role==='visitor'?'the visitor is outside':'he has left the building'); return; }
     if(g==='driveout'&&simT-mission.acceptedT>90){ complete('failed','he is still inside after 90 s'); return; }
     if(g==='guideout'&&simT-mission.acceptedT>150){ complete('failed','still inside after 150 s'); return; }
-    if(g==='search'&&team.seen){ metrics.found=1; metrics.tFound=+(simT-mission.acceptedT).toFixed(1); const r=team.lkpRoom; if(r>=0&&r<plan.rooms.length)team.xmark[r]=Object.assign(team.xmark[r]||{},{status:'found',tout:+simT.toFixed(1),found:true});
-      complete('done','found him in the '+(r>=0&&r<plan.rooms.length?RM(r).name:'building')+' after '+metrics.tFound+' s'); return; }
+    if(g==='search'&&team.seen){ if(team.trueSeen){ metrics.found=1; metrics.tFound=+(simT-mission.acceptedT).toFixed(1); } else metrics.falseFound++; const r=team.lkpRoom; if(r>=0&&r<plan.rooms.length)team.xmark[r]=Object.assign(team.xmark[r]||{},{status:'found',tout:+simT.toFixed(1),found:true});
+      complete('done','found him in the '+(r>=0&&r<plan.rooms.length?RM(r).name:'building')+' after '+(simT-mission.acceptedT).toFixed(1)+' s'); return; }
   }
   if(mission.status==='landed'){ for(const d of team.drones){ d.target={x:d.x,y:0.1,z:d.z}; } return; }
   let out;
@@ -615,12 +653,14 @@ function planTick(){
     mission.onPlan({type:'plan',t:+simT.toFixed(3),tick:mission.tick,
       order:{goal:mission.goal,version:mission.version,text:mission.order?mission.order.text:null,src:mission.order?mission.order.src:null,params:mission.params,status:mission.status},
       obs:{seen:team.seen,p:I?[+I.x.toFixed(3),0,+I.z.toFixed(3)]:null,v:I?[+team.vel.x.toFixed(2),0,+team.vel.z.toFixed(2)]:null,last_seen_age:team.lkpT>=0?+(simT-team.lkpT).toFixed(2):null,
-        room:team.lkpRoom!=null&&team.lkpRoom>=0?team.lkpRoom:null,belief_rooms:[...team.beliefRooms].sort((a,b)=>a-b),cleared:[...team.cleared].sort((a,b)=>a-b)},
-      team:team.drones.map(d=>({id:d.id,pos:r3(d),vel:r3({x:d.vx,y:d.vy,z:d.vz}),yaw:+d.yaw.toFixed(3),room:roomAt(d.x,d.z),link_age:+(simT-d.rxT).toFixed(2),wait_door:d.waitNowT!=null&&simT-d.waitNowT<0.05?d.waitFor:null})),
+        room:team.lkpRoom!=null&&team.lkpRoom>=0?team.lkpRoom:null,belief_rooms:[...team.beliefRooms].sort((a,b)=>a-b),cleared:[...team.cleared].sort((a,b)=>a-b),
+        detections:team.dets.map(x=>({drone:x.drone,p:[+x.x.toFixed(2),0,+x.z.toFixed(2)],conf:+x.conf.toFixed(2)})),coverage:plan.rooms.map((q,i)=>+team.roomCoverage(i).toFixed(2)),map:coarseMap()},
+      team:team.drones.map(d=>({id:d.id,pos:r3(d),vel:r3({x:d.vx,y:d.vy,z:d.vz}),yaw:+d.yaw.toFixed(3),room:roomAt(d.x,d.z),link_age:+(simT-d.rxT).toFixed(2),wait_door:d.waitNowT!=null&&simT-d.waitNowT<0.05?d.waitFor:null,cam:cameraRays(d)})),
       label:{template:out.key,text:out.text,band:mission.band,door:out.door!=null?out.door:null,room:out.room!=null?out.room:null,exit:out.exit!=null?out.exit:null,
         slots:team.drones.map(d=>r3(d.slot)),vectors:team.drones.map(d=>r3(d.vec)),yaw:team.drones.map(d=>d.yawCmd==null?null:+d.yawCmd.toFixed(3)),spin:team.drones.map(d=>!!d.spinCmd),refs,flags:team.drones.map(d=>d.flags.slice())},
       radio:radioEv,
-      truth:{person:{pos:[+person.x.toFixed(3),0,+person.z.toFixed(3)],room:person.room,state:person.state,role:person.role,alive:person.alive},margin:+margin.toFixed(3)}}); }
+      truth:{person:{pos:[+person.x.toFixed(3),0,+person.z.toFixed(3)],room:person.room,state:person.state,role:person.role,alive:person.alive},margin:+margin.toFixed(3),
+        detections_tp:team.dets.map(x=>x.tp),estimate_from_fp:!!(team.lkp&&team.fromFP)}}); }
   const changed=!mission.lastSay||mission.lastSay.key!==out.key||mission.lastSay.text!==out.text||mission.lastSay.band!==mission.band||simT-mission.lastSay.t>(mission.narrate==='tick'?0:4);
   if(changed){ mission.lastSay={key:out.key,text:out.text,band:mission.band,t:simT}; say('master',(team.seen?'':I?'Last seen '+(simT-team.lkpT).toFixed(1)+' s ago. ':'Person unseen. ')+'Template: '+out.text+'. Vectors '+team.drones.map(d=>d.id+fmtV(d.vec)+' '+hyp(d.vec.x,d.vec.y,d.vec.z).toFixed(1)+' m').join(' · ')+' · radio → S1, S2'+(mission.band==='pressure'?' · pressure band: '+settings.dPress+' m':'')); }
 }
@@ -640,7 +680,7 @@ const world={endOnGone:false,ended:false,scenario:null,
     for(const k in metrics)metrics[k]=k.startsWith('min')?Infinity:(k==='tFound'?null:k==='bandViol'||k==='bandT'?{pressure:0,comfort:0}:0);
     const protect=roomByName(opts.protect)!=null?roomByName(opts.protect):plan.rooms.find(q=>q.name==='lab').id;
     this.scenario={layout:opts.layout||'fixed',protectedRoom:protect};
-    team.drones=plan.pads.map((p,k)=>makeDrone(k,p)); Object.assign(team,{seen:false,lkp:null,lkpT:-1,lkpRoom:-1,vel:{x:0,z:0},everSeen:false,beliefRooms:new Set()}); team.resetCoverage();
+    team.drones=plan.pads.map((p,k)=>makeDrone(k,p)); Object.assign(team,{seen:false,lkp:null,lkpT:-1,lkpRoom:-1,vel:{x:0,z:0},everSeen:false,beliefRooms:new Set(),map:new Uint8Array(NX*NZ),dets:[],percT:0,trueSeen:false,fromFP:false}); team.resetCoverage();
     const po=Object.assign({targetRoom:protect},opts.person||{}); if(typeof po.targetRoom==='string')po.targetRoom=roomByName(po.targetRoom); if(typeof po.start==='string'&&po.start!=='outside')po.start=roomByName(po.start);
     if(typeof po.startExit==='string')po.startExit=doorByName(po.startExit,true);
     person.reset(po); this.scenario.person={role:person.role,intent:person.intent,targetRoom:person.targetRoom,entry:person.entry,delay:person.delay,params:Object.assign({},person.params)};
@@ -650,7 +690,7 @@ const world={endOnGone:false,ended:false,scenario:null,
     if(opts.grounded){ mission.status='landed'; mission.grounded=true; } else mission.grounded=false;
     say('site','Floor: '+plan.rooms.map(q=>q.name).join(', ')+'. '+(person.role==='intruder'?'An intruder is heading for the '+RM(person.targetRoom).name+'.':'A visitor is in the '+(person.room>=0&&person.room<plan.rooms.length?RM(person.room).name:'building')+'.')); },
   step(dt){ simT+=dt; person.step(dt,team.drones); team.perceive(dt);
-    mission.coverT-=dt; if(mission.coverT<=0){ mission.coverT=0.25; if(mission.goal==='search'||mission.sub)team.cover(); if(mission.goal==='explore')exploreObserve(); }
+    mission.coverT-=dt; if(mission.coverT<=0){ mission.coverT=0.25; if(mission.goal==='search'||mission.sub)team.cover(); exploreObserve(); }
     mission.planT-=dt; if(mission.planT<=0){ mission.planT=0.5; planTick(); }
     deliverRadio(); for(const d of team.drones)droneStep(d,dt); mission.truthT=(mission.truthT||0)+dt; if(mission.truthT>=0.05){ truth(mission.truthT); mission.truthT=0; } },
   order(goal,text,src,params){ return applyOrder(goal,text,src,params); },
@@ -658,5 +698,5 @@ const world={endOnGone:false,ended:false,scenario:null,
   queue(goal,text,params){ if(!GOALS[goal])return false; mission.queued={goal,text,params}; say('master','Queued next: '+GOALS[goal]+'.'); return true; }
 };
 if(typeof module!=='undefined')module.exports={world,simT:()=>simT,metrics,settings,team,person,mission,GOALS,talk,log,seed,rng,los,getPlan:()=>plan,
-  grids:()=>({WALK,FLY,FLYRAW,DZONE,Hg,DOORC,ROOMC,NX,NZ,GX,GZ}),planPath,pathLength,makeOffice,buildWorld,roomAt,heightAt,validate,COVP,doorLock,wallClearance,cellIdx,navIdx,roomByName,doorByName};
+  grids:()=>({WALK,FLY,FLYRAW,DZONE,Hg,DOORC,ROOMC,NX,NZ,GX,GZ}),planPath,pathLength,makeOffice,buildWorld,roomAt,heightAt,validate,COVP,doorLock,wallClearance,cellIdx,navIdx,roomByName,doorByName,coarseDims,coarseMap,cameraRays,detectFrame};
 </script>

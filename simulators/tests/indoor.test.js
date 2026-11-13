@@ -94,6 +94,7 @@ test('belief is sound: while he is unseen, his true room is among the rooms he c
       for (const r of recs) {
         const room = r.truth.person.room;
         if (r.obs.seen || !r.truth.person.alive || !(room >= 0 && room < P.rooms.length) || !r.obs.belief_rooms.length) continue;
+        if (r.truth.estimate_from_fp) continue; // the belief can only be as good as the sighting it starts from
         checked++;
         if (!r.obs.belief_rooms.includes(room) && r.obs.cleared.includes(room)) { missedInCleared++; continue; }
         assert.ok(r.obs.belief_rooms.includes(room), `${goal} seed ${sd} t ${r.t}: he is in the ${P.rooms[room].name}, belief ${r.obs.belief_rooms.map(i => P.rooms[i].name)}`);
@@ -133,10 +134,33 @@ test('every plan record carries the indoor contract fields', () => {
       assert.ok(L.yaw.length === 3 && L.spin.length === 3 && L.flags.length === 3, `${goal}: yaw, spin, validator flags`);
       assert.ok(r.obs.p === null || r.obs.seen || r.obs.last_seen_age <= 4.0001, `${goal}: an estimate needs a sighting in the last 4 s`);
       assert.ok(Array.isArray(r.obs.belief_rooms) && r.truth && isV(r.truth.person.pos) && Number.isFinite(r.truth.margin), `${goal}: belief and truth`);
+      assert.ok(Array.isArray(r.obs.detections) && r.obs.detections.length === r.truth.detections_tp.length, `${goal}: detections and their truth`);
+      const dims = S.coarseDims(); assert.ok(typeof r.obs.map === 'string' && r.obs.map.length === dims.w * dims.h, `${goal}: scanned map`);
+      assert.ok(r.obs.coverage.length === S.getPlan().rooms.length && r.team.every(d => d.cam === null || d.cam.length === 31), `${goal}: coverage and camera rays`);
+      if (r.obs.seen) assert.ok(r.obs.detections.some(x => x.conf >= S.settings.acceptConf) || r.t < 1, `${goal}: "seen" without a confident detection at ${r.t}`);
     }
     if (recs.length && r0(recs).order.goal !== 'hold') assert.ok(recs.some(r => r.order.goal === goal), `${goal}: the order was applied`);
   }
   function r0(recs) { return recs[recs.length - 1]; }
+});
+
+test('perception: detections fall with distance, angle and occlusion; false positives are rare; error grows with range', () => {
+  S.seed(6); S.world.reset({ layout: 'fixed', person: { role: 'visitor', intent: 'wander' } });
+  const P = S.getPlan(), lab = P.rooms.find(q => q.name === 'lab'), d = S.team.drones[0], pr = S.person;
+  const rate = (dist, offDeg, n = 1500) => { let tp = 0, fp = 0, err = 0; for (let k = 0; k < n; k++) { for (const x of S.detectFrame(d)) { if (x.tp) { tp++; err += Math.hypot(x.x - pr.x, x.z - pr.z); } else fp++; } } return { tp: tp / n, fp: fp / n, err: tp ? err / tp : null }; };
+  // drone 1.6 m up at the lab's west end, looking east (+x); the person on open floor in front of it
+  Object.assign(d, { x: lab.x0 + 0.8, z: lab.cz, y: 1.6, yaw: Math.PI / 2 }); pr.alive = true; pr.state = 'approach';
+  const place = (dist, offDeg) => { const a = Math.PI / 2 + offDeg * Math.PI / 180; pr.x = d.x + Math.sin(a) * dist; pr.z = d.z + Math.cos(a) * dist; };
+  place(2, 0); const near = rate(2, 0); place(6.5, 0); const far = rate(6.5, 0); place(3, 40); const edge = rate(3, 40);
+  assert.ok(S.los(d.x, d.y, d.z, pr.x, 1.3, pr.z), 'the test needs a clear line of sight');
+  assert.ok(near.tp > 0.9, `detected ${(100 * near.tp).toFixed(0)}% of frames at 2 m`);
+  assert.ok(far.tp < near.tp - 0.2 && far.tp > 0.2, `detected ${(100 * far.tp).toFixed(0)}% at 6.5 m`);
+  assert.ok(edge.tp < near.tp - 0.15, `detected ${(100 * edge.tp).toFixed(0)}% at 40 degrees off axis`);
+  assert.ok(far.err > near.err, `position error ${near.err.toFixed(2)} m at 2 m, ${far.err.toFixed(2)} m at 6.5 m`);
+  assert.ok(near.fp < 0.01, `false positives in ${(100 * near.fp).toFixed(2)}% of frames`);
+  // behind the lab's south wall: no true detection at all
+  pr.x = d.x + 2; pr.z = lab.z1 + 1.0; const hidden = rate(3, 0, 500); assert.strictEqual(hidden.tp, 0, 'detected through a wall');
+  console.log(`      per-frame detection: ${(100 * near.tp).toFixed(0)}% at 2 m, ${(100 * far.tp).toFixed(0)}% at 6.5 m, ${(100 * edge.tp).toFixed(0)}% at 40 deg; error ${near.err.toFixed(2)} / ${far.err.toFixed(2)} m; false positives ${(100 * near.fp).toFixed(2)}% of frames`);
 });
 
 // outcome bands, measured on the fixed office floor with the same seeds for the grounded baseline
