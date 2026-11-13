@@ -64,11 +64,12 @@ The scripted "teacher" turns a goal plus what the drones currently see into a ta
 ### Guide out (civil default: evacuation, a lost visitor)
 - **Grounding:** in a simulated fire, all 26 participants followed a guide robot, even after seeing it fail. This shows the method works, and also the risk of over-trust [8].
 - **Geometry:** the leader flies 3 m ahead on the route to the exit, turned toward him. The followers trail at 3 m and keep line of sight through doors.
-- **As built (changed after testing):**
-  - The followers fly ahead of him too (6.5 m and 9 m along the route), not behind. In a corridor they cannot pass him at the standoff, so a trailing slot deadlocked.
-  - The leader stays 4 m ahead, closer if needed to keep his line of sight.
-  - The exit is the nearest one the leader is already closer to than he is.
-  - Within 4.5 m of the exit, all three stand aside outside, either side of the door, so the way out is clear.
+- **As built (changed after testing):** drones cannot pass a person in a corridor at the standoff, so roles follow where each drone already is.
+  - **Leader:** the drone nearest the exit leads, 4 m ahead on the route, or closer if needed to keep line of sight.
+  - **Column:** drones already ahead of the visitor fly 6.5 m and 9 m along the route.
+  - **Trailing:** drones behind her trail 3 m back, or hold where they are if reaching that point would mean passing her.
+  - **Exit choice:** the nearest exit that some drone is already closer to than she is, unless the order names one.
+  - **At the exit:** within 4.5 m of it, all three stand aside outside, either side of the door, so the way out is clear.
 - **Done when:** he is outside. Failed after 150 s.
 
 ### Track (relay chain, like Swarm Mind's "elastic strings")
@@ -116,6 +117,7 @@ The scripted "teacher" turns a goal plus what the drones currently see into a ta
 - **Geometry:**
   - A 0.1 m belief grid built from depth rays (90° wide, 5 m range).
   - Each drone takes the frontier cluster that maximizes value − β·path.
+  - **As built:** each drone gets a frontier of its own. A drone with none left holds and looks around instead of queuing behind the others at the same doors.
   - Drones fly only through known-free cells.
 - **Done when:** no reachable frontier of at least 0.5 m² is left.
 - **As built:** a frontier counts from 4 cells (0.8 m), because a doorway into an unseen room is only 5 cells wide; only the building is mapped, not the outside; the drones first take off and look around.
@@ -209,7 +211,11 @@ No public study shows how an *unwilling* person reacts to drones; all the eviden
   - The tests allow these pass-bys only while the drone is not moving toward him. A drone moving toward a person inside its band would be a teacher error.
 - **Tracking is weak** (about 45% in view on the office floor). The tracker slows to 0.5 m/s in doorways and waits for door locks, so it falls behind when he turns into a room.
 - **Search is not exhaustive below level 5.** A room is cleared at the level's coverage, so a hider can be missed in the uncovered part (rare: at most once in about 1,500 unseen ticks in the tests).
-- **The visitor model is ours.** The visitor follows the lead drone when it is within 6 m and in sight, and stops 3 m from it.
+- **The visitor model is ours.** The visitor follows the lead drone when it is within 6 m and in sight, and stops 3 m from it. While she follows, she is only 30% as put off by that one drone; she still keeps her distance from the others. When guide out ends she stops following and walks off on her own; before that fix she walked up to the last lead drone and pinned it in a corner.
+- **Slots and doorways (validator):**
+  - Only door-holding tactics place a slot in a doorway: keep out's screen and block, and contain. Any other slot in a door zone moves 1 m clear of it, because a parked drone holds the door's lock and blocks the others.
+  - The validator applies the person's standoff last, then rotates slot pairs that are still under 1 m apart around him, so neither rule is undone.
+  - A follower's target height stays inside the altitude band.
 - **Bugs found and fixed while testing:**
   - Walking distances to doors were computed with a float32 rounding bug that cut them off about 3 m from each door. This broke door choice, drive-out routing and guide-out.
   - The "could he be here" rooms used room-centre distances, so a man last seen at a doorway could be ruled out of the room beside him. The belief test now guards both.
