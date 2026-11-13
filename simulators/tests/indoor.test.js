@@ -164,7 +164,7 @@ test('keep out and drive out beat the grounded baseline', () => {
 
 test('guide out, search, explore, track and return reach their bands', () => {
   const run = (goal, who, n) => Array.from({ length: n }, (_, k) => episode(k + 1, goal, who));
-  const guide = run('guideout', 'visitor', 12), search = run('search', 'hider', 8), expl = run('explore', 'visitor', 6), track = run('track', 'intruder', 8), ret = run('return', 'visitor', 3);
+  const guide = run('guideout', 'visitor', 12), search = run('search', 'hider', 8), expl = run('explore', 'visitor', 6), track = run('track', 'intruder', 16), ret = run('return', 'visitor', 3);
   BANDS.other = { guide, search, expl, track, ret };
   const guided = guide.filter(e => e.M.guided > 0).length, found = search.filter(e => e.M.found > 0).length, mapped = expl.filter(e => e.M.mapped >= 0.9).length;
   const view = track.reduce((a, e) => a + 100 * e.M.seenT / Math.max(1e-9, e.M.totT), 0) / track.length;
