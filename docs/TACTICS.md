@@ -177,7 +177,7 @@ No public study shows how an *unwilling* person reacts to drones; all the eviden
 ## As built in `simulators/swarm-indoor`, and how well it works (12 November 2026)
 
 **On-board safety layer.** The teacher only places slots. Each drone's flight layer also enforces the envelope:
-- **Person in sight:** it backs away whenever the person is within its band's standoff + 0.3 m (1.8 m pressure, 2.8 m comfort), plus 0.6 s × his closing speed, and sidesteps out of his path. Near a person it may fly at up to 2.5 m/s to get clear. The band travels with each radio vector; a follower whose link is older than 1 s falls back to comfort.
+- **Person in sight:** it backs away whenever the person is within its band's standoff + 0.3 m (1.8 m pressure, 2.8 m comfort), plus 0.6 s × his closing speed, and sidesteps out of his path. Near a person it may fly at up to 2.5 m/s to get clear. If a wall or corner is behind it, it takes the free direction that best opens the distance; if it is boxed in, it climbs to 2.5 m, above reach, until clear. The band travels with each radio vector; a follower whose link is older than 1 s falls back to comfort.
 - **Walls and neighbours:** wall repulsion; separation has priority, so a drone never closes on a neighbour within 0.9 m.
 - **Doorways:** one drone per doorway at a time; a drone reroutes after 2 s if a doorway is occupied by a parked drone. A doorway also stays closed to a drone while a person stands within its band's standoff + 0.3 m on the far side, where the door frame can hide him from the camera.
 - **Paths:** in the comfort band, while a drone sees the person, paths keep out of a disc of the standoff − 0.3 m around him. Not around a stale estimate, which would block the corner a tracker must pass to find him again.
@@ -194,17 +194,18 @@ No public study shows how an *unwilling* person reacts to drones; all the eviden
 | Guide out (12 lost visitors) | 6 outside within 180 s | 0 |
 | Search (8 hiders) | 7 found | 0 |
 | Map the floor (6 runs) | 3 at least 90% mapped within 180 s | — |
-| Track (8 intruders) | in view 43% of the time | 0% |
+| Track (16 intruders) | in view 46% of the time | 0% |
 | Return (3) | all landed | — |
 | Keep out, 40 intruders | 26 breached; 11 of 20 deterrable kept out | 39 breached |
 | Drive out, 40 intruders | 23 breached; 12 of 20 deterrable kept out | 39 breached |
+| Keep out on random floors, 16 intruders for each of 5 protected rooms | 47 of 80 breached (storage 4 of 16, kitchen and meeting room 12 of 16) | 74 of 80 breached |
 | Safety (all of the above) | never within the 1.2 m floor (closest in the pressure band: 1.34 m); no separation, wall or altitude violations; no drone moved toward a person inside its band's limit for more than 0.5 s | — |
 
 **What this does and does not show:**
 - **Keep out and drive out mostly measure our person model.** A drone that must give way cannot physically stop anyone, so success depends on whether he is put off. The pressure band helps drive out most: 23 of 40 breached, down from 25 with a single 2.5 m standoff. With the parameter ranges above, most people are not put off even by all three drones at 3 m. The plan's target was keep-out breaches 30 points below the baseline. On 40 seeds keep out now reaches 32 points (26 against 39 breached), but it stops 11 of 20 deterrable intruders and only 3 of the other 20, so results are reported split by "deterrable". If practitioners say real intruders are more easily deterred, the ranges should change, not the tactic.
 - **Corridors are narrower than the comfort standoff.** A person walking or running past a drone in a 2.4 m corridor can come within 2 m while the drone gives way.
   - It happened in 4 of 40 keep-out and 9 of 40 drive-out episodes, during their comfort phases, and in some map-the-floor runs where a wandering visitor walked up to an exploring drone.
-  - The tests require that no drone is ever closer than 1.4 m in the comfort band.
+  - The tests require that no drone is ever closer than 1.4 m in the comfort band. Across the 600-episode dataset the closest comfort-band pass-by was 1.28 m, still outside the 1.2 m floor.
   - The tests allow these pass-bys only while the drone is not moving toward him. A drone moving toward a person inside its band would be a teacher error.
 - **Tracking is weak** (about 45% in view on the office floor). The tracker slows to 0.5 m/s in doorways and waits for door locks, so it falls behind when he turns into a room.
 - **Search is not exhaustive below level 5.** A room is cleared at the level's coverage, so a hider can be missed in the uncovered part (rare: at most once in about 1,500 unseen ticks in the tests).
@@ -213,6 +214,7 @@ No public study shows how an *unwilling* person reacts to drones; all the eviden
   - Walking distances to doors were computed with a float32 rounding bug that cut them off about 3 m from each door. This broke door choice, drive-out routing and guide-out.
   - The "could he be here" rooms used room-centre distances, so a man last seen at a doorway could be ruled out of the room beside him. The belief test now guards both.
   - The first 600-episode dataset run had 2 guide-out episodes where a drone came within the 1.2 m floor (1.12 m). A follower crossed a doorway toward a far slot while the visitor stood just beyond the frame, out of its camera's sight, so its back-away reflex fired too late. The doorway and path rules above fix it, and the safety test now covers it.
+  - The second run had one more floor breach: after guide out timed out, the visitor walked toward a drone holding near a corner, and its back-away reflex pushed it straight into the corner (1.02 m). The escape rule above fixes it.
 
 ## Sources (checked 12 November 2026)
 
