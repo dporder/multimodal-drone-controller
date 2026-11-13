@@ -128,15 +128,61 @@ function runIndoorEpisode(S, sha, ep, baseline) {
     S.mission.onPlan = r => out.push(r);
   }
   const queue = baseline ? [] : ep.orders.slice();
-  let t = 0, i = 0;
+  let t = 0, i = 0, autoVer = -1, autoSince = null, trimmed = null;
   for (; i < secs * 60 && !S.world.ended; i++) {
-    while (queue.length && queue[0].t <= t + 1e-9) out.push(applyIndoorOrder(S, queue.shift(), t));
+    // an operator who sees an order finish gives the next one within a few seconds; with none left the episode
+    // ends 5 s later, so finished orders do not leave long stretches of automatic hold in the labels
+    if (!baseline) {
+      const o = S.mission.order;
+      if (o && o.src === 'auto' && S.mission.version !== autoVer) { autoVer = S.mission.version; autoSince = t; }
+      if (o && o.src !== 'auto') autoSince = null;
+      if (autoSince !== null) {
+        const soon = autoSince + 3 + 2 * ((ep.seed * 0.618034 + autoVer * 0.414214) % 1);
+        if (queue.length && queue[0].t > soon) queue[0] = Object.assign({}, queue[0], { t: soon, scheduled_t: queue[0].t });
+        if (!queue.length && t - autoSince > 5) { trimmed = 'finished'; break; }
+      }
+      if (S.mission.status === 'landed' && !queue.length) { trimmed = 'landed'; break; }
+    }
+    while (queue.length && queue[0].t <= t + 1e-9) { const o = queue.shift(), ev = applyIndoorOrder(S, o, t); if (o.scheduled_t != null) ev.scheduled_t = o.scheduled_t; out.push(ev); }
     S.world.step(dt); t += dt;
   }
   S.mission.onPlan = null;
   const outcome = indoorOutcome(S, t, S.world.ended);
-  if (!baseline) out.push(outcome);
+  outcome.trimmed = trimmed;
+  if (!baseline) { outcome.segments = segmentsOf(out, S); out.push(outcome); }
   return { out, outcome };
+}
+
+// one segment per order version: how it ended, how close any drone came to the person, how long a drone was stuck,
+// and a default training flag (false for an unsafe or a stuck segment; failed orders stay, since the person may have
+// been impossible to stop: the trainer can filter on `end` and `deterrable` as well)
+function segmentsOf(out, S) {
+  const plans = out.filter(r => r.type === 'plan'), ends = S.mission.ends, segs = [];
+  for (let k = 0; k < plans.length; k++) {
+    const p = plans[k]; let g = segs[segs.length - 1];
+    if (!g || g.version !== p.order.version) { g = { version: p.order.version, goal: p.order.goal, src: p.order.src, t0: p.t, t1: p.t, ticks: 0, min_dist: null, stuck_ticks: 0, band_ticks: { pressure: 0, comfort: 0 } }; segs.push(g); }
+    g.t1 = p.t; g.ticks++; g.band_ticks[p.label.band]++;
+    if (p.truth.person.alive) for (const d of p.team) if (d.pos[1] > 0.5) { const dd = Math.hypot(d.pos[0] - p.truth.person.pos[0], d.pos[2] - p.truth.person.pos[2]); if (g.min_dist === null || dd < g.min_dist) g.min_dist = +dd.toFixed(2); }
+    if (k >= 10 && plans[k - 10].order.version === p.order.version) for (let i = 0; i < 3; i++) {
+      let far = true; for (let j = k - 10; j <= k && far; j++) { const v = plans[j].label.vectors[i]; if (Math.hypot(v[0], v[2]) <= 1.0) far = false; }
+      const a = plans[k - 10].team[i].pos, b = p.team[i].pos; if (far && p.team[i].wait_door == null && Math.hypot(a[0] - b[0], a[2] - b[2]) < 0.1 && p.team[i].link_age < 1 && b[1] > 0.5) { g.stuck_ticks++; break; } }
+  }
+  for (let k = 0; k < segs.length; k++) {
+    const g = segs[k], e = ends.find(x => x.version === g.version);
+    g.end = e ? e.status : k < segs.length - 1 ? 'replaced' : 'episode_end'; g.reason = e ? e.reason : null;
+    g.success = e ? e.status !== 'failed' : null;
+    g.sft = !(g.min_dist !== null && g.min_dist < 1.2) && g.stuck_ticks <= 0.2 * g.ticks && !(g.src === 'auto' && g.t1 - g.t0 > 6);
+  }
+  // each plan record says whether to train on it: its segment is fit for training, no drone is stuck at that tick,
+  // and it is not more than 5 s into an automatic hold after an order finished
+  for (let k = 0; k < plans.length; k++) {
+    const p = plans[k], g = segs.find(x => x.version === p.order.version); let stuck = false;
+    if (k >= 10 && plans[k - 10].order.version === p.order.version) for (let i = 0; i < 3 && !stuck; i++) {
+      let far = true; for (let j = k - 10; j <= k && far; j++) { const v = plans[j].label.vectors[i]; if (Math.hypot(v[0], v[2]) <= 1.0) far = false; }
+      const a = plans[k - 10].team[i].pos, b = p.team[i].pos; if (far && p.team[i].wait_door == null && Math.hypot(a[0] - b[0], a[2] - b[2]) < 0.1 && p.team[i].link_age < 1 && b[1] > 0.5) stuck = true; }
+    p.sft = !!(g && g.sft) && !stuck && !(p.order.src === 'auto' && p.t - g.t0 > 5);
+  }
+  return segs;
 }
 
 function dominantGoal(out) {

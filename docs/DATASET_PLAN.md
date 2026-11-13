@@ -140,6 +140,7 @@ These are Swarm Mind's outdoor yard and its scripted intruder. They prove the pi
 voice/.venv/bin/python voice/sampler.py --sim indoor --episodes 600 --seed 1 --out output/dataset/indoor1
 node simulators/tools/generate.js --sim indoor --orders output/dataset/indoor1/orders.jsonl --baseline
 node simulators/tools/check_dataset.js output/dataset/indoor1
+node simulators/tools/quality_report.js output/dataset/indoor1   # quality gates, below; exit code 1 if a hard gate fails
 node simulators/tests/indoor.test.js      # floors, line of sight, belief, no leak, records, bands, safety, determinism
 ```
 
@@ -178,37 +179,91 @@ node simulators/tests/indoor.test.js      # floors, line of sight, belief, no le
 - **Metric-only:** `header.person` (the hidden parameters) and `truth`, never model inputs.
 - **No leak:** the person has his own random stream, so his hidden choices never shift the team's random draws. A test checks that where an unseen person hides does not change any label.
 
-**First indoor run (12–13 November 2026, M1 MacBook):**
+**Episodes end soon after the work is done.** Before, finished orders left long stretches of automatic hold in the labels: 22% of all ticks. Now:
+- When an order finishes, the next scheduled order is brought forward to 3–5 s later, as an operator watching would. Its order event keeps the original time as `scheduled_t`.
+- With no order left, the episode ends 5 s after the last one finishes, or once the drones have landed.
+
+**Segments and training flags.** Every outcome lists one segment per order. A segment records:
+- the goal and its source;
+- start and end, and how it ended: `done`, `failed`, `found`, `landed`, `replaced` or `episode_end`;
+- the closest any drone came to the person;
+- ticks with a stuck drone;
+- ticks per standoff band.
+
+Every plan record carries `sft`, whether to train on it. It is false when its segment came within the 1.2 m floor, when a drone is stuck at that tick, when the segment is more than 20% stuck, or when it is more than 5 s into an automatic hold. Failed orders keep `sft: true`, because the person may have been impossible to stop. Filter on the segment's `end` and the outcome's `deterrable` to drop them too.
+
+**Quality gates** (`simulators/tools/quality_report.js`). The report checks every label and writes `quality.json`. A hard gate fails the run.
+
+| Gate | Kind | Rule |
+|---|---|---|
+| Vectors | hard | every vector is slot − position at plan time |
+| Standoff | hard | every slot keeps the band's distance from the person's estimate (3 m in comfort with two or more slots within 4 m), unless the validator flagged a wall |
+| Separation | hard | slots at least 1 m apart (0.95 m allowed for rounding) |
+| Bounds | hard | slots inside the site and the altitude band |
+| References | hard | timed reference points start at the drone and move at most 0.75 m per 0.5 s (plus 0.45 m slack) |
+| Flight safety | hard | no episode inside the 1.2 m floor, no drone closing in on a person, no separation, wall or altitude violation |
+| Training ticks | hard | no `sft` tick has a stuck drone or a drone inside 1.2 m of the person |
+| Flicker | soft | a template that flips for one tick and back: under 0.5% of ticks |
+| Swaps | soft | follower slots swapping: under 0.2% of ticks |
+| Jitter | soft | slot movement while nothing changed: 95th percentile under 0.5 m |
+| Stuck | soft | a drone that does not move for 5 s while its slot stays over 1 m away, not counting doorway queues: under 5% of drone-ticks |
+| Doorway queues | soft | under 5% of drone-ticks; each drone's record now has `wait_door` |
+| Hold | soft | automatic hold under 15% of ticks; hold of any kind under 25% |
+| Usable | soft | over 80% of ticks fit for training |
+
+**Why the first run's keep-out looked weak.** Of the 13 episodes scheduled with keep out as their only order:
+- 12 had an intruder our model says cannot be deterred even by all three drones at 3 m;
+- several defended a room with its own outside door, such as the kitchen's fire exit, where he is inside at 8 s, before a drone can arrive.
+
+Changing the order time, the radio, the floor or the order's room name changed nothing. So the gap was in what was winnable, not in the pipeline: use `deterrable` and the segments to tell the two apart.
+
+**First indoor run (13 November 2026, M1 MacBook), after the quality fixes:**
 
 Size and quality:
-- 600 episodes in about 9 minutes on 7 worker threads, each paired with a grounded baseline on the same seed. 139,387 plan records and 1,395 order events, 19 MB gzipped.
+- 600 episodes in 8 minutes on 7 worker threads, each paired with a grounded baseline on the same seed. 111,084 plan records and 1,412 order events, 18 MB gzipped.
+- Before the fixes the same schedule gave 139,387 records; the difference is mostly automatic hold that no longer trails finished orders.
 - The scenarios: 296 intruders heading for a room, 127 hiding, 177 lost visitors; 419 random floors and 181 on the fixed office.
 - Every record matches contract v0. The same seed gives the same records (`indoor.test.js`).
-- **Templates in the labels:** hold 48,964 · search 24,575 · track 14,995 · lead (guide out) 12,807 · overwatch 8,352 · explore 7,679 · push (drive out) 7,043 · barrier 4,892 · return 4,372 · doors (contain) 4,040 · block 1,660 · ring 8.
+- **All 13 quality gates pass.** `quality_report.js` reports:
+
+  | Measure | Result |
+  |---|---|
+  | Template flicker | 0.02% of ticks |
+  | Follower swaps | 0.09% |
+  | Slot jitter when nothing changed, 95th percentile | 0.13 m |
+  | Stuck drones | 4.6% of drone-ticks |
+  | Doorway queues | 2.5% |
+  | Automatic hold | 2.5% of ticks |
+  | Hold, all causes | 19.5% (was 35%) |
+  | Ticks fit for training (`sft`) | 81.9% |
+
+- **Templates in the labels:** search 25,700 · hold 21,628 · track 15,746 · lead (guide out) 10,293 · explore 8,503 · overwatch 8,246 · push (drive out) 6,867 · barrier 4,614 · doors (contain) 3,925 · return 3,736 · block 1,803 · ring 23.
   - Search includes the short searches that drive out, track and contain run when they lose him.
-  - **Hold is 35% of all ticks**, because finished or failed orders fall back to hold. Down-weight it, or shorten episodes after the last order, before training.
   - The contain ring needs a room at least 7 m across, so it is rare.
-- **Bands:** comfort 126,712 ticks (91%), pressure 12,675 (9%).
+- **Bands:** comfort 98,337 ticks (89%), pressure 12,747 (11%).
+- **What the team knew:** at 37% of ticks the person was in sight, at 12% only an estimate from the last 4 s was known, and at 51% his position was unknown.
 
 The orders:
 - 1,535 sampled phrasings: 1,406 orders, 59 questions and 70 refusals, from 185 templates and 1,199 distinct texts.
 - 77 compound orders and 39 context pairs.
-- 1,395 order events reached an episode; the rest were scheduled after the person had already left.
+- 1,412 order events reached an episode; the rest were scheduled after the person had already left.
 
 Parser agreement with the sampler's intended orders:
 - 1,501/1,501 on seen phrasing templates and 34/34 on held-out ones; 108/108 on the held-out sweep.
 - These numbers are optimistic: the grammar was fixed using earlier runs of this report.
 
 **Safety on true positions, all 600 episodes:**
-- No drone came within the 1.2 m floor.
+- No drone came within the 1.2 m floor; the closest in the pressure band was 1.21 m.
 - No drone moved toward a person inside its band's limit for more than 0.5 s.
 - No separation, wall or altitude violations.
-- In 88 episodes (15%) a person came within 2.0 m of a comfort-band drone that was giving way; this happens in corridors. The closest was 1.28 m; the closest in the pressure band was 1.35 m.
-- Earlier runs of this same set found three floor breaches; the fixes are in `docs/TACTICS.md`.
+- In 70 episodes (12%) a person came within 2.0 m of a comfort-band drone that was giving way, closest 1.47 m. This happens in corridors.
+- Earlier runs of this set found three floor breaches and a climb above the altitude band; the fixes are in `docs/TACTICS.md`.
 
 **Outcomes need care.** `summary.txt` gives outcomes by first order and for the 92 episodes scheduled with a single order. They are not tactic benchmarks:
 - **Re-orders:** the first order is usually replaced 10–35 s later, often before an intruder arrives, so most episodes mix tactics.
-- **Single-order episodes:** even these are weak for keep out (10 of 13 intruders got in, against 11 of 13 with the drones grounded) and drive out (11 of 12, against 11 of 12). Controlled runs on random floors do much better: keep out let in 47 of 80 intruders across the five protectable rooms, against 74 of 80 grounded. The gap is not explained yet; the small sample is one reason.
+- **Single-order episodes:**
+  - Keep out let in 10 of 13 intruders, and drive out 9 of 12, against 11 of 13 and 11 of 12 with the drones grounded. That is mostly what was winnable: see "Why the first run's keep-out looked weak" above.
+  - Guide out got 13 of 21 visitors out (8 of 21 before the guide fixes), and search found 9 of 12 hiders.
 - **Benchmarks:** use the controlled runs in `docs/TACTICS.md`, where one order is given at 1 s and kept.
 
 ## Open questions for Prat

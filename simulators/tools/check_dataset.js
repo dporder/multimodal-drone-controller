@@ -14,10 +14,11 @@ function checkIndoorPlan(f, r) { // swarm-indoor adds timed reference points, ya
   const L = r.label;
   need(INDOOR_GOALS.includes(r.order.goal) && typeof L.template === 'string' && typeof L.text === 'string', `${f}: bad indoor goal/template at ${r.t}`);
   need(L.band === 'pressure' || L.band === 'comfort', `${f}: missing standoff band at ${r.t}`);
+  need(typeof r.sft === 'boolean', `${f}: missing training flag (sft) at ${r.t}`);
   need(Array.isArray(L.refs) && L.refs.length === 3 && L.refs.every(d => d.length === 4 && d.every(isVec3)), `${f}: bad refs at ${r.t}`);
   need(L.yaw.length === 3 && L.yaw.every(y => y === null || finite(y)) && L.spin.length === 3 && L.flags.length === 3, `${f}: bad yaw/spin/flags at ${r.t}`);
   need(Array.isArray(r.obs.belief_rooms) && Array.isArray(r.obs.cleared) && (r.obs.last_seen_age === null || finite(r.obs.last_seen_age)), `${f}: bad indoor obs at ${r.t}`);
-  need(r.team.every(d => finite(d.yaw) && finite(d.link_age)), `${f}: bad indoor team at ${r.t}`);
+  need(r.team.every(d => finite(d.yaw) && finite(d.link_age) && (d.wait_door === null || Number.isInteger(d.wait_door))), `${f}: bad indoor team at ${r.t}`);
   need(r.truth && r.truth.person && isVec3(r.truth.person.pos) && finite(r.truth.margin), `${f}: missing indoor truth at ${r.t}`);
   // no leak: nothing from truth may appear in the inputs (obs.p is the team's estimate, null when unknown)
   need(r.obs.seen || r.obs.p === null || (r.obs.last_seen_age !== null && r.obs.last_seen_age <= 4.0001), `${f}: estimate without a recent sighting at ${r.t}`);
