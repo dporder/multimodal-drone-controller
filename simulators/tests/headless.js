@@ -38,6 +38,14 @@ if (which === 'all' || which === 'seek') {
   const r = run(sim, secs, s => s.world.reset('alarm8'));
   console.log(`swarm-seek   ${r.t.toFixed(0)} s  intruders ${r.metrics.intruders} deterred ${r.metrics.deterred} breached ${r.metrics.breached}  sight times ${r.metrics.sightTimes.map(t => t.toFixed(0)).join('/') || '—'} s  conflicts ${r.metrics.conflicts}`);
 }
+if (which === 'all' || which === 'indoor') { // [dan] swarm-indoor: an intruder heading for the lab, "keep him out of the lab" at 1 s
+  const sim = loadCore(path.join(root, 'swarm-indoor', 'index.html'));
+  sim.seed(1); sim.world.reset({ goal: 'hold', person: { role: 'intruder', delay: 6 } });
+  for (let i = 0; i < secs * 60; i++) { if (i === 60) sim.world.order('keepout', 'keep him out of the lab', 'test', { room: 'lab' }); sim.world.step(1 / 60); }
+  const m = sim.metrics, cov = m.totT ? Math.round(100 * m.seenT / m.totT) : 0;
+  console.log(`swarm-indoor ${sim.simT().toFixed(0)} s  keep-out: breaches ${m.breaches} left ${m.left}  in view ${cov}%  closest ${m.minStandoff.toFixed(1)} m  radio drops ${m.radioDrops}`);
+  for (const l of sim.talk.filter(l => l.who !== 'motor').slice(0, 12)) console.log('   ', l.t.toFixed(1).padStart(6), l.who.padEnd(8), l.text.slice(0, 120));
+}
 if (which === 'all' || which === 'mind') {
   const sim = loadCore(path.join(root, 'swarm-mind', 'index.html'));
   const r = run(sim, secs, s => { s.brain.autopilot = true; s.mission.goal = 'keepout'; s.mission.narrate = 'change'; });

@@ -29,3 +29,12 @@ python main.py mind --headless 300   # physics only in node, no browser, prints 
 ```
 
 What to do once it is open: press 1 to 4 for the goals, ← → to rotate the formation, click the ground to move the intruder yourself, Voice on to hear your commands. The Conversation panel narrates the loop, the Laws panel holds every equation with a live slider. Details in [`simulators/README.md`](simulators/README.md).
+
+## Orders by voice and training data (branch `dan/voice-dataset`)
+
+```
+python main.py --voice          # Swarm Mind plus an offline speech server: hold Space and say "keep him out", "drive him out", "follow him", "hold"
+python main.py indoor --voice   # Swarm Indoor: rooms, doors and line of sight; "keep him out of the lab", "search the building", "guide them out"
+```
+
+One-time setup and details: [`voice/README.md`](voice/README.md). The dataset these sessions and the batch generator produce is described in [`docs/DATASET_PLAN.md`](docs/DATASET_PLAN.md). The tactics behind each goal, with public sources, are in [`docs/TACTICS.md`](docs/TACTICS.md).
