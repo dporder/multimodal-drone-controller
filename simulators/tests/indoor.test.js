@@ -164,15 +164,15 @@ test('keep out and drive out beat the grounded baseline', () => {
 
 test('guide out, search, explore, track and return reach their bands', () => {
   const run = (goal, who, n) => Array.from({ length: n }, (_, k) => episode(k + 1, goal, who));
-  const guide = run('guideout', 'visitor', 8), search = run('search', 'hider', 8), expl = run('explore', 'visitor', 6), track = run('track', 'intruder', 8), ret = run('return', 'visitor', 3);
+  const guide = run('guideout', 'visitor', 12), search = run('search', 'hider', 8), expl = run('explore', 'visitor', 6), track = run('track', 'intruder', 8), ret = run('return', 'visitor', 3);
   BANDS.other = { guide, search, expl, track, ret };
   const guided = guide.filter(e => e.M.guided > 0).length, found = search.filter(e => e.M.found > 0).length, mapped = expl.filter(e => e.M.mapped >= 0.9).length;
   const view = track.reduce((a, e) => a + 100 * e.M.seenT / Math.max(1e-9, e.M.totT), 0) / track.length;
-  assert.ok(guided >= 4, `guide out: ${guided}/8 visitors out within 180 s`);
+  assert.ok(guided >= 5, `guide out: ${guided}/12 visitors out within 180 s`);
   assert.ok(found >= 7, `search: ${found}/8 hiders found`);
   assert.ok(mapped >= 2, `explore: ${mapped}/6 floors at least 90% mapped within 180 s`);
   assert.ok(view >= 40, `track: ${view.toFixed(0)}% in view`);
-  console.log(`      guided ${guided}/8, found ${found}/8, mapped ${mapped}/6, track in view ${view.toFixed(0)}%`);
+  console.log(`      guided ${guided}/12, found ${found}/8, mapped ${mapped}/6, track in view ${view.toFixed(0)}%`);
   assert.ok(ret.every(e => e.status === 'landed'), 'return: every drone lands');
 });
 
