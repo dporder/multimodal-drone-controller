@@ -203,7 +203,10 @@ const person={
   step(dt,drones){
     if(!this.alive)return;
     const P=this.params; let px=0,pz=0,threat=0,maxS=0,maxDir=null;
-    for(const d of drones){ if(d.y<0.4)continue; const dx=this.x-d.x, dz=this.z-d.z, dd=Math.max(0.3,hyp(dx,dz)); const s=clamp(P.Rreact/dd-1,0,settings.fearCap); if(s<=0)continue;
+    // a visitor who stopped being guided stops following (and walks somewhere of her own)
+    if(this.role==='visitor'&&this.following&&mission.goal!=='guideout'&&this.state!=='leave'){ this.following=false; this.setTarget(randomPointIn(this.room>=0&&this.room<plan.rooms.length?this.room:0,WALK,prng)); }
+    const guide=this.role==='visitor'&&this.following&&mission.goal==='guideout'?team.drones[mission.leader||0]:null;
+    for(const d of drones){ if(d.y<0.4)continue; const dx=this.x-d.x, dz=this.z-d.z, dd=Math.max(0.3,hyp(dx,dz)); const s=clamp(P.Rreact/dd-1,0,settings.fearCap)*(d===guide?0.3:1); if(s<=0)continue;
       px+=s*dx/dd; pz+=s*dz/dd; threat+=s; if(s>maxS){ maxS=s; maxDir={x:dx/dd,z:dz/dd}; } }
     this.threat=threat;
     // guide-out: a lost visitor follows the leading drone when it is close and in sight
@@ -285,7 +288,7 @@ const team={drones:[],seen:false,lkp:null,lkpT:-1,vel:{x:0,z:0},trail:[],beliefR
 // Each template sees only what the team knows (team.est(), belief, map) and returns 3 slots: pts[0] is the master's role.
 const GOALS={hold:'Hold position',keepout:'Keep him out',driveout:'Drive him out',guideout:'Guide them out',track:'Track him',contain:'Contain him',
   search:'Search the building',explore:'Map the floor',overwatch:'Watch',return:'Return and land'};
-const mission={goal:'hold',params:{},version:0,order:null,tick:0,template:'',templateKey:'',status:'active',acceptedT:0,onPlan:null,queued:null,narrate:'change'};
+const mission={goal:'hold',params:{},version:0,order:null,ends:[],tick:0,template:'',templateKey:'',status:'active',acceptedT:0,onPlan:null,queued:null,narrate:'change'};
 const RM=i=>plan.rooms[i];
 function doorPoint(d,rid,dist){ const n=doorNormal(d,rid); return {x:d.x+n.x*dist,z:d.z+n.z*dist}; }
 function at(p,y){ return {x:p.x,y,z:p.z}; }
@@ -322,16 +325,25 @@ function tKeepout(I){
 function tDrive(I,guide){
   if(mission.exitId==null||simT-(mission.exitT||-9)>3){ let ne=mission.params.exit!=null?mission.params.exit:nearestExit(I).id;
     // a guide must already be ahead of him on the way out: drones cannot pass a person in a corridor at the standoff
-    if(guide&&mission.params.exit==null){ const L=team.drones[0]; let bl=Infinity; for(const e of exitDoors()){ const wi=doorWalk(e.id,I); if(doorWalk(e.id,L)<wi-1&&wi<bl){ bl=wi; ne=e.id; } } }
+    if(guide&&mission.params.exit==null){ let bl=Infinity; for(const e of exitDoors()){ const wi=doorWalk(e.id,I); if(team.drones.some(d=>doorWalk(e.id,d)<wi-1)&&wi<bl){ bl=wi; ne=e.id; } } }
     if(mission.exitId==null||mission.params.exit!=null||doorWalk(ne,I)<doorWalk(mission.exitId,I)-5)mission.exitId=ne; mission.exitT=simT; }
   const E=plan.doors[mission.exitId];
   const ahead=descend(E.id,I,2.0); let gx=ahead.x-I.x, gz=ahead.z-I.z; const L=hyp(gx,gz)||1; gx/=L; gz/=L; const nx=-gz, nz=gx, y=settings.zNom;
   if(guide&&doorWalk(E.id,I)<4.5){ const t=doorTangent(E), o=outsidePoint(E,1.0), sn=nearestFreeNav;
     // near the exit the guides stand aside outside, either side of the door, so the way out is clear
-    const pts=[[2.6,0],[-2.6,0],[4.0,0]].map(([a])=>at(sn(FLY,o.x+t.x*a,o.z+t.z*a,1.5)||{x:o.x+t.x*a,z:o.z+t.z*a},y)); mission.leader=0;
+    const pts=[[2.6,0],[-2.6,0],[4.0,0]].map(([a])=>at(sn(FLY,o.x+t.x*a,o.z+t.z*a,1.5)||{x:o.x+t.x*a,z:o.z+t.z*a},y));
     return {key:'lead',text:'stand aside at the '+E.name+' so the way out is clear',pts,exit:E.id,yawTo:I,fixedOrder:true}; }
-  if(guide){ let lead=descend(E.id,I,4.0); for(let s=3.5;s>=1.5&&!los(lead.x,settings.zNom,lead.z,I.x,1.6,I.z);s-=0.5)lead=descend(E.id,I,s); mission.leader=0;
-    return {key:'lead',text:'lead the way to the '+E.name,pts:[at(lead,y),at(descend(E.id,I,6.5),y),at(descend(E.id,I,9.0),y)],exit:E.id,yawTo:I,fixedOrder:true}; }
+
+  if(guide){ let lead=descend(E.id,I,4.0); for(let s=3.5;s>=1.5&&!los(lead.x,settings.zNom,lead.z,I.x,1.6,I.z);s-=0.5)lead=descend(E.id,I,s);
+    // roles by position: the drone nearest the exit leads; drones already ahead of the visitor form the column ahead;
+    // drones behind her trail 3 m back, since none can pass her in a corridor at the standoff
+    const wI=doorWalk(E.id,I), ws=team.drones.map(d=>doorWalk(E.id,d)); let Ld=mission.leader!=null?mission.leader:0; const best=ws.indexOf(Math.min(...ws)); if(ws[best]<ws[Ld]-2)Ld=best; mission.leader=Ld;
+    const pts=[null,null,null]; pts[Ld]=at(lead,y); let nAhead=0, nBehind=0;
+    for(const k of [0,1,2]){ if(k===Ld)continue;
+      if(ws[k]<wI-1){ pts[k]=at(descend(E.id,I,nAhead?9.0:6.5),y); nAhead++; }
+      else { const sd=nBehind?-0.6:0.6, tr=nearestFreeNav(FLY,I.x-gx*3+nx*sd,I.z-gz*3+nz*sd,1.5)||{x:I.x-gx*3,z:I.z-gz*3}, dk=team.drones[k];
+        pts[k]=segDist(I,dk,tr)>settings.dS?at(tr,y):at(dk,Math.max(settings.zMin,dk.y)); nBehind++; } }
+    return {key:'lead',text:'lead the way to the '+E.name,pts,exit:E.id,yawTo:I,fixed:true}; }
   if(!mission.stall||hyp(I.x-mission.stall.x,I.z-mission.stall.z)>0.4)mission.stall={x:I.x,z:I.z,t:simT};
   const stalled=simT-mission.stall.t>2, r=stalled?settings.dPress:settings.rPush, c=0.5, s=0.866;
   return {key:'push',text:'push from behind toward the '+E.name,exit:E.id,yawTo:I,
@@ -400,8 +412,10 @@ function tExplore(){
     if(cl.length>=4){ let sx=0,sz=0; for(const k of cl){ const p=navXZ(k); sx+=p.x; sz+=p.z; } const c={x:sx/cl.length,z:sz/cl.length}; let best=cl[0],bd=Infinity; for(const k of cl){ const p=navXZ(k); const d=hyp(p.x-c.x,p.z-c.z); if(d<bd){ bd=d; best=k; } } clusters.push({size:cl.length,p:navXZ(best)}); } }
   if(!clusters.length&&(simT-ex.t0<4||team.drones.some(d=>d.y<0.4)))return {key:'explore',text:'take off and look around',pts:team.drones.map(d=>at(d,y)),fixed:true,spin:[true,true,true]};
   if(!clusters.length){ let free=0,known=0; for(let k=0;k<N;k++){ if(FLY[k]||ROOMN[k]<0||ROOMN[k]>=plan.rooms.length)continue; free++; if(ex.bel[k]===1)known++; } metrics.mapped=+(known/Math.max(1,free)).toFixed(3); return {done:'done',reason:'no frontier left: '+Math.round(100*metrics.mapped)+'% of the floor mapped'}; }
+  // one frontier per drone: a drone without a frontier of its own holds and looks around instead of queuing behind the others at the doors
   const pts=[], chosen=[];
-  for(const d of team.drones){ let best=null,bs=-Infinity; for(const c of clusters){ const L=hyp(c.p.x-d.x,c.p.z-d.z)*1.3; let s=c.size-2*L; if(chosen.some(q=>hyp(q.x-c.p.x,q.z-c.p.z)<3))s-=30; if(s>bs){ bs=s; best=c; } } chosen.push(best.p); pts.push(at(best.p,y)); }
+  for(const d of team.drones){ let best=null,bs=-Infinity; for(const c of clusters){ if(chosen.some(q=>hyp(q.x-c.p.x,q.z-c.p.z)<3))continue; const L=hyp(c.p.x-d.x,c.p.z-d.z)*1.3, sc=c.size-2*L; if(sc>bs){ bs=sc; best=c; } }
+    if(best){ chosen.push(best.p); pts.push(at(best.p,y)); } else pts.push(at(d,Math.max(settings.zMin,d.y))); }
   return {key:'explore',text:'explore '+clusters.length+' frontier'+(clusters.length>1?'s':''),pts,fixed:true,spin:[true,true,true]};
 }
 function exploreObserve(){ const ex=mission.explore; for(const d of team.drones){ if(d.y<0.4)continue;
@@ -426,17 +440,26 @@ function tReturn(){ const pts=team.drones.map((d,k)=>{ const p=plan.pads[k]; con
   return {key:'return',text:'return to the pads and land',pts,fixed:true,landing:true}; }
 
 // ---------- the safety validator (estimated positions; tests check the true ones) ----------
-function validate(pts,I,landing,band){
+function validate(pts,I,landing,band,doorsOk){
   const flags=pts.map(()=>[]); const top=settings.ceil-0.5;
+  // only door-holding tactics park in a doorway: anywhere else a parked drone holds the door's lock and blocks the others
+  if(!doorsOk&&!landing)pts.forEach((p,k)=>{ const z=DZONE[navIdx(p.x,p.z)]; if(!z)return; const door=plan.doors[z-1], c=doorCoords(door,p.x,p.z);
+    const sgn=Math.abs(c.n)>0.05?Math.sign(c.n):(Math.sign(doorCoords(door,team.drones[k].x,team.drones[k].z).n)||1), nn=door.axis==='h'?{x:0,z:1}:{x:1,z:0}, push=sgn*1.0-c.n;
+    p.x+=nn.x*push; p.z+=nn.z*push; flags[k].push('doorway'); });
   const fix=(p,k)=>{ if(!(landing&&p.y<0.5))p.y=clamp(p.y,settings.zMin,top); if(DZONE[navIdx(p.x,p.z)]&&p.y>settings.zDoor){ p.y=settings.zDoor; flags[k].push('door-height'); }
     if(FLY[navIdx(p.x,p.z)]){ const f=nearestFreeNav(FLY,p.x,p.z,3); if(f){ p.x=f.x; p.z=f.z; flags[k].push('wall'); } } };
   pts.forEach(fix);
-  for(let it=0;it<3;it++){
-    if(I){ const near=pts.filter(p=>hyp(p.x-I.x,p.z-I.z)<4).length; const dS=band==='pressure'?settings.dPress:near>=2?settings.dS2:settings.dS;
-      pts.forEach((p,k)=>{ const dx=p.x-I.x, dz=p.z-I.z, d=hyp(dx,dz); if(d<dS){ const ux=d>1e-3?dx/d:1, uz=d>1e-3?dz/d:0; p.x=I.x+ux*dS; p.z=I.z+uz*dS; if(!flags[k].includes('standoff'))flags[k].push('standoff'); fix(p,k); } }); }
+  // separation first and the person's standoff last, so a finished slot never ends inside the standoff (the stricter rule)
+  for(let it=0;it<6;it++){
     for(let a=0;a<3;a++)for(let b=a+1;b<3;b++){ const dx=pts[b].x-pts[a].x, dz=pts[b].z-pts[a].z, d=hyp(dx,dz); if(d<settings.sep){ const ux=d>1e-3?dx/d:1, uz=d>1e-3?dz/d:0, m=(settings.sep-d)/2+0.02;
-        pts[a].x-=ux*m; pts[a].z-=uz*m; pts[b].x+=ux*m; pts[b].z+=uz*m; for(const k of [a,b])if(!flags[k].includes('separation'))flags[k].push('separation'); fix(pts[a],a); fix(pts[b],b); } } }
-  return flags;
+        pts[a].x-=ux*m; pts[a].z-=uz*m; pts[b].x+=ux*m; pts[b].z+=uz*m; for(const k of [a,b])if(!flags[k].includes('separation'))flags[k].push('separation'); fix(pts[a],a); fix(pts[b],b); } }
+    if(I){ const near=pts.filter(p=>hyp(p.x-I.x,p.z-I.z)<4).length; const dS=band==='pressure'?settings.dPress:near>=2?settings.dS2:settings.dS;
+      pts.forEach((p,k)=>{ const dx=p.x-I.x, dz=p.z-I.z, d=hyp(dx,dz); if(d<dS){ const ux=d>1e-3?dx/d:1, uz=d>1e-3?dz/d:0; p.x=I.x+ux*(dS+0.01); p.z=I.z+uz*(dS+0.01); if(!flags[k].includes('standoff'))flags[k].push('standoff'); fix(p,k); } }); } }
+  // pairs still short of the separation move apart around him, keeping their distance from him
+  if(I)for(let it=0;it<3;it++)for(let a=0;a<3;a++)for(let b=a+1;b<3;b++){ const d=hyp(pts[b].x-pts[a].x,pts[b].z-pts[a].z); if(d>=settings.sep-0.03)continue;
+    const ang=p=>Math.atan2(p.x-I.x,p.z-I.z), sg=wrapPi(ang(pts[b])-ang(pts[a]))>=0?1:-1, r=Math.max(1,Math.min(hyp(pts[a].x-I.x,pts[a].z-I.z),hyp(pts[b].x-I.x,pts[b].z-I.z))), turn=(settings.sep+0.05-d)/r;
+    for(const [k,sk] of [[a,-sg],[b,sg]]){ const p=pts[k], rr=hyp(p.x-I.x,p.z-I.z), th=ang(p)+sk*turn/2; p.x=I.x+Math.sin(th)*rr; p.z=I.z+Math.cos(th)*rr; fix(p,k); } }
+  return flags.map(f=>[...new Set(f)]);
 }
 
 // ---------- drones: local motion control, door locks, radio ----------
@@ -465,7 +488,7 @@ function droneStep(d,dt){
   if(d.lock>=0&&zoneHere!==d.lock&&zoneNext!==d.lock){ delete doorLock[d.lock]; d.lock=-1; }
   if(zoneNext>=0&&zoneNext!==d.lock&&zoneHere!==zoneNext){ const dz=plan.doors[zoneNext], pc=doorCoords(dz,person.x,person.z), dc=doorCoords(dz,d.x,d.z);
     const personIn=person.alive&&(DZONE[navIdx(person.x,person.z)]-1===zoneNext||(settings.doorGuard&&hyp(person.x-dz.x,person.z-dz.z)<bandDist(droneBand(d))+0.3&&pc.n*dc.n<0));
-    if(doorLock[zoneNext]==null&&!personIn){ doorLock[zoneNext]=d.k; d.lock=zoneNext; d.waitFor=-1; } else { carrot={x:d.x,z:d.z}; d.waitT+=dt; metrics.doorWait+=dt;
+    if(doorLock[zoneNext]==null&&!personIn){ doorLock[zoneNext]=d.k; d.lock=zoneNext; d.waitFor=-1; } else { carrot={x:d.x,z:d.z}; d.waitT+=dt; d.waitNowT=simT; metrics.doorWait+=dt;
       if(d.waitFor!==zoneNext){ d.waitFor=zoneNext; d.waitStart=simT; }
       const owner=team.drones[doorLock[zoneNext]]; const parked=owner&&doorwayAt(owner.target.x,owner.target.z,-1)===zoneNext;
       if(parked&&simT-d.waitStart>2&&!(d.avoid||[]).includes(zoneNext)){ d.avoid=(d.avoid||[]).concat([zoneNext]); d.pathFor=null; } } }
@@ -473,7 +496,7 @@ function droneStep(d,dt){
   const inDoor=zoneHere>=0||zoneNext>=0; if(zoneNext>=0&&zoneHere<0&&d.y>settings.zDoor+0.1)carrot={x:d.x,z:d.z}; // descend before entering a doorway
   const vlim=inDoor?settings.vSlow:settings.vMax; // near a person only the approach is slowed, below
   let ax=2.0*(carrot.x-d.x)-2.4*d.vx, az=2.0*(carrot.z-d.z)-2.4*d.vz; const ah=hyp(ax,az); if(ah>settings.aMax){ ax*=settings.aMax/ah; az*=settings.aMax/ah; }
-  const ty=inDoor?Math.min(tg.y,settings.zDoor):d.boxed!=null&&simT-d.boxed<2?settings.ceil-0.5:tg.y; let ay=3*(ty-d.y)-3*d.vy; // boxed in by a person: climb above reach
+  const ty=inDoor?Math.min(tg.y,settings.zDoor):d.boxed!=null&&simT-d.boxed<2?settings.ceil-0.55:tg.y; let ay=3*(ty-d.y)-3*d.vy; // boxed in by a person: climb above reach
   // on the pad: no take-off while a person is within the standoff, and no sliding sideways before it is airborne
   if(d.y<0.4&&ty>d.y&&person.alive&&hyp(person.x-d.x,person.z-d.z)<settings.floorComfort+0.5){ ay=-3*d.vy; d.vy=Math.min(d.vy,0); }
   for(const o of team.drones){ if(o===d||o.y<0.3)continue; const ox=d.x-o.x, oz=d.z-o.z, od=hyp(ox,oz); if(od<1.25&&od>1e-3){ const g=(1.25-od)*6+(od<0.9?(0.9-od)*25:0); ax+=ox/od*g; az+=oz/od*g; } }
@@ -512,7 +535,8 @@ function wallClearance(d){ return Math.max(0,CLR[cellIdx(d.x,d.z)]-CELL/2); }
 function clearanceGrad(x,z){ const e=0.1; const gx=CLR[cellIdx(x+e,z)]-CLR[cellIdx(x-e,z)], gz=CLR[cellIdx(x,z+e)]-CLR[cellIdx(x,z-e)]; const n=hyp(gx,gz); return n>1e-6?{x:gx/n,z:gz/n}:{x:0,z:0}; }
 const radio=[];
 function deliverRadio(){ for(let i=radio.length-1;i>=0;i--){ const pk=radio[i]; if(pk.at>simT)continue; radio.splice(i,1); const d=pk.d;
-    d.target={x:d.x+pk.vec.x,y:d.y+pk.vec.y,z:d.z+pk.vec.z}; d.lookAt=pk.look; d.spin=pk.spin; d.band=pk.band; d.rxT=simT; } }
+    // the follower's target height: landing below 0.5 m, otherwise inside the altitude band
+    const ty=d.y+pk.vec.y; d.target={x:d.x+pk.vec.x,y:ty<0.5?Math.max(0.1,ty):clamp(ty,settings.zMin,settings.ceil-0.5),z:d.z+pk.vec.z}; d.lookAt=pk.look; d.spin=pk.spin; d.band=pk.band; d.rxT=simT; } }
 
 // ---------- orders, the master's plan tick, completion and the dataset record ----------
 function roomByName(n){ if(n==null)return null; if(typeof n==='number')return n; const s=String(n).toLowerCase(); const q=plan.rooms.find(r=>r.name===s)||plan.rooms.find(r=>s.includes(r.name)||r.name.includes(s)); return q?q.id:null; }
@@ -533,13 +557,13 @@ function describeGoal(){ const p=mission.params, g=mission.goal;
   return GOALS[g]; }
 function applyOrder(goal,text,src,params){
   if(!GOALS[goal])return false;
-  Object.assign(mission,{goal,params:resolveParams(goal,params||{}),status:'active',acceptedT:simT,holdPts:null,doorStar:null,exitId:null,stall:null,trail:[],lostT:null,
+  Object.assign(mission,{goal,params:resolveParams(goal,params||{}),status:'active',acceptedT:simT,holdPts:null,doorStar:null,exitId:null,leader:null,stall:null,trail:[],lostT:null,
     searchRooms:{},vp:{},spinT:{},owCache:null,vpCache:null,sub:false,planT:0});
   mission.version++; mission.order={goal,text:text||null,src:src||'speech',t:+simT.toFixed(2),version:mission.version,params:mission.params};
   if(goal==='search')team.resetCoverage(); if(goal==='explore')mission.explore={bel:new Uint8Array(NX*NZ),t0:simT};
   if(src!=='auto'&&src!=='queued'){ metrics.orders++; say('you',text||describeGoal()+'.'); }
   say('master','Order v'+mission.version+' accepted: '+describeGoal()+'.'); return true; }
-function complete(status,reason){ mission.status=status; say('master',(status==='failed'?'Order failed: ':'Done: ')+reason+'.');
+function complete(status,reason){ mission.status=status; mission.ends.push({version:mission.version,goal:mission.goal,status,reason,t:+simT.toFixed(2)}); say('master',(status==='failed'?'Order failed: ':'Done: ')+reason+'.');
   if(status==='landed')return; const q=mission.queued; mission.queued=null; if(q)applyOrder(q.goal,q.text,'queued',q.params); else applyOrder('hold',null,'auto',{}); }
 function marginNow(){ if(!person.alive||!person.path||!person.path.length)return 0; const wp=person.path[0]; let gx=wp.x-person.x, gz=wp.z-person.z; const L=hyp(gx,gz)||1; gx/=L; gz/=L; let m=0;
   for(const d of team.drones){ if(d.y<0.4)continue; const dx=d.x-person.x, dz=d.z-person.z, dd=Math.max(0.3,hyp(dx,dz)); const s=clamp(person.params.Rreact/dd-1,0,settings.fearCap); m+=s*Math.max(0,(dx*gx+dz*gz)/dd); } return person.params.kFear*m; }
@@ -570,7 +594,7 @@ function planTick(){
   else if(g==='track')out=tTrack(I); else if(g==='contain')out=tContain(I); else if(g==='search')out=tSearch(); else if(g==='explore')out=tExplore(); else if(g==='overwatch')out=tOverwatch(); else out=tReturn();
   if(out.done){ complete(out.done,out.reason); return; }
   mission.sub=!!out.sub;
-  const flags=validate(out.pts,I,out.landing,mission.band);
+  const flags=validate(out.pts,I,out.landing,mission.band,out.key==='barrier'||out.key==='block'||out.key==='doors');
   let order=[0,1,2];
   if(!out.fixed&&!out.fixedOrder){ const f=team.drones, d=(a,p)=>hyp(a.x-p.x,a.z-p.z); const c01=d(f[1],out.pts[1])+d(f[2],out.pts[2]), c10=d(f[1],out.pts[2])+d(f[2],out.pts[1]);
     const cur=mission.pair||'01', curC=cur==='01'?c01:c10, altC=cur==='01'?c10:c01; if(altC<curC*0.75&&simT-(mission.pairT||-9)>=2){ mission.pair=cur==='01'?'10':'01'; mission.pairT=simT; }
@@ -592,7 +616,7 @@ function planTick(){
       order:{goal:mission.goal,version:mission.version,text:mission.order?mission.order.text:null,src:mission.order?mission.order.src:null,params:mission.params,status:mission.status},
       obs:{seen:team.seen,p:I?[+I.x.toFixed(3),0,+I.z.toFixed(3)]:null,v:I?[+team.vel.x.toFixed(2),0,+team.vel.z.toFixed(2)]:null,last_seen_age:team.lkpT>=0?+(simT-team.lkpT).toFixed(2):null,
         room:team.lkpRoom!=null&&team.lkpRoom>=0?team.lkpRoom:null,belief_rooms:[...team.beliefRooms].sort((a,b)=>a-b),cleared:[...team.cleared].sort((a,b)=>a-b)},
-      team:team.drones.map(d=>({id:d.id,pos:r3(d),vel:r3({x:d.vx,y:d.vy,z:d.vz}),yaw:+d.yaw.toFixed(3),room:roomAt(d.x,d.z),link_age:+(simT-d.rxT).toFixed(2)})),
+      team:team.drones.map(d=>({id:d.id,pos:r3(d),vel:r3({x:d.vx,y:d.vy,z:d.vz}),yaw:+d.yaw.toFixed(3),room:roomAt(d.x,d.z),link_age:+(simT-d.rxT).toFixed(2),wait_door:d.waitNowT!=null&&simT-d.waitNowT<0.05?d.waitFor:null})),
       label:{template:out.key,text:out.text,band:mission.band,door:out.door!=null?out.door:null,room:out.room!=null?out.room:null,exit:out.exit!=null?out.exit:null,
         slots:team.drones.map(d=>r3(d.slot)),vectors:team.drones.map(d=>r3(d.vec)),yaw:team.drones.map(d=>d.yawCmd==null?null:+d.yawCmd.toFixed(3)),spin:team.drones.map(d=>!!d.spinCmd),refs,flags:team.drones.map(d=>d.flags.slice())},
       radio:radioEv,
@@ -621,7 +645,7 @@ const world={endOnGone:false,ended:false,scenario:null,
     if(typeof po.startExit==='string')po.startExit=doorByName(po.startExit,true);
     person.reset(po); this.scenario.person={role:person.role,intent:person.intent,targetRoom:person.targetRoom,entry:person.entry,delay:person.delay,params:Object.assign({},person.params)};
     this.endOnGone=!!opts.endOnGone; this.ended=false;
-    Object.assign(mission,{version:0,order:null,tick:0,template:'',templateKey:'',queued:null,lastSay:null,pair:'01',pairT:-9,coverT:0,lastOut:null,band:'comfort'});
+    Object.assign(mission,{version:0,order:null,tick:0,template:'',templateKey:'',queued:null,lastSay:null,pair:'01',pairT:-9,coverT:0,lastOut:null,band:'comfort',ends:[]});
     applyOrder(opts.goal||'hold',null,'auto',opts.params||{}); mission.version=0; mission.order=null;
     if(opts.grounded){ mission.status='landed'; mission.grounded=true; } else mission.grounded=false;
     say('site','Floor: '+plan.rooms.map(q=>q.name).join(', ')+'. '+(person.role==='intruder'?'An intruder is heading for the '+RM(person.targetRoom).name+'.':'A visitor is in the '+(person.room>=0&&person.room<plan.rooms.length?RM(person.room).name:'building')+'.')); },
