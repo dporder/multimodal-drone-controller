@@ -414,10 +414,10 @@ Only people, drones and doors move. Dan's direction (17 November): the POC can k
   - The person's door state carrying over to the next episode in a worker.
 
 **Full run `indoor4`, 17 November (1,200 episodes on indoor3's schedule, contract v1), against indoor3 without doors:**
-- **Every hard gate passes; one soft gate does not.**
+- **Every quality gate passes,** with the limit for person-caused close calls that Dan set for doors on 17 November.
   - Every record matches contract v1, and all 25 indoor tests pass.
   - No drone came within 1.2 m of anyone by its own doing, and none got through a door that stayed shut.
-  - The soft gate for close calls caused by people fails: 16 episodes against a limit of 12 (1%), and 12 without doors. In those, someone ran at a drone or walked up to one that had no room to back away: in a doorway, holding a door, or at a shut exit. Their time inside 1.2 m came to 52 s in all (112 s without doors), 38 s of it one intruder pressing a drone that held a door. These ticks are already kept out of training.
+  - Close calls caused by people: 16 episodes, within the doors limit of 18 (1.5%); 12 without doors, against 12 (1%). In those, someone ran at a drone or walked up to one that had no room to back away: in a doorway, holding a door, or at a shut exit. Their time inside 1.2 m came to 52 s in all (112 s without doors), 38 s of it one intruder pressing a drone that held a door. These ticks are already kept out of training.
   - Seven episodes had a surprise, someone hidden behind a door or a corner first seen inside 1.2 m: 0.45 s in all.
 - **Doors moved:** at the start 4,870 doorways were shut, 850 half open, 3,198 open, 118 locked and 290 openings. People opened doors 4,566 times and closed them 2,363 times.
 - **The data:**
@@ -444,7 +444,7 @@ Only people, drones and doors move. Dan's direction (17 November): the POC can k
   3. **Third run, one hard gate failed.**
      - A person's step-back from a door carried into the next episode in a generator worker, so one episode differed from its own replay, and a drone was counted through a shut door there.
      - A test now checks that a person's door state never carries over.
-- **Open (Dan's call): the person-caused close-call gate.** Either set a limit for doors (for example 1.5%), since these close calls are the person's doing and stay out of training, or keep drones from hovering in doorways and recesses near people.
+- **Decided (Dan, 17 November): the person-caused close-call gate allows 1.5% of episodes with doors** (1% without). These close calls are the person's doing and stay out of training. Keeping drones from hovering in doorways and recesses near people was the other option; it was not chosen.
 
 **Later, roughly in order of how much it changes what a drone can do or see:**
 1. **More door types:** automatic sliding doors, fire doors that swing shut on their own, roller shutters in warehouses, doors propped open.
@@ -596,7 +596,7 @@ Every plan record carries `use_for_training`, whether to train on it. It is fals
 | Bounds | hard | slots inside the site and the altitude band |
 | References | hard | timed reference points a drone can fly from its position and velocity: speed changes of at most 2 m/s² between steps, at most 2.5 m/s, climbs of at most 0.8 m/s (13 November; was "at most 0.75 m per 0.5 s") |
 | Flight safety | hard | no drone brings itself inside the 1.2 m floor of anyone (moving toward them, or both still while it could back away), no drone closing in on a person, no separation, wall or altitude violation |
-| A person closing in | soft | episodes where a person walked or ran within 1.2 m of a drone that was not moving toward them (a sprinter can outrun a retreating drone, and anyone can walk up to a drone pinned by walls and people): at most 1% of episodes; their segments are not training data |
+| A person closing in | soft | episodes where a person walked or ran within 1.2 m of a drone that was not moving toward them (a sprinter can outrun a retreating drone, and anyone can walk up to a drone pinned by walls and people): at most 1% of episodes without doors and 1.5% with them (Dan, 17 November: a drone in a doorway, holding a door or at a shut exit has less room to back away); their segments are not training data |
 | Training ticks | hard | no `use_for_training` tick has a stuck drone or a drone inside 1.2 m of anyone (decided on the unrounded distance) |
 | Flicker | soft | a template that flips for one tick and back: under 0.5% of ticks |
 | Swaps | soft | follower slots swapping: under 0.2% of ticks |

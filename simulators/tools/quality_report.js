@@ -141,6 +141,10 @@ for (const r of rows) {
 
 const share = n => n / C.ticks;
 const J = q(C.jitter, 0.95), J50 = q(C.jitter, 0.5);
+// person-caused close calls: at most 1% of episodes without doors and 1.5% of episodes with them (Dan, 17 Nov 2026). A drone in a
+// doorway, holding a door or at a shut exit has less room to back away from someone who walks up to it; either way these segments
+// are not training data.
+const personLimit = Math.ceil((10 * (C.episodes - DOOR.eps) + 15 * DOOR.eps) / 1000);
 const jitterBy = Object.fromEntries(Object.entries(C.jitterByTemplate).map(([k, v]) => [k, { p50: +q(v, 0.5).toFixed(3), p95: +q(v, 0.95).toFixed(3), n: v.length }]));
 const gates = [
   // hard gates: a single failure means a label or a flight broke a rule
@@ -150,7 +154,7 @@ const gates = [
   { hard: true, name: 'slots inside the site and altitude band', value: C.boundsBad + C.altBad, ok: C.boundsBad + C.altBad === 0 },
   { hard: true, name: 'reference points flyable (acceleration, speed, climb)', value: C.refsBad, ok: C.refsBad === 0 },
   { hard: true, name: 'episodes where a drone came within the 1.2 m floor (drone moving toward the person, or both still while it could back away)', value: C.floor, ok: C.floor === 0 },
-  { hard: false, name: 'episodes where a person closed within 1.2 m of a drone not moving toward them (outrunning a retreating drone, or walking up to a pinned one)', value: C.floorPerson, ok: C.floorPerson <= Math.ceil(0.01 * C.episodes) },
+  { hard: false, name: 'episodes where a person closed within 1.2 m of a drone not moving toward them (outrunning a retreating drone, or walking up to a pinned one)', value: C.floorPerson, limit: personLimit, ok: C.floorPerson <= personLimit },
   { hard: true, name: 'episodes with a drone closing in on a person', value: C.approach, ok: C.approach === 0 },
   { hard: true, name: 'episodes with separation / wall / altitude violations', value: C.sepViol + C.wallViol + C.altViol, ok: C.sepViol + C.wallViol + C.altViol === 0 },
   // soft gates: label noise and balance, thresholds chosen for SFT
@@ -193,7 +197,7 @@ const report = { dir, episodes: C.episodes, ticks: C.ticks, gates, families, by_
 if (asJson) console.log(JSON.stringify(report, null, 1));
 else {
   console.log(`${dir}: ${C.episodes} episodes, ${C.ticks} plan ticks (${C.standoffChecked} with a person estimate)`);
-  for (const g of gates) console.log(`${g.ok ? 'PASS' : 'FAIL'} ${g.hard ? 'hard' : 'soft'}  ${g.name}: ${g.value}${!g.ok && C.worst[{ 'vector = slot - position': 'vec', 'slots keep the band standoff from the estimate': 'standoff', 'slots at least 1 m apart': 'sep', 'reference points reachable': 'refs', 'one-tick template flicker (share of ticks)': 'flicker', 'stuck drones, all ticks (share of drone-ticks)': 'stuck', 'drones through a door that stayed shut (under 60 deg)': 'through', 'people inside a door leaf (share of person-ticks)': 'leaf' }[g.name]] ? '   e.g. ' + C.worst[{ 'vector = slot - position': 'vec', 'slots keep the band standoff from the estimate': 'standoff', 'slots at least 1 m apart': 'sep', 'reference points reachable': 'refs', 'one-tick template flicker (share of ticks)': 'flicker', 'stuck drones, all ticks (share of drone-ticks)': 'stuck', 'drones through a door that stayed shut (under 60 deg)': 'through', 'people inside a door leaf (share of person-ticks)': 'leaf' }[g.name]] : ''}`);
+  for (const g of gates) console.log(`${g.ok ? 'PASS' : 'FAIL'} ${g.hard ? 'hard' : 'soft'}  ${g.name}: ${g.value}${g.limit != null ? ` (limit ${g.limit})` : ''}${!g.ok && C.worst[{ 'vector = slot - position': 'vec', 'slots keep the band standoff from the estimate': 'standoff', 'slots at least 1 m apart': 'sep', 'reference points reachable': 'refs', 'one-tick template flicker (share of ticks)': 'flicker', 'stuck drones, all ticks (share of drone-ticks)': 'stuck', 'drones through a door that stayed shut (under 60 deg)': 'through', 'people inside a door leaf (share of person-ticks)': 'leaf' }[g.name]] ? '   e.g. ' + C.worst[{ 'vector = slot - position': 'vec', 'slots keep the band standoff from the estimate': 'standoff', 'slots at least 1 m apart': 'sep', 'reference points reachable': 'refs', 'one-tick template flicker (share of ticks)': 'flicker', 'stuck drones, all ticks (share of drone-ticks)': 'stuck', 'drones through a door that stayed shut (under 60 deg)': 'through', 'people inside a door leaf (share of person-ticks)': 'leaf' }[g.name]] : ''}`);
   console.log(`observations: seen ${report.obs.seen}, estimate only ${report.obs.estimate_only}, unknown ${report.obs.unknown}; comfort pass-bys in ${C.passBy} episodes`);
   console.log(`perception (records' last frames): ${C.tp} of the subject, ${C.other} of other people, ${C.fp} false (${C.fpAccepted} confident enough to count); estimate error in sight p50 ${q(C.estErr, 0.5) && q(C.estErr, 0.5).toFixed(2)} m, p95 ${q(C.estErr, 0.95) && q(C.estErr, 0.95).toFixed(2)} m; searches ended on a false positive: ${C.falseFound}`);
   console.log('refs against the flight (slot unchanged), p50/p95 m: ' + refVsFlight.map(x => `+${x.after_s} s ${x.p50}/${x.p95}`).join(', '));
