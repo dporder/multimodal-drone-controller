@@ -447,11 +447,12 @@ const swarm={
     if(typeof mission.onPlan==='function'){ const r3=v=>[+v.x.toFixed(3),+v.y.toFixed(3),+v.z.toFixed(3)]; const ids=['M','S1','S2'];
       mission.onPlan({type:'plan',t:+simT.toFixed(3),tick:mission.tick,
         order:{goal:mission.goal,version:mission.version,text:mission.order?mission.order.text:null,src:mission.order?mission.order.src:null},
-        obs:{seen,p:p?[+p.x.toFixed(3),+hAt(p.x,p.z).toFixed(3),+p.z.toFixed(3)]:null,last_seen_age:ls?+(simT-ls.t).toFixed(3):null,lambda:+belief.lambda.toFixed(4),orient:mission.orient},
-        team:this.all().map((d,i)=>({id:ids[i],pos:r3(d),vel:r3({x:d.vx,y:d.vy,z:d.vz})})),
-        label:{template:key,text:template,door:doorIdx,exit:exit?{name:exit.name,x:+exit.x.toFixed(3),z:+exit.z.toFixed(3)}:null,slots:[L.slot,f[0].slot,f[1].slot].map(r3),vectors:mission.vectors.map(r3)},
+        // [dan] contract v1 (docs/DATASET_PLAN.md): world_beliefs, drone_beliefs, teacher_plan, ground_truth
+        world_beliefs:{person:{seen,position:p?[+p.x.toFixed(3),+hAt(p.x,p.z).toFixed(3),+p.z.toFixed(3)]:null,last_seen_age:ls?+(simT-ls.t).toFixed(3):null},lambda:+belief.lambda.toFixed(4),orient:mission.orient},
+        drone_beliefs:this.all().map((d,i)=>({id:ids[i],position:r3(d),velocity:r3({x:d.vx,y:d.vy,z:d.vz})})),
+        teacher_plan:{template:key,text:template,door:doorIdx,exit:exit?{name:exit.name,x:+exit.x.toFixed(3),z:+exit.z.toFixed(3)}:null,slots:[L.slot,f[0].slot,f[1].slot].map(r3),vectors:mission.vectors.map(r3)},
         radio:radioEv,
-        truth:{intruder:{pos:r3({x:intruder.x,y:intruder.y,z:intruder.z}),state:intruder.state,inside:intruder.inside,visible:intruder.visible,alive:intruder.alive}}}); }
+        ground_truth:{intruder:{position:r3({x:intruder.x,y:intruder.y,z:intruder.z}),state:intruder.state,inside:intruder.inside,visible:intruder.visible,alive:intruder.alive}}}); }
   },
   // ----- layer 3: motors -----
   step(dt,autopilot){

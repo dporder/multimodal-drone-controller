@@ -66,7 +66,7 @@ function runEpisode(S, sha, ep, baseline) {
   S.world.reset({ settings: ep.scenario.settings, mode: ep.scenario.mode || 'mind', goal: g0, endOnGone: true });
   const out = [];
   if (!baseline) {
-    out.push({ type: 'header', schema: 'dmc.contract.v0', sim: 'swarm-mind', core_sha: sha, seed: ep.seed, episode: ep.episode, split: ep.split,
+    out.push({ type: 'header', schema: 'dmc.contract.v1', sim: 'swarm-mind', core_sha: sha, seed: ep.seed, episode: ep.episode, split: ep.split,
       frame: 'x east, z south, y up, metres; site 48 x 44 m', doors: S.DOORS.map((d, i) => ({ id: i, name: d.name, x: d.x, z: d.z })),
       scenario: ep.scenario, orders: ep.orders });
     S.mission.onPlan = r => out.push(r);
@@ -129,7 +129,7 @@ function runIndoorEpisode(S, sha, ep, baseline) {
   const out = [];
   if (!baseline) {
     const P = S.getPlan(), r2 = v => +v.toFixed(2);
-    out.push({ type: 'header', schema: 'dmc.contract.v0', sim: 'swarm-indoor', core_sha: sha, seed: ep.seed, episode: ep.episode, split: ep.split,
+    out.push({ type: 'header', schema: 'dmc.contract.v1', sim: 'swarm-indoor', core_sha: sha, seed: ep.seed, episode: ep.episode, split: ep.split,
       frame: `x east, z south, y up, metres; floor ${r2(P.W)} x ${r2(P.D)} m, ceiling ${P.ceil} m`,
       // a room is the union of its rectangles (x0, z0, x1, z1 also give its bounding box); walls (0.2 m) run along every room boundary
       floor: { family: P.family, source: P.source, licence: P.licence, W: r2(P.W), D: r2(P.D), ceil: P.ceil, lintel: S.settings.lintel,
@@ -183,30 +183,30 @@ function runIndoorEpisode(S, sha, ep, baseline) {
 }
 
 // a drone held back by the safety layer while someone stands within 3.3 m (the comfort standoff + 0.8 m) is yielding to them, not stuck
-function yielding(p, b) { const folk = (p.truth.person.alive ? [p.truth.person.pos] : []).concat((p.truth.people || []).filter(h => h.alive).map(h => h.pos));
+function yielding(p, b) { const folk = (p.ground_truth.person.alive ? [p.ground_truth.person.position] : []).concat((p.ground_truth.people || []).filter(h => h.alive).map(h => h.position));
   return folk.some(f => Math.hypot(f[0] - b[0], f[2] - b[2]) < 3.3); }
 // one segment per order version: how it ended, how close any drone came to the person, how long a drone was stuck,
-// and a default training flag (false for an unsafe or a stuck segment; failed orders stay, since the person may have
+// and a default training flag, use_for_training (false for an unsafe or a stuck segment; failed orders stay, since the person may have
 // been impossible to stop: the trainer can filter on `end` and `deterrable` as well)
 function segmentsOf(out, S) {
   const plans = out.filter(r => r.type === 'plan'), ends = S.mission.ends, segs = [];
   for (let k = 0; k < plans.length; k++) {
     const p = plans[k]; let g = segs[segs.length - 1];
     if (!g || g.version !== p.order.version) { g = { version: p.order.version, goal: p.order.goal, src: p.order.src, t0: p.t, t1: p.t, ticks: 0, min_dist: null, stuck_ticks: 0, band_ticks: { pressure: 0, comfort: 0 } }; segs.push(g); }
-    g.t1 = p.t; g.ticks++; g.band_ticks[p.label.band]++;
-    const tp = k => (p.truth.drones ? p.truth.drones[k] : p.team[k].pos); // true drone positions (team holds the drones' estimates)
-    const folk = (p.truth.person.alive ? [p.truth.person.pos] : []).concat((p.truth.people || []).filter(h => h.alive).map(h => h.pos)); // everyone in the building
+    g.t1 = p.t; g.ticks++; g.band_ticks[p.teacher_plan.band]++;
+    const tp = k => (p.ground_truth.drones ? p.ground_truth.drones[k] : p.drone_beliefs[k].position); // true drone positions (drone_beliefs holds the drones' estimates)
+    const folk = (p.ground_truth.person.alive ? [p.ground_truth.person.position] : []).concat((p.ground_truth.people || []).filter(h => h.alive).map(h => h.position)); // everyone in the building
     for (let k = 0; k < 3; k++) { const d = tp(k); if (d[1] > 0.5) for (const f of folk) { const dd = Math.hypot(d[0] - f[0], d[2] - f[2]); if (g.min_raw == null || dd < g.min_raw) g.min_raw = dd; } }
     if (k >= 10 && plans[k - 10].order.version === p.order.version) for (let i = 0; i < 3; i++) {
-      let far = true; for (let j = k - 10; j <= k && far; j++) { const v = plans[j].label.vectors[i]; if (Math.hypot(v[0], v[2]) <= 1.0) far = false; }
-      const a = plans[k - 10].truth.drones ? plans[k - 10].truth.drones[i] : plans[k - 10].team[i].pos, b = p.truth.drones ? p.truth.drones[i] : p.team[i].pos; if (far && !yielding(p, b) && p.team[i].wait_door == null && Math.hypot(a[0] - b[0], a[2] - b[2]) < 0.1 && p.team[i].link_age < 1 && b[1] > 0.5) { g.stuck_ticks++; break; } }
+      let far = true; for (let j = k - 10; j <= k && far; j++) { const v = plans[j].teacher_plan.vectors[i]; if (Math.hypot(v[0], v[2]) <= 1.0) far = false; }
+      const a = plans[k - 10].ground_truth.drones ? plans[k - 10].ground_truth.drones[i] : plans[k - 10].drone_beliefs[i].position, b = p.ground_truth.drones ? p.ground_truth.drones[i] : p.drone_beliefs[i].position; if (far && !yielding(p, b) && p.drone_beliefs[i].wait_door == null && Math.hypot(a[0] - b[0], a[2] - b[2]) < 0.1 && p.drone_beliefs[i].link_age < 1 && b[1] > 0.5) { g.stuck_ticks++; break; } }
   }
   for (let k = 0; k < segs.length; k++) {
     const g = segs[k], e = ends.find(x => x.version === g.version);
     g.end = e ? e.status : k < segs.length - 1 ? 'replaced' : 'episode_end'; g.reason = e ? e.reason : null;
     g.success = e ? e.status !== 'failed' : null;
     // decided on the unrounded distance (1.196 m would round to 1.20 and pass)
-    g.sft = !(g.min_raw != null && g.min_raw < 1.2) && g.stuck_ticks <= 0.2 * g.ticks && !(g.src === 'auto' && g.t1 - g.t0 > 6);
+    g.use_for_training = !(g.min_raw != null && g.min_raw < 1.2) && g.stuck_ticks <= 0.2 * g.ticks && !(g.src === 'auto' && g.t1 - g.t0 > 6);
     g.min_dist = g.min_raw == null ? null : +g.min_raw.toFixed(2); delete g.min_raw;
   }
   // each plan record says whether to train on it: its segment is fit for training, no drone is stuck at that tick,
@@ -214,9 +214,9 @@ function segmentsOf(out, S) {
   for (let k = 0; k < plans.length; k++) {
     const p = plans[k], g = segs.find(x => x.version === p.order.version); let stuck = false;
     if (k >= 10 && plans[k - 10].order.version === p.order.version) for (let i = 0; i < 3 && !stuck; i++) {
-      let far = true; for (let j = k - 10; j <= k && far; j++) { const v = plans[j].label.vectors[i]; if (Math.hypot(v[0], v[2]) <= 1.0) far = false; }
-      const a = plans[k - 10].truth.drones ? plans[k - 10].truth.drones[i] : plans[k - 10].team[i].pos, b = p.truth.drones ? p.truth.drones[i] : p.team[i].pos; if (far && !yielding(p, b) && p.team[i].wait_door == null && Math.hypot(a[0] - b[0], a[2] - b[2]) < 0.1 && p.team[i].link_age < 1 && b[1] > 0.5) stuck = true; }
-    p.sft = !!(g && g.sft) && !stuck && !(p.order.src === 'auto' && p.t - g.t0 > 5);
+      let far = true; for (let j = k - 10; j <= k && far; j++) { const v = plans[j].teacher_plan.vectors[i]; if (Math.hypot(v[0], v[2]) <= 1.0) far = false; }
+      const a = plans[k - 10].ground_truth.drones ? plans[k - 10].ground_truth.drones[i] : plans[k - 10].drone_beliefs[i].position, b = p.ground_truth.drones ? p.ground_truth.drones[i] : p.drone_beliefs[i].position; if (far && !yielding(p, b) && p.drone_beliefs[i].wait_door == null && Math.hypot(a[0] - b[0], a[2] - b[2]) < 0.1 && p.drone_beliefs[i].link_age < 1 && b[1] > 0.5) stuck = true; }
+    p.use_for_training = !!(g && g.use_for_training) && !stuck && !(p.order.src === 'auto' && p.t - g.t0 > 5);
   }
   return segs;
 }

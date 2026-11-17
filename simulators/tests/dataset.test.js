@@ -50,7 +50,7 @@ test('same seed gives identical records', () => {
   assert.notStrictEqual(sha(a), sha(c), 'different seeds should differ');
 });
 
-test('every plan record matches contract v0', () => {
+test('every plan record matches contract v1', () => {
   const isVec3 = v => Array.isArray(v) && v.length === 3 && v.every(Number.isFinite);
   for (const goal of ['keepout', 'driveout', 'track', 'hold']) {
     const { recs } = episode(3, { goal }, 60);
@@ -58,21 +58,21 @@ test('every plan record matches contract v0', () => {
       assert.strictEqual(r.type, 'plan');
       assert.ok(Number.isFinite(r.t) && Number.isInteger(r.tick));
       assert.ok(r.order && r.order.goal === goal && Number.isInteger(r.order.version));
-      assert.ok(typeof r.obs.seen === 'boolean');
-      assert.ok(r.obs.p === null || isVec3(r.obs.p));
-      assert.ok(r.obs.last_seen_age === null || Number.isFinite(r.obs.last_seen_age));
-      assert.strictEqual(r.team.length, 3);
-      for (const d of r.team) assert.ok(['M', 'S1', 'S2'].includes(d.id) && isVec3(d.pos) && isVec3(d.vel));
-      assert.ok(['hold', 'search', 'barrier', 'push', 'track'].includes(r.label.template), r.label.template);
-      assert.strictEqual(r.label.slots.length, 3); assert.strictEqual(r.label.vectors.length, 3);
-      r.label.slots.forEach(isVec3); r.label.vectors.forEach(v => assert.ok(isVec3(v)));
+      assert.ok(typeof r.world_beliefs.person.seen === 'boolean');
+      assert.ok(r.world_beliefs.person.position === null || isVec3(r.world_beliefs.person.position));
+      assert.ok(r.world_beliefs.person.last_seen_age === null || Number.isFinite(r.world_beliefs.person.last_seen_age));
+      assert.strictEqual(r.drone_beliefs.length, 3);
+      for (const d of r.drone_beliefs) assert.ok(['M', 'S1', 'S2'].includes(d.id) && isVec3(d.position) && isVec3(d.velocity));
+      assert.ok(['hold', 'search', 'barrier', 'push', 'track'].includes(r.teacher_plan.template), r.teacher_plan.template);
+      assert.strictEqual(r.teacher_plan.slots.length, 3); assert.strictEqual(r.teacher_plan.vectors.length, 3);
+      r.teacher_plan.slots.forEach(isVec3); r.teacher_plan.vectors.forEach(v => assert.ok(isVec3(v)));
       // vector = slot − position at plan time
       for (let i = 0; i < 3; i++) for (let k = 0; k < 3; k++)
-        assert.ok(Math.abs(r.label.slots[i][k] - r.team[i].pos[k] - r.label.vectors[i][k]) < 0.01, 'vector must equal slot − position');
+        assert.ok(Math.abs(r.teacher_plan.slots[i][k] - r.drone_beliefs[i].position[k] - r.teacher_plan.vectors[i][k]) < 0.01, 'vector must equal slot − position');
       assert.strictEqual(r.radio.length, 2);
-      assert.ok(r.truth && isVec3(r.truth.intruder.pos), 'truth is logged for metrics');
+      assert.ok(r.ground_truth && isVec3(r.ground_truth.intruder.position), 'truth is logged for metrics');
       // the observation never contains the person's position when nothing has seen him recently
-      if (!r.obs.seen && r.obs.p) assert.ok(r.obs.last_seen_age <= 4, 'stale sighting used: ' + r.obs.last_seen_age);
+      if (!r.world_beliefs.person.seen && r.world_beliefs.person.position) assert.ok(r.world_beliefs.person.last_seen_age <= 4, 'stale sighting used: ' + r.world_beliefs.person.last_seen_age);
     }
   }
 });
@@ -81,10 +81,10 @@ test('drive out pushes from behind, toward the exit', () => {
   let behind = 0, n = 0;
   for (let sd = 1; sd <= 10; sd++) {
     for (const r of episode(sd, { goal: 'driveout' }, 120).recs) {
-      if (r.label.template !== 'push' || !r.obs.p) continue;
-      const p = r.obs.p, e = r.label.exit; assert.ok(e && /fence/.test(e.name));
+      if (r.teacher_plan.template !== 'push' || !r.world_beliefs.person.position) continue;
+      const p = r.world_beliefs.person.position, e = r.teacher_plan.exit; assert.ok(e && /fence/.test(e.name));
       const gx = e.x - p[0], gz = e.z - p[2];
-      for (const k of [1, 2]) { n++; const s = r.label.slots[k]; if ((s[0] - p[0]) * gx + (s[2] - p[2]) * gz < 0) behind++; }
+      for (const k of [1, 2]) { n++; const s = r.teacher_plan.slots[k]; if ((s[0] - p[0]) * gx + (s[2] - p[2]) * gz < 0) behind++; }
     }
   }
   assert.ok(n > 100, 'expected push records');
