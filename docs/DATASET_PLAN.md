@@ -413,6 +413,39 @@ Only people, drones and doors move. Dan's direction (17 November): the POC can k
   - A leaf swung under a drone that had climbed out of reach.
   - The person's door state carrying over to the next episode in a worker.
 
+**Full run `indoor4`, 17 November (1,200 episodes on indoor3's schedule, contract v1), against indoor3 without doors:**
+- **Every hard gate passes; one soft gate does not.**
+  - Every record matches contract v1, and all 25 indoor tests pass.
+  - No drone came within 1.2 m of anyone by its own doing, and none got through a door that stayed shut.
+  - The soft gate for close calls caused by people fails: 16 episodes against a limit of 12 (1%), and 12 without doors. In those, someone ran at a drone or walked up to one that had no room to back away: in a doorway, holding a door, or at a shut exit. Their time inside 1.2 m came to 52 s in all (112 s without doors), 38 s of it one intruder pressing a drone that held a door. These ticks are already kept out of training.
+  - Seven episodes had a surprise, someone hidden behind a door or a corner first seen inside 1.2 m: 0.45 s in all.
+- **Doors moved:** at the start 4,870 doorways were shut, 850 half open, 3,198 open, 118 locked and 290 openings. People opened doors 4,566 times and closed them 2,363 times.
+- **The data:**
+  - Stuck drones 0.70% of drone-ticks (0.75% without doors).
+  - Ticks fit for training 94.7% (95.0%).
+  - Drones waited beside a shut door 1.4% of drone-ticks and were cut off 0.42%.
+  - 212,946 plan lines; episodes average 91.4 s (85.1 s without doors). The run took 48 minutes on the Mac.
+- **Outcomes, doors on against doors off.** "Deterrable" intruders are those whose randomly drawn reaction to drones lets drones at the standoff stop them: 170 of the 606 here.
+  - Intruders got in 500 of 606 times with the drones flying (533 without doors) and 526 times with them grounded (532). With doors, flying drones beat grounded ones by 4 points; without doors, by none.
+  - Deterrable intruders kept out: 44 of 170 (30 of 170). Keep out stopped 23 of 58 of them (15 of 58), drive out 9 of 33 (4 of 33).
+  - Hiders found: 93 of 230 (104 of 230). The drones cannot search rooms behind shut doors.
+  - Visitors guided out: 134 of 364, the same as without doors.
+  - The subject was in view 17.4% of the time (19.7%).
+- **Found and fixed between the full runs** (the rules are in `docs/TACTICS.md`, "Doors"):
+  1. **First run, four gates failed.** Fixes:
+     - doorways the drones believe they cannot fly through are blocked in their planning grid;
+     - the door wait is placed once, before the standoff pass;
+     - wait points are clear of people using the door;
+     - guides stand inside shut exits;
+     - the wall-slide and floor-split rules above.
+  2. **Second run, two hard gates failed.**
+     - The door step's fallback undid the standoff for 77 slots.
+     - A visitor and a guide held each other at a shut exit for up to 130 s.
+  3. **Third run, one hard gate failed.**
+     - A person's step-back from a door carried into the next episode in a generator worker, so one episode differed from its own replay, and a drone was counted through a shut door there.
+     - A test now checks that a person's door state never carries over.
+- **Open (Dan's call): the person-caused close-call gate.** Either set a limit for doors (for example 1.5%), since these close calls are the person's doing and stay out of training, or keep drones from hovering in doorways and recesses near people.
+
 **Later, roughly in order of how much it changes what a drone can do or see:**
 1. **More door types:** automatic sliding doors, fire doors that swing shut on their own, roller shutters in warehouses, doors propped open.
 2. **Lights** switched on or off during an episode. Rooms are lit, dim or dark today, but fixed for the episode.
