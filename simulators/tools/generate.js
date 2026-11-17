@@ -114,6 +114,8 @@ function indoorOutcome(S, t, ended) {
     min_separation: Number.isFinite(m.minSep) ? +m.minSep.toFixed(2) : null, min_wall: Number.isFinite(m.minWall) ? +m.minWall.toFixed(2) : null,
     standoff_viol_s: +m.standoffViol.toFixed(2), standoff_approach_s: +m.standoffApproach.toFixed(2), floor_viol_s: +m.floorViol.toFixed(2),
     floor_by_drone_s: +m.floorByDrone.toFixed(2), floor_by_person_s: +m.floorByPerson.toFixed(2),
+    // with doors: time a person was first seen inside the 1.2 m floor, stepping out from behind a door leaf or a corner (reported apart)
+    ...(S.doors().length ? { floor_surprise_s: +m.floorSurprise.toFixed(2) } : {}),
     band_s: { pressure: +m.bandT.pressure.toFixed(1), comfort: +m.bandT.comfort.toFixed(1) }, band_viol_s: { pressure: +m.bandViol.pressure.toFixed(2), comfort: +m.bandViol.comfort.toFixed(2) },
     min_pressure: Number.isFinite(m.minPressure) ? +m.minPressure.toFixed(2) : null, min_comfort: Number.isFinite(m.minComfort) ? +m.minComfort.toFixed(2) : null, sep_viol_s: +m.sepViol.toFixed(2),
     wall_viol_s: +m.wallViol.toFixed(2), alt_viol_s: +m.altViol.toFixed(2), radio_drops: m.radioDrops, link_holds: m.linkHolds, orders: m.orders,
@@ -134,7 +136,11 @@ function runIndoorEpisode(S, sha, ep, baseline) {
         rooms: P.rooms.map(q => ({ id: q.id, name: q.name, x0: r2(q.x0), z0: r2(q.z0), x1: r2(q.x1), z1: r2(q.z1), rects: q.rects.map(r => [r2(r.x0), r2(r.z0), r2(r.x1), r2(r.z1)]) })),
         home: P.home, protectable: P.protectable,
         furniture: P.furn.map(f => ({ x0: r2(f.x0), z0: r2(f.z0), x1: r2(f.x1), z1: r2(f.z1), h: f.h, kind: f.kind })), pads: P.pads.map(p => [r2(p.x), 0, r2(p.z)]), operator: [r2(P.operator.x), 0, r2(P.operator.z)] },
-      doors: P.doors.map(d => ({ id: d.id, name: d.name, x: d.x, z: d.z, w: d.w, axis: d.axis, rooms: d.rooms.map(r => r < P.rooms.length ? r : 'outside') })),
+      // with doors (settings.doors other than 'none'): kind ('hinged', or 'opening': an archway or a raised shutter, no leaf), each leaf's
+      // hinge (-1 or +1 along the door, x for 'h', z for 'v') and swing side (-1 or +1 across it), one leaf or two, and leaf length; a
+      // floor plan shows these. The states are in obs.doors and truth.doors
+      doors: P.doors.map(d => Object.assign({ id: d.id, name: d.name, x: d.x, z: d.z, w: d.w, axis: d.axis, rooms: d.rooms.map(r => r < P.rooms.length ? r : 'outside') },
+        (D => D ? { kind: D.kind, hinge: D.hinge, swing: D.swing, leaves: D.leaves, leaf_m: +D.wl.toFixed(2) } : {})(S.doors().find(D => D.k === d.id)))),
       protected_room: S.world.scenario.protectedRoom, scenario: sc, person: S.world.scenario.person, orders: ep.orders,
       // everyone in the building (the subject first): bodies, clothes, groups and the track id the detector reports; metric-only
       cast: S.world.scenario.cast,

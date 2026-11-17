@@ -307,7 +307,11 @@ Every person attribute is logged as metric-only: the cast in the header, and pos
    4. Done: diverse people 1–4 (bodies, speeds, movement patterns, several people). Tuning movement against THÖR tracks is next, once Dan approves the download.
    5. Found by the 1,200-episode run (see "People and realism run"):
       - Keep out and drive out against runners: the drones no longer stop intruders who run, so rework the tactics (for example, pre-position at doors early), or have a practitioner check how many intruders really run.
-      - The subject needs the bystanders' give-up rule, and its recorded velocity should be the step it made. A wandering visitor and a pinned drone held each other for 84 s.
+      - The subject needs the bystanders' give-up rule, and its recorded velocity should be the step it made. A wandering visitor and a pinned drone held each other for 84 s. Done with doors on (17 November); doors off keeps the old behaviour, so its records stay identical.
+      - Drones should slow near open leaves and doorways, where someone may be hidden (surprises at doors, found by the door pilot).
+      - Bystanders creeping up on a drone (found by the door pilot): fixed with doors on; doors off still has it, kept for identical records.
+      - Odometry drift in narrow doorways (found by the door pilot): a drone whose estimate has drifted about 0.85 m plans as if it were elsewhere, and can stay stuck at a 0.9 m doorway for several seconds; an open leaf beside the doorway makes the passage longer. Drones re-localize only near their pads today; doorways are good visual landmarks to re-localize at.
+   6. Done (17 November): doors in the POC, closed, half-open, open and locked, opened and closed by people (see "Things that move besides people and drones"). Next: regenerate the 1,200-episode set with doors.
 2. **The full dataset, after the layout work:**
    1. Master-log replay with full 3-D poses, plus a determinism test (replay gives the same poses).
    2. A pilot on Dan's Mac: about 50 episodes rendered locally, with diverse appearance (people item 5).
@@ -315,6 +319,92 @@ Every person attribute is logged as metric-only: the cast in the header, and pos
       - Measure GB and render time per episode.
    3. The Azure scale-out proposal, for Dan's approval.
 3. Done: **results by group** (people item 6) in the quality report; the frames phase adds appearance to it.
+
+## Things that move besides people and drones (plan, 17 November 2026; doors built the same day)
+
+Only people, drones and doors move. Dan's direction (17 November): the POC can keep everything else still, but a plan for moving things should be ready.
+
+**Doors come first.** A closed door is a wall to a drone and to its camera, and people open and close doors all the time as they move through a building. Doors are also where the tactics act:
+- keep out guards the protected room's door, and an intruder opening it is the moment that counts;
+- search and mapping stop at a closed door;
+- someone who shuts a door behind them breaks a track;
+- drive-out and guide-out routes depend on which doors are open.
+
+**Built for the POC (Dan's decision, 17 November 2026): doors with a position but no physics, including half-open doors.** `settings.doors` is `'mixed'` by default; `'none'` gives the doorless world exactly as before (the same records, byte for byte); `'open'` and `'closed'` set every door.
+- **A door is a leaf on a hinge.**
+  - A doorway up to 1.25 m wide has one leaf; a wider one has two, one at each jamb.
+  - The leaf is hinged on the wall face of its swing side. 0° is shut and 90° stands square to the wall.
+  - The leaf is a 2 m tall panel in the height grid. Sight, depth, coverage, drone clearance and the wall gates all treat it as a wall, so a person can hide behind a half-open door.
+- **Swing side:**
+  - From a corridor or lobby, a door swings into the room. Exits swing outward. Otherwise it swings into the smaller room.
+  - An archway (the house's kitchen opening) has no door. A loading dock's roller shutter stays up for now. Both are recorded as openings.
+- **Swing check.** Each episode checks the doors with every leaf open. A door whose open leaf would cut off part of the floor (furniture just in front of it, a narrow hallway) or cover a drone pad swings the other way or on its other jamb, and failing that becomes an opening. The pilot found a reception double door that sealed the drones' take-off room. 16 of 492 doorways across the eight families end up as openings.
+- **Starting states (our assumption, to be checked):**
+  - 40% shut, 20% half open (15–70°), 40% open.
+  - Exits start shut. The drones' home room door starts open.
+  - 15% of shut doors to a room with one door, that no one is in or heading for, are locked.
+  - A locked door stays shut all episode: no one has a key yet.
+- **People open doors.** A person opens any door under 80° that their way goes through, swinging it at 120°/s (half that with a mobility aid). If the leaf swings toward them, they first step clear of it: past the latch-side jamb, past the hinge side, or straight back.
+- **People walk round open leaves.** They plan on a walking grid that adds 0.35 m round every leaf standing 30° or more open (0.5 m with a wheelchair or pushchair).
+- **Bystanders wait properly (with doors on):** a bystander waiting for a drone ahead within 1.7 m keeps the heading they mean to walk. Before, their velocity was zeroed by the wait, so they stepped on every other frame and crept up on the drone at half speed, which once put a drone at 1.19 m from one. Doors off keeps the old behaviour (queued, below).
+- **The subject's give-up rule (with doors on):** like the bystanders, the subject gives up a target after 3 s of getting nowhere while no drone is pressing them, and their recorded velocity is the step they made. Doors off keeps the old behaviour, so its records stay identical. The pilot found grounded intruders stuck for the whole episode beside an open leaf at a narrow doorway.
+- **People close doors behind them sometimes (assumed rates):**
+  - Someone hiding: 70% for the room they hide in.
+  - An intruder: 25%, or 15% when leaving.
+  - Staff: 40%. Visitors: 30%.
+  - Nobody closes a door that would cut the airborne drones apart, or with no room to stand clear of it.
+- **Drones never touch doors.**
+  - A moving leaf stops while it would come within 0.45 m of a drone; its mover gives up after 4 s.
+  - The drones plan from the door states they have seen. A door they have not seen counts as open.
+  - A drone sees a door with its camera, or within 1.5 m.
+  - A half-open door never leaves a drone a way through. Drones pass a door at 75° or more.
+- **The teacher's rules** are in `docs/TACTICS.md` under "Doors":
+  - wait beside a shut door, or take another way;
+  - a drone cut off by shut doors holds;
+  - search reports rooms behind shut doors and then watches their doors;
+  - in guide out, the visitor goes through a shut door the guide waits beside.
+- **Records:**
+  - The header gives each door's kind, hinge, swing side, leaves and leaf length.
+  - `obs.doors` holds what the drones believe: the angle and its age, or null if unseen.
+  - `truth.doors` holds the angle and whether the door is locked.
+  - The quality report adds a hard gate (no drone through a door that stayed shut) and soft gates: people inside a leaf, drones waiting beside a shut door, drones cut off, and surprises (below).
+- **Surprises: an open leaf hides people.**
+  - A drone passing an open door can see someone standing behind its leaf for the first time already inside 1.2 m. The pilot had one: a bystander behind the lobby door, first seen at 1.20 m, and the drone turned away within a frame.
+  - With doors on, such a first sight is counted apart (`floor_surprise_s` in the outcome; a soft gate in the quality report), not as the drone's doing. From that sight on the drone's reaction counts as usual, so the hard 1.2 m gate still catches a drone that keeps closing in.
+  - With doors off there were none in 1,200 episodes: doors bring this risk. Slowing near open leaves and doorways is queued below.
+- **Simplifications:**
+  - Doors open to 90° at most.
+  - A person walks round an open leaf in their way instead of pushing it shut.
+  - Shutters, self-closing fire doors and staff keys come later.
+
+**Pilot, 17 November (60 episodes, the first 60 of indoor3's schedule), against the same 60 with doors off:**
+- **Every quality gate passes.** No drone got through a door that stayed shut. No one was inside a leaf. Drones waited beside shut doors 0.8% of drone-ticks and were cut off 0.01%. One surprise and one person-caused close call fell within the soft limits.
+- **Doors moved:** at the start 246 doorways were shut, 44 half open, 166 open, 5 locked and 19 openings. People opened doors 221 times and closed them 105 times.
+- **Stuck drones 0.78% of drone-ticks (0.71% with doors off); training-ready ticks 95.8% (95%).**
+- **Outcomes, doors on against doors off:**
+  - Intruders got in 22 of 27 times with the drones flying (26 of 27 without doors) and 25 of 27 with them grounded (25 of 27).
+  - Drive out stopped 3 of 6 (0 of 6). Keep out stopped 1 of 9 (0 of 9).
+  - Hiders found 4 of 8, and visitors guided out 5 of 13, the same as without doors.
+  - The subject was in view 21.8% of the time (23.9%).
+  - 60 episodes is a small sample; the 1,200-episode run will say more.
+- **Found and fixed on the way:**
+  - A reception double door whose open leaves sealed the drones' take-off room (the swing check).
+  - People swept behind a leaf they were opening (they now stand clear first).
+  - Intruders stuck all episode beside an open leaf at a narrow doorway (planning on the leaf grid, the give-up rule).
+  - A bystander creeping up on a drone.
+  - A leaf swung under a drone that had climbed out of reach.
+  - The person's door state carrying over to the next episode in a worker.
+
+**Later, roughly in order of how much it changes what a drone can do or see:**
+1. **More door types:** automatic sliding doors, fire doors that swing shut on their own, roller shutters in warehouses, doors propped open.
+2. **Lights** switched on or off during an episode. Rooms are lit, dim or dark today, but fixed for the episode.
+3. **Furniture people move:** chairs pushed back, carts, a table dragged against a door as a barricade, things knocked over by someone running.
+4. **Machines:** forklifts and pallet jacks in warehouses, cleaning robots, lifts.
+5. **Pets,** which the person detector must not take for people.
+6. **Search-and-rescue conditions:** smoke, dust and debris.
+7. **The drones' own effects:** rotor wash moving paper and curtains, and hazards such as ceiling fans.
+
+**For rendered frames:** the master log records door states and object poses every tick. Moving things are rendered as separate objects over the static room. World Labs Atlas paints only static scenes, so it can supply the room but not the motion (tested 16 November; `output/atlas_pilot/RESULTS.md`).
 
 ## Volumes
 
@@ -696,3 +786,4 @@ Per floor family (`quality_report.js`). No family had a label rule break, an epi
 7. **Held-out floor families:** shop and irregular floors are test only, a quarter of the indoor episodes. Are those the right families to hold out, or should a whole family be held out per release instead?
 8. **Cuts and resolution:** which cuts do you want (NN1 on perception outputs, the detector on frames and boxes, end-to-end), and at what frame resolution and rate for NN1 and for the detector?
 9. **Person attributes:** which person attributes should NN1 see (for example posture, mobility aid, apparent height, group membership), and which stay metric-only in `truth`?
+10. **Doors:** if the POC adds doors that open and close, the scanned map changes during an episode, since a closed door reads as a wall. Should NN1 see door states as their own input, or only through the map? And should the operator be able to order a drone to wait at a door until someone opens it?

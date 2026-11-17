@@ -31,7 +31,8 @@ const SCEN = {
 // The outcome bands below are regression floors for the teacher's logic, set with exact perception and identical people
 // (CONTROLLED). Tests that pass their own reset settings ({} for the defaults) run with perception realism and diverse people.
 // identical people run at 2 m/s, so the teacher's belief assumes 2 m/s here (4.5 m/s with diverse people, who may sprint)
-const CONTROLLED = { realism: false, people: 'uniform', crowd: 0, beliefSpeed: 2.0 };
+// doors off as well: the bands measure the teacher on the doorless floor they were set on (doors have their own tests below)
+const CONTROLLED = { realism: false, people: 'uniform', crowd: 0, beliefSpeed: 2.0, doors: 'none' };
 const REAL = {};
 // one episode: order `goal` at 1 s; returns plan records and metrics
 function episode(sd, goal, who, opts) {
@@ -56,7 +57,7 @@ const test = (name, fn) => tests.push({ name, fn });
 
 test('fixed and random floors: every room reachable on foot and by air', () => {
   for (const sd of [0, ...Array.from({ length: 25 }, (_, k) => k + 1)]) {
-    S.seed(sd); S.world.reset({ layout: sd === 0 ? 'fixed' : 'random' });
+    S.seed(sd); S.world.reset({ layout: sd === 0 ? 'fixed' : 'random', settings: { doors: 'none' } }); // the floor itself: locked doors are a door test
     const P = S.getPlan(), G = S.grids(), NAV = 0.2;
     const reach = (grid, x, z) => { const seen = new Uint8Array(grid.length), st = [S.navIdx(x, z)]; seen[st[0]] = 1; const rooms = new Set();
       while (st.length) { const k = st.pop(), i = k % G.NX, j = (k - i) / G.NX; rooms.add(S.roomAt((i + 0.5) * NAV, (j + 0.5) * NAV));
@@ -72,7 +73,7 @@ test('fixed and random floors: every room reachable on foot and by air', () => {
 });
 
 test('line of sight: walls and lintels block, doorways and tables do not, shelves block below their top', () => {
-  S.seed(1); S.world.reset({ layout: 'fixed' });
+  S.seed(1); S.world.reset({ layout: 'fixed', settings: { doors: 'none' } });
   const P = S.getPlan(), side = P.doors.find(d => d.name === 'lab side door');
   assert.ok(!S.los(side.x - 1.2, 1.6, side.z - 1.3, side.x + 1.2, 1.3, side.z - 1.3), 'the lab/office wall blocks');
   assert.ok(S.los(side.x - 1.2, 1.6, side.z, side.x + 1.2, 1.3, side.z), 'the open lab side door does not');
@@ -112,7 +113,8 @@ test('belief is sound: while he is unseen, his true room is among the rooms he c
 });
 
 test('no leak: where an unseen person hides does not change the labels', () => {
-  const run = start => episode(4, 'search', 'hider', { reset: { person: { role: 'intruder', intent: 'hide', start }, settings: REAL } }).recs;
+  // doors off: what the person does to doors is observable, and doors have their own no-leak test below
+  const run = start => episode(4, 'search', 'hider', { reset: { person: { role: 'intruder', intent: 'hide', start }, settings: { doors: 'none' } } }).recs;
   const a = run('storage'), b = run('meeting room');
   let same = 0;
   for (let k = 0; k < Math.min(a.length, b.length); k++) {
@@ -273,7 +275,7 @@ const axes = d => d.axis === 'h' ? { n: { x: 0, z: 1 }, t: { x: 1, z: 0 } } : { 
 test('every family: rooms reachable by air from the pads and on foot from every exit, every door passable both ways, pads free, search points in every room', () => {
   const sizes = {};
   for (const fam of S.FAMILIES) for (const sd of FAM_SEEDS) {
-    const P = famReset(fam, sd), G = S.grids(), tag = `${fam} seed ${sd}`;
+    const P = famReset(fam, sd, { settings: { doors: 'none' } }), G = S.grids(), tag = `${fam} seed ${sd}`; // the floor itself; doors are tested below
     assert.strictEqual(P.family, fam);
     assert.ok(P.rooms.length >= 1 && P.doors.some(d => d.rooms[1] === P.OUT), `${tag}: no rooms or no exit`);
     assert.ok(P.protectable.includes(P.protect) && P.rooms[P.home], `${tag}: protected or home room missing`);
@@ -303,7 +305,7 @@ test('every family: rooms reachable by air from the pads and on foot from every 
 
 test('every family: walls block sight between rooms, doorways do not, lintels block above 2 m', () => {
   for (const fam of S.FAMILIES) for (const sd of [0, 1, 2, 3]) {
-    const P = famReset(fam, sd), tag = `${fam} seed ${sd}`; let walls = 0;
+    const P = famReset(fam, sd, { settings: { doors: 'none' } }), tag = `${fam} seed ${sd}`; let walls = 0;
     for (const d of P.doors) {
       const { n, t } = axes(d);
       assert.ok(S.los(d.x - 0.6 * n.x, 1.5, d.z - 0.6 * n.z, d.x + 0.6 * n.x, 1.5, d.z + 0.6 * n.z), `${tag}: no sight through the open ${d.name}`);
@@ -433,6 +435,92 @@ test('every family: a random floor depends only on its seed', () => {
     assert.strictEqual(JSON.stringify(famReset(fam, 5)), a, `${fam}: the floor changed with the history`);
     assert.notStrictEqual(JSON.stringify(famReset(fam, 6)), a, `${fam}: seeds 5 and 6 gave the same floor`);
   }
+});
+
+// ---------- doors (docs/DATASET_PLAN.md, "Things that move besides people and drones") ----------
+const leafOf = (D) => S.leafSegs(D, D.a);
+test('doors: a shut leaf blocks sight and flight, an open one lets both through; with every door open every room is reachable by air', () => {
+  S.seed(1); S.world.reset({ layout: 'fixed', settings: { doors: 'closed' } });
+  let P = S.getPlan(), side = P.doors.find(d => d.name === 'lab side door'), D = S.doors()[side.id], { n } = axes(side);
+  assert.ok(!S.los(side.x - 1.2 * n.x, 1.5, side.z - 1.2 * n.z, side.x + 1.2 * n.x, 1.3, side.z + 1.2 * n.z), 'a shut lab side door blocks sight');
+  assert.ok(S.heightAt(side.x + n.x * 0.1 * D.swing, side.z + n.z * 0.1 * D.swing) >= 2.0, 'its leaf is 2 m tall in the doorway');
+  S.seed(1); S.world.reset({ layout: 'fixed', settings: { doors: 'open' } });
+  P = S.getPlan(); side = P.doors.find(d => d.name === 'lab side door');
+  assert.ok(S.los(side.x - 1.2 * n.x, 1.5, side.z - 1.2 * n.z, side.x + 1.2 * n.x, 1.3, side.z + 1.2 * n.z), 'an open lab side door does not block sight');
+  const path = S.planPath(S.grids().FLY, { x: side.x - 1.2 * n.x, z: side.z - 1.2 * n.z }, { x: side.x + 1.2 * n.x, z: side.z + 1.2 * n.z });
+  assert.ok(path && S.pathLength(path, { x: side.x - 1.2 * n.x, z: side.z - 1.2 * n.z }) < 4, 'the drones can plan through the open door');
+  let openings = 0, doors = 0;
+  for (const fam of S.FAMILIES) for (const sd of FAM_SEEDS) {
+    const Q = famReset(fam, sd, { settings: { doors: 'open' } }), G = S.grids(), tag = `${fam} seed ${sd}`;
+    for (const p of Q.pads) assert.ok(!G.FLY[S.navIdx(p.x, p.z)], `${tag}: a leaf covers a pad`);
+    const fly = roomsIn(G, flood(G, G.FLY, Q.pads[1].x, Q.pads[1].z));
+    for (const q of Q.rooms) assert.ok(fly.has(q.id), `${tag}: with every door open the ${q.name} cannot be reached by air`);
+    for (const E of S.doors()) { doors++; if (E.kind === 'opening') openings++; }
+  }
+  console.log(`      ${doors} doorways, ${openings} of them openings with no door (archways, loading docks, and doors whose leaf would cut the floor)`);
+});
+
+test('doors: no drone passes a shut door; people open the doors on their way and stand clear of a leaf swinging toward them', () => {
+  let changes = 0, inLeaf = 0, through = 0, eps = 0, breaches = 0;
+  for (const [fam, goal, who] of [['office', 'grounded', 'intruder'], ['office', 'keepout', 'intruder'], ['house', 'search', 'hider'], ['corridor', 'guideout', 'visitor'], ['warehouse', 'track', 'intruder'], ['openplan', 'search', 'hider'], ['irregular', 'driveout', 'intruder'], ['retail', 'explore', 'visitor']]) {
+    const sd = 300 + eps, side = [[], [], []]; let last = -1;
+    const { M } = episode(sd, goal, who, { secs: 120, reset: { family: fam, layout: 'random', settings: { doors: 'closed' } }, until: () => {
+      const t = S.simT(); if (t - last < 0.1) return false; last = t; const P = S.getPlan(), DS = S.doors();
+      for (const h of S.everyone()) for (const E of DS) if (E.by !== h && S.leafDist(h, E) < 0.12) inLeaf++;
+      S.team.drones.forEach((d, i) => { if (d.y < 0.3) return; DS.forEach((E, j) => { const dd = P.doors[E.k], c = { n: dd.axis === 'h' ? d.z - dd.z : d.x - dd.x, t: dd.axis === 'h' ? d.x - dd.x : d.z - dd.z }; let st = side[i][j];
+        if (Math.abs(c.n) > 3 || Math.abs(c.t) > dd.w / 2 + 1.5) { side[i][j] = null; return; } if (st) st.amax = Math.max(st.amax, E.a);
+        if (Math.abs(c.n) >= 0.6 && Math.abs(c.t) <= dd.w / 2 + 0.6) { const sg = c.n > 0 ? 1 : -1; if (st && st.side !== sg && st.amax < 60) through++; side[i][j] = { side: sg, amax: E.a }; } }); });
+      return false; } });
+    eps++; changes += S.doors().reduce((a, E) => a + E.changes, 0); breaches += M.breaches > 0;
+    for (const key of ['floorByDrone', 'sepViol', 'wallViol', 'altViol']) assert.strictEqual(+M[key].toFixed(2), 0, `${fam} ${goal}: ${key} ${M[key].toFixed(2)} s`);
+  }
+  assert.strictEqual(through, 0, `${through} times a drone got through a door that stayed under 60 deg`);
+  assert.ok(changes >= 10, `people moved doors only ${changes} times in ${eps} episodes with every door shut`);
+  assert.ok(inLeaf <= 2, `people inside a leaf in ${inLeaf} checks`);
+  console.log(`      ${eps} episodes with every door shut: ${changes} door moves by people, ${breaches} breaches, ${inLeaf} checks with someone inside a leaf`);
+});
+
+test('doors: no leak: a door the drones have not seen changes no label', () => {
+  // the farthest door from the pads starts shut in one run and open in the other: while what the team observes is the same, so are
+  // the labels (the teacher plans from the door states it has seen)
+  S.seed(7); S.world.reset({ layout: 'fixed' }); const P = S.getPlan(), pad = P.pads[0];
+  const far = S.doors().filter(E => E.kind === 'hinged' && P.doors[E.k].rooms[1] !== P.OUT).sort((a, b) => Math.hypot(P.doors[b.k].x - pad.x, P.doors[b.k].z - pad.z) - Math.hypot(P.doors[a.k].x - pad.x, P.doors[a.k].z - pad.z))[0];
+  const run = ang => episode(7, 'search', 'hider', { secs: 90, reset: { settings: { doorInit: { [far.k]: ang } } } }).recs;
+  const a = run(0), b = run(90); let same = 0, reason = 'end';
+  for (let k = 0; k < Math.min(a.length, b.length); k++) {
+    if (JSON.stringify(a[k].obs) !== JSON.stringify(b[k].obs) || JSON.stringify(a[k].team) !== JSON.stringify(b[k].team)) { reason = `observations differ at t ${a[k].t}`; break; }
+    assert.deepStrictEqual(a[k].label, b[k].label, `labels differ at t ${a[k].t} while the team observes the same`);
+    same++;
+  }
+  assert.ok(same >= 20, `only ${same} ticks compared (${reason})`);
+  console.log(`      ${same} ticks with the same observations and labels while the ${P.doors[far.k].name} was shut in one run and open in the other (${reason})`);
+});
+
+test('doors: a drone whose way is shut waits beside the door, clear of its swing; search reports the rooms it cannot enter', () => {
+  let waits = 0, watch = 0, said = 0, inSwing = 0;
+  for (const sd of [11, 12, 13, 14]) {
+    const { recs } = episode(sd, 'search', 'hider', { secs: 120, reset: { settings: { doors: 'closed' } } });
+    const P = S.getPlan(), DS = S.doors();
+    for (const r of recs) {
+      r.label.flags.forEach(f => { if (f.includes('door-wait')) waits++; }); if (r.label.template === 'watch-shut') watch++;
+      // no slot inside the swing of a door the drones believe is not open
+      r.label.slots.forEach(sl => { DS.forEach((E, j) => { const b = r.obs.doors[j]; if (E.kind !== 'hinged' || (b && b[0] >= 80) || !b) return; for (const sg of S.leafSegs(E, 0)) {
+        const dx = sl[0] - sg.ax, dz = sl[2] - sg.az, N = axes(P.doors[E.k]).n; if (Math.hypot(dx, dz) < E.wl + 0.2 && (dx * N.x + dz * N.z) * E.swing > 0.05) inSwing++; } }); });
+    }
+    said += S.talk.filter(x => /is shut|behind a shut door/.test(x.text)).length;
+  }
+  assert.ok(waits + watch > 0, 'no drone ever waited at a shut door or watched one');
+  assert.ok(said > 0, 'the master never told the operator about a shut door');
+  assert.strictEqual(inSwing, 0, `${inSwing} slots inside the swing of a door that is not open`);
+  console.log(`      4 searches with every door shut: ${waits} drone-ticks waiting beside a door, ${watch} ticks watching shut doors, ${said} reports to the operator`);
+});
+
+test('doors: off is the doorless world: no leaves, no door fields in the records', () => {
+  const { recs } = episode(2, 'search', 'hider', { secs: 20, reset: { settings: { doors: 'none' } } });
+  assert.strictEqual(S.doors().length, 0);
+  assert.ok(recs.length > 10 && recs.every(r => r.obs.doors === undefined && r.truth.doors === undefined), 'records carry door fields with doors off');
+  const on = episode(2, 'search', 'hider', { secs: 20, reset: { settings: {} } }).recs;
+  assert.ok(on.every(r => Array.isArray(r.obs.doors) && Array.isArray(r.truth.doors)), 'records lack door fields with doors on');
 });
 
 let failed = 0;

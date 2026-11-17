@@ -22,6 +22,13 @@ const C = {
   floor: 0, floorPerson: 0, approach: 0, sepViol: 0, wallViol: 0, altViol: 0, passBy: 0, segments: 0,
 };
 const note = (k, msg) => { if (!C.worst[k]) C.worst[k] = msg; };
+// doors with leaves (episodes whose header gives each door's kind): the leaf segments at an angle, as the simulator draws them
+const DOOR = { eps: 0, init: { closed: 0, ajar: 0, open: 0, locked: 0, opening: 0 }, opened: 0, closed: 0, through: 0, personTicks: 0, personInLeaf: 0, droneTicks: 0, wait: 0, cut: 0, surprise: 0 };
+const segD = (px, pz, a, b) => { const vx = b[0] - a[0], vz = b[1] - a[1], L2 = vx * vx + vz * vz, t = L2 > 1e-9 ? Math.max(0, Math.min(1, ((px - a[0]) * vx + (pz - a[1]) * vz) / L2)) : 0; return Math.hypot(a[0] + vx * t - px, a[1] + vz * t - pz); };
+function leafSegs(d, ang) { if (!d.leaves) return []; const T = d.axis === 'h' ? [1, 0] : [0, 1], N = d.axis === 'h' ? [0, 1] : [1, 0], th = ang * Math.PI / 180, out = [];
+  for (const h of d.leaves === 2 ? [-1, 1] : [d.hinge]) { const hx = d.x + T[0] * h * d.w / 2 + N[0] * d.swing * 0.1, hz = d.z + T[1] * h * d.w / 2 + N[1] * d.swing * 0.1;
+    const ux = Math.cos(th) * (-h) * T[0] + Math.sin(th) * d.swing * N[0], uz = Math.cos(th) * (-h) * T[1] + Math.sin(th) * d.swing * N[1]; out.push([[hx, hz], [hx + ux * d.leaf_m, hz + uz * d.leaf_m]]); }
+  return out; }
 // the same counts per floor family: each episode's increments are added to its family
 const FAMKEYS = ['ticks', 'vecBad', 'standoffBad', 'sepBad', 'boundsBad', 'altBad', 'refsBad', 'flicker', 'swaps', 'stuck', 'yieldT', 'doorWait', 'sft', 'sftStuck', 'sftUnsafe', 'estTicks', 'estFromFP',
   'falseFound', 'autoHold', 'hold', 'seen', 'floor', 'approach', 'sepViol', 'wallViol', 'altViol', 'passBy'];
@@ -35,9 +42,24 @@ for (const r of rows) {
   const H = recs[0], plans = recs.filter(x => x.type === 'plan'), out = recs[recs.length - 1];
   const fam = r.family || (H.floor && H.floor.family) || 'office', before = Object.fromEntries(FAMKEYS.map(k => [k, C[k]])), errBefore = C.estErr.length;
   const W = H.floor.W, Dd = H.floor.D, ceil = H.floor.ceil;
+  // doors: the state each starts in; then per tick (below) who opens and closes them, drones through one that stayed shut, people
+  // inside a leaf, and drones waiting beside a shut door or cut off from the team by one
+  const DH = H.doors.length && H.doors[0].kind !== undefined ? H.doors : null, dside = [[], [], []];
+  if (DH && plans.length) { DOOR.eps++; const t0 = plans[0].truth.doors; DH.forEach((d, i) => { const st = d.kind === 'opening' ? 'opening' : t0[i][1] ? 'locked' : t0[i][0] < 1 ? 'closed' : t0[i][0] < 80 ? 'ajar' : 'open'; DOOR.init[st]++; }); }
   for (let k = 0; k < plans.length; k++) {
     const p = plans[k], L = p.label; C.ticks++;
     const TP = i => (p.truth.drones ? p.truth.drones[i] : p.team[i].pos); // true drone positions; team holds the drones' estimates
+    if (DH) { const td = p.truth.doors, prev = k > 0 ? plans[k - 1].truth.doors : null;
+      if (prev) td.forEach((x, i) => { if (prev[i][0] < 80 && x[0] >= 80) DOOR.opened++; if (prev[i][0] >= 1 && x[0] < 1) DOOR.closed++; });
+      const segs = DH.map((d, i) => leafSegs(d, td[i][0]));
+      for (let i = 0; i < 3; i++) { const t = TP(i); if (t[1] < 0.3) continue; DOOR.droneTicks++;
+        // through a door: from 0.6 m or more out in front of the opening on one side to the same on the other, close by all along,
+        // while the door stayed under 60 deg (a leaf that shut stands in the way)
+        DH.forEach((d, j) => { const n = d.axis === 'h' ? t[2] - d.z : t[0] - d.x, tt = d.axis === 'h' ? t[0] - d.x : t[2] - d.z, a = td[j][0]; let st = dside[i][j];
+          if (Math.abs(n) > 3 || Math.abs(tt) > d.w / 2 + 1.5) { dside[i][j] = null; return; } if (st) st.amax = Math.max(st.amax, a);
+          if (Math.abs(n) >= 0.6 && Math.abs(tt) <= d.w / 2 + 0.6) { const sd = n > 0 ? 1 : -1; if (st && st.side !== sd && st.amax < 60) { DOOR.through++; note('through', `${r.episode} t ${p.t} ${['M', 'S1', 'S2'][i]} through the ${d.name}`); } dside[i][j] = { side: sd, amax: a }; } });
+        if (L.flags[i].includes('door-wait')) DOOR.wait++; if (L.flags[i].includes('trapped')) DOOR.cut++; }
+      for (const h of [p.truth.person].concat(p.truth.people || [])) { if (!h || h.alive === false || !h.pos) continue; DOOR.personTicks++; let m = Infinity; for (const ss of segs) for (const sg of ss) m = Math.min(m, segD(h.pos[0], h.pos[2], sg[0], sg[1])); if (m < 0.12) { DOOR.personInLeaf++; note('leaf', `${r.episode} t ${p.t} tid ${h.tid}`); } } }
     if (p.truth.drones) for (let i = 0; i < 3; i++) if (TP(i)[1] > 0.5) C.poseErr.push(D(p.team[i].pos, TP(i)));
     C.goal[p.order.goal] = (C.goal[p.order.goal] || 0) + 1; C.template[L.template] = (C.template[L.template] || 0) + 1; C.band[L.band] = (C.band[L.band] || 0) + 1;
     if (p.order.goal === 'hold') C.hold++;
@@ -99,7 +121,7 @@ for (const r of rows) {
     if (p.sft) { C.sft++; if ([0, 1, 2].some(i => TP(i)[1] > 0.5 && folk.some(f => D(TP(i), f) < 1.2))) C.sftUnsafe++; }
   }
   if (out.segments) C.segments += out.segments.length; C.falseFound += out.false_found || 0;
-  C.floor += (out.floor_by_drone_s != null ? out.floor_by_drone_s : out.floor_viol_s) > 0; C.floorPerson += (out.floor_by_person_s || 0) > 0; C.approach += out.standoff_approach_s > 0.5; C.sepViol += out.sep_viol_s > 0; C.wallViol += out.wall_viol_s > 0; C.altViol += out.alt_viol_s > 0; C.passBy += out.band_viol_s.comfort > 0;
+  C.floor += (out.floor_by_drone_s != null ? out.floor_by_drone_s : out.floor_viol_s) > 0; C.floorPerson += (out.floor_by_person_s || 0) > 0; DOOR.surprise += (out.floor_surprise_s || 0) > 0; C.approach += out.standoff_approach_s > 0.5; C.sepViol += out.sep_viol_s > 0; C.wallViol += out.wall_viol_s > 0; C.altViol += out.alt_viol_s > 0; C.passBy += out.band_viol_s.comfort > 0;
   if (H.cast && H.cast[0]) { const c = H.cast[0], b = c.body, posture = {}; let vmax = 0, n = 0;
     for (const x of plans) { const t = x.truth.person; if (!t.alive) continue; n++; posture[t.posture] = (posture[t.posture] || 0) + 1; vmax = Math.max(vmax, t.speed || 0); }
     const e = { role: out.role, intent: r.intent, view: out.in_view_pct, breached: out.breaches > 0 ? 1 : 0, found: out.found > 0 ? 1 : 0, guided: out.guided > 0 ? 1 : 0 };
@@ -147,6 +169,12 @@ const gates = [
   { hard: false, name: 'automatic hold after an order finished (share of ticks)', value: +share(C.autoHold).toFixed(3), ok: share(C.autoHold) < 0.15 },
   { hard: false, name: 'hold, all causes (share of ticks)', value: +share(C.hold).toFixed(3), ok: share(C.hold) < 0.25 },
 ];
+if (DOOR.eps) gates.push(
+  { hard: true, name: 'drones through a door that stayed shut (under 60 deg)', value: DOOR.through, ok: DOOR.through === 0 },
+  { hard: false, name: 'people inside a door leaf (share of person-ticks)', value: +(DOOR.personInLeaf / Math.max(1, DOOR.personTicks)).toFixed(5), ok: DOOR.personInLeaf / Math.max(1, DOOR.personTicks) < 0.001 },
+  { hard: false, name: 'drones waiting beside a shut door (share of drone-ticks)', value: +(DOOR.wait / Math.max(1, DOOR.droneTicks)).toFixed(4), ok: DOOR.wait / Math.max(1, DOOR.droneTicks) < 0.05 },
+  { hard: false, name: 'drones cut off from the team by shut doors (share of drone-ticks)', value: +(DOOR.cut / Math.max(1, DOOR.droneTicks)).toFixed(4), ok: DOOR.cut / Math.max(1, DOOR.droneTicks) < 0.01 },
+  { hard: false, name: 'episodes where someone hidden behind a door or a corner was first seen inside 1.2 m of a drone', value: DOOR.surprise, ok: DOOR.surprise <= Math.ceil(0.02 * DOOR.eps) });
 const families = Object.fromEntries(Object.entries(F).sort().map(([f, G]) => [f, {
   episodes: G.episodes, test: G.test, ticks: G.ticks, rooms: +(G.rooms / G.episodes).toFixed(1), floor_m2: Math.round(G.area / G.episodes),
   label_rule_breaks: G.vecBad + G.standoffBad + G.sepBad + G.boundsBad + G.altBad + G.refsBad, sft: +(G.sft / G.ticks).toFixed(3), sft_stuck: G.sftStuck, sft_unsafe: G.sftUnsafe,
@@ -160,15 +188,17 @@ const byGroup = Object.fromEntries(Object.entries(GROUPS).map(([dim, g]) => [dim
 const report = { dir, episodes: C.episodes, ticks: C.ticks, gates, families, by_subject_group: byGroup, refs_vs_flight: refVsFlight, pose_error: { p50: q(C.poseErr, 0.5), p95: q(C.poseErr, 0.95) }, standoff_checked: C.standoffChecked, jitter_p50: J50, jitter_by_template: jitterBy,
   perception: { detections_true: C.tp, detections_other_people: C.other, detections_false: C.fp, false_accepted: C.fpAccepted, estimate_error_p50: q(C.estErr, 0.5), estimate_error_p95: q(C.estErr, 0.95), searches_ended_on_a_false_positive: C.falseFound },
   obs: { seen: +share(C.seen).toFixed(3), estimate_only: +share(C.estimate).toFixed(3), unknown: +share(C.unknown).toFixed(3) },
-  goals: C.goal, templates: C.template, bands: C.band, comfort_pass_by_episodes: C.passBy, examples: C.worst };
+  goals: C.goal, templates: C.template, bands: C.band, comfort_pass_by_episodes: C.passBy, examples: C.worst,
+  doors: DOOR.eps ? { episodes: DOOR.eps, at_start: DOOR.init, opened_by_people: DOOR.opened, closed_by_people: DOOR.closed } : null };
 if (asJson) console.log(JSON.stringify(report, null, 1));
 else {
   console.log(`${dir}: ${C.episodes} episodes, ${C.ticks} plan ticks (${C.standoffChecked} with a person estimate)`);
-  for (const g of gates) console.log(`${g.ok ? 'PASS' : 'FAIL'} ${g.hard ? 'hard' : 'soft'}  ${g.name}: ${g.value}${!g.ok && C.worst[{ 'vector = slot - position': 'vec', 'slots keep the band standoff from the estimate': 'standoff', 'slots at least 1 m apart': 'sep', 'reference points reachable': 'refs', 'one-tick template flicker (share of ticks)': 'flicker', 'stuck drones, all ticks (share of drone-ticks)': 'stuck' }[g.name]] ? '   e.g. ' + C.worst[{ 'vector = slot - position': 'vec', 'slots keep the band standoff from the estimate': 'standoff', 'slots at least 1 m apart': 'sep', 'reference points reachable': 'refs', 'one-tick template flicker (share of ticks)': 'flicker', 'stuck drones, all ticks (share of drone-ticks)': 'stuck' }[g.name]] : ''}`);
+  for (const g of gates) console.log(`${g.ok ? 'PASS' : 'FAIL'} ${g.hard ? 'hard' : 'soft'}  ${g.name}: ${g.value}${!g.ok && C.worst[{ 'vector = slot - position': 'vec', 'slots keep the band standoff from the estimate': 'standoff', 'slots at least 1 m apart': 'sep', 'reference points reachable': 'refs', 'one-tick template flicker (share of ticks)': 'flicker', 'stuck drones, all ticks (share of drone-ticks)': 'stuck', 'drones through a door that stayed shut (under 60 deg)': 'through', 'people inside a door leaf (share of person-ticks)': 'leaf' }[g.name]] ? '   e.g. ' + C.worst[{ 'vector = slot - position': 'vec', 'slots keep the band standoff from the estimate': 'standoff', 'slots at least 1 m apart': 'sep', 'reference points reachable': 'refs', 'one-tick template flicker (share of ticks)': 'flicker', 'stuck drones, all ticks (share of drone-ticks)': 'stuck', 'drones through a door that stayed shut (under 60 deg)': 'through', 'people inside a door leaf (share of person-ticks)': 'leaf' }[g.name]] : ''}`);
   console.log(`observations: seen ${report.obs.seen}, estimate only ${report.obs.estimate_only}, unknown ${report.obs.unknown}; comfort pass-bys in ${C.passBy} episodes`);
   console.log(`perception (records' last frames): ${C.tp} of the subject, ${C.other} of other people, ${C.fp} false (${C.fpAccepted} confident enough to count); estimate error in sight p50 ${q(C.estErr, 0.5) && q(C.estErr, 0.5).toFixed(2)} m, p95 ${q(C.estErr, 0.95) && q(C.estErr, 0.95).toFixed(2)} m; searches ended on a false positive: ${C.falseFound}`);
   console.log('refs against the flight (slot unchanged), p50/p95 m: ' + refVsFlight.map(x => `+${x.after_s} s ${x.p50}/${x.p95}`).join(', '));
   console.log('slot jitter p50/p95 by template:', Object.entries(jitterBy).map(([k, v]) => `${k} ${v.p50}/${v.p95}`).join(', '));
+  if (DOOR.eps) console.log(`doors at the start: ${DOOR.init.closed} shut, ${DOOR.init.ajar} half open, ${DOOR.init.open} open, ${DOOR.init.locked} locked, ${DOOR.init.opening} openings with no door; people opened ${DOOR.opened} and closed ${DOOR.closed}`);
   if (Object.keys(byGroup).length) {
     console.log('\nby who the subject is (the simulated detector does not model skin tone: that split is a baseline for a real detector on frames)');
     for (const [dim, g] of Object.entries(byGroup)) for (const [k, x] of Object.entries(g)) console.log(`  ${dim.padEnd(24)} ${k.padEnd(40)} ${String(x.episodes).padStart(4)} eps · in view ${x.in_view_pct}% · intruders in ${x.intruders_breached || '—'} · hiders found ${x.hiders_found || '—'} · visitors out ${x.visitors_guided_out || '—'}`);

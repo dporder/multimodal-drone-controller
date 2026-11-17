@@ -26,6 +26,13 @@ function checkIndoorPlan(f, r, H) { // swarm-indoor adds timed reference points,
   need(r.team.every(d => d.cam === null || d.cam.every(v => v === null || (finite(v) && v >= 0))), `${f}: bad camera ray values at ${r.t}`);
   need(typeof r.obs.map === 'string' && r.obs.map.length === H.map.w * H.map.h && /^[#.?]*$/.test(r.obs.map), `${f}: bad scanned map at ${r.t}`);
   need(Array.isArray(r.obs.coverage) && r.obs.coverage.length === H.floor.rooms.length, `${f}: bad coverage at ${r.t}`);
+  // doors with leaves (when the episode has them): what the drones believe (angle, age) or null if unseen; the truth (angle, locked)
+  if (H.doors.length && H.doors[0].hinge !== undefined) {
+    need(H.doors.every(d => (d.kind === 'hinged' || d.kind === 'opening') && (d.hinge === -1 || d.hinge === 1) && (d.swing === -1 || d.swing === 1) && [0, 1, 2].includes(d.leaves) && finite(d.leaf_m) && (d.kind === 'opening') === (d.leaves === 0)), `${f}: bad door leaves in the header`);
+    need(r.truth.doors.every((t, i) => H.doors[i].kind !== 'opening' || (t[0] === 90 && t[1] === 0)), `${f}: an opening that is not open at ${r.t}`);
+    need(Array.isArray(r.obs.doors) && r.obs.doors.length === H.doors.length && r.obs.doors.every(b => b === null || (b.length === 2 && finite(b[0]) && b[0] >= 0 && b[0] <= 90 && finite(b[1]) && b[1] >= 0)), `${f}: bad believed doors at ${r.t}`);
+    need(Array.isArray(r.truth.doors) && r.truth.doors.length === H.doors.length && r.truth.doors.every(t => t.length === 2 && finite(t[0]) && t[0] >= 0 && t[0] <= 90 && (t[1] === 0 || t[1] === 1)), `${f}: bad door truth at ${r.t}`);
+  }
   need(r.team.every(d => d.cam === null || (Array.isArray(d.cam) && d.cam.length === 31)), `${f}: bad camera rays at ${r.t}`);
   need(Array.isArray(r.truth.detections_tp) && r.truth.detections_tp.length === r.obs.detections.length, `${f}: detections without truth at ${r.t}`);
   need(Array.isArray(L.refs) && L.refs.length === 3 && L.refs.every(d => d.length === 4 && d.every(isVec3)), `${f}: bad refs at ${r.t}`);

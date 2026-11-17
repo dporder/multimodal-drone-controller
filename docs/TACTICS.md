@@ -137,6 +137,29 @@ The scripted "teacher" turns a goal plus what the drones currently see into a ta
 - **Geometry:** landing pads 1 m apart in the home room. Door locks apply. Land at 0.3 m/s.
 - **Done when:** all three drones have landed.
 
+### Doors (every template; built 17 November 2026)
+Doors are leaves on hinges that only people move (`docs/DATASET_PLAN.md`, "Things that move besides people and drones"). Drones never touch a door, and a half-open door never leaves them a way through.
+- **What the teacher knows:**
+  - The door states the drones have seen, through a camera or within 1.5 m. A door not yet seen counts as open.
+  - The drones' planning grid and the teacher's sight lines are built from those states, never from the true ones.
+  - A test checks that a door no drone has seen changes no label.
+- **A slot behind a door the drone cannot fly through:**
+  - The drone waits beside the first such door on its way, on its own side.
+  - It hovers 1 m out from the wall, past the latch-side jamb, so it stays clear of the leaf when someone opens it. At a double door that swings toward it, it hovers in front, beyond the leaves' reach.
+  - The master tells the operator ("The lab door is shut: follower 1 waits beside it.").
+  - If another way is open, the path planner takes it instead.
+- **No slot inside the swing of a door the drones believe is not open:** whoever opens it would swing it into the drone.
+- **A drone cut off from the team by shut doors** holds where it is, within its own area, and is reported ("Follower 1 is shut in the store room and holds there."). The outside in front of each exit counts as its own area: a drone does not fly round the building to another exit.
+- **Search:**
+  - Rooms the person could be in, but which lie behind doors the drones cannot fly through, are reported ("The lab is behind a shut door: the drones cannot search it.").
+  - The drones search the other rooms first. With nothing else left, each drone watches one of those shut doors (template `watch-shut`), facing it. If a door opens, the room becomes searchable.
+- **Explore** only takes frontiers the team can reach. The mapped share counts what was behind shut doors as unmapped.
+- **Guide out:** a visitor whose guide hovers beside a shut door on her way to the guide's exit goes that way, opening the doors, and the drones follow her ("through here, then on to the exit").
+- **An open leaf hides people.** A drone passing one can first see someone already inside 1.2 m; the safety layer turns it away within a frame. These surprises are counted apart from the drone's own approaches. Not built yet: slowing near open leaves and doorways.
+- **People's side, which the tactics rely on:**
+  - People open doors on their way and sometimes close them behind them.
+  - Nobody closes a door that would cut the airborne drones apart. This is a simplification: a determined intruder might shut a drone in.
+
 ## Safety envelope (indoor)
 
 EU drone rules do not cover indoor flight [22], so the limits below come from comfort studies and our own judgement:
