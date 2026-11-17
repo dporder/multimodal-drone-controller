@@ -346,7 +346,99 @@ def _slots(c, ctx):
     return room, door, exit_
 
 
+# People on the floor (ctx["people"]: id, sex, age, aid, colour, top, hat, bag, mask, glasses) can be described in an order:
+# "the man in the red coat", "the person in the wheelchair", "the older woman with the cane". A description that fits exactly one
+# person adds params["person"] (that person's track); one that fits several, or nobody, makes the order a question. A pronoun
+# ("him", "that guy", "the intruder") means the person already in question.
+PERSON_NOUNS = {"man": ("m", "adult"), "gentleman": ("m", "adult"), "guy": ("m", None), "woman": ("f", "adult"), "lady": ("f", "adult"),
+                "boy": ("m", "young"), "girl": ("f", "young"), "kid": (None, "young"), "child": (None, "young"), "person": (None, None), "one": (None, None)}
+AGE_ADJ = {"older": "older", "old": "older", "elderly": "older", "young": "young"}
+PERSON_COLOURS = ("red", "blue", "green", "black", "white", "grey", "gray", "yellow", "brown")
+PERSON_TOPS = {"hi-vis vest": "hi-vis vest", "staff shirt": "staff shirt", "t-shirt": "shirt", "jacket": "jacket", "hoodie": "hoodie", "shirt": "shirt",
+               "coat": "coat", "sweater": "sweater", "jumper": "sweater", "vest": "hi-vis vest", "uniform": "uniform", "scrubs": "uniform"}
+PERSON_AIDS = {"walking stick": "cane", "wheelchair": "wheelchair", "cane": "cane", "stick": "cane", "pushchair": "pushchair", "stroller": "pushchair",
+               "buggy": "pushchair", "pram": "pushchair"}
+PERSON_ACCS = {"hat": "hat", "cap": "hat", "backpack": "bag", "rucksack": "bag", "bag": "bag", "mask": "mask", "glasses": "glasses"}
+_PERSON_ITEM = "|".join(sorted((re.escape(k) for k in list(PERSON_TOPS) + list(PERSON_AIDS) + list(PERSON_ACCS)), key=len, reverse=True))
+PERSON_DESC = re.compile(r"\b(?:the|that|this|a)\s+(?:(older|old|elderly|young)\s+)?(man|gentleman|guy|woman|lady|boy|girl|kid|child|person|one)\b"
+                         r"((?:\s+(?:in|wearing|with|carrying|pushing|using)\s+(?:the\s+|a\s+|an\s+)?(?:(?:" + "|".join(PERSON_COLOURS) + r")\s+)?(?:" + _PERSON_ITEM + r")\b)*)")
+
+
+def person_desc(c):
+    """The first described person in a clause -> ((start, end), attributes), or (None, None) for no description or a plain pronoun."""
+    m = PERSON_DESC.search(c)
+    if not m:
+        return None, None
+    adj, noun, tail = m.group(1), m.group(2), m.group(3) or ""
+    sex, age = PERSON_NOUNS[noun]
+    a = {}
+    if sex:
+        a["sex"] = sex
+    if adj:
+        age = AGE_ADJ[adj]
+    if age:
+        a["age"] = age
+    for col in PERSON_COLOURS:
+        if re.search(r"\b" + col + r"\b", tail):
+            a["colour"] = "grey" if col == "gray" else col
+    for table, key in ((PERSON_TOPS, "top"), (PERSON_AIDS, "aid"), (PERSON_ACCS, "acc")):
+        for k in sorted(table, key=len, reverse=True):
+            if re.search(r"\b" + re.escape(k) + r"\b", tail):
+                a[key] = table[k]
+                break
+    if noun in ("guy", "person", "one") and not any(k in a for k in ("colour", "top", "aid", "acc", "age")):
+        return None, None  # "that guy", "the person": a pronoun
+    return m.span(), a
+
+
+def person_fits(a, p):
+    """Does person p (ctx["people"] entry) fit description a?"""
+    group = "young" if p.get("age", 30) < 18 else "older" if p.get("age", 30) >= 65 else "adult"
+    if "sex" in a and p.get("sex") != a["sex"]:
+        return False
+    if "age" in a and (group != a["age"] if a["age"] != "adult" else group == "young"):
+        return False
+    if "colour" in a and p.get("colour") != a["colour"]:
+        return False
+    if "top" in a and p.get("top") != a["top"]:
+        return False
+    if "aid" in a and p.get("aid") != a["aid"]:
+        return False
+    if "acc" in a and not p.get(a["acc"]):
+        return False
+    return True
+
+
+def resolve_person(c, ctx):
+    """A clause -> (clause with the description read as "him", person id or None, question or None)."""
+    span, a = person_desc(c)
+    if not span:
+        return c, None, None
+    c2 = c[:span[0]] + "him" + c[span[1]:]
+    people = ctx.get("people") or []
+    if len(people) < 2:
+        return c2, None, None  # alone in the building: any description is him
+    fits = [p for p in people if person_fits(a, p)]
+    if len(fits) == 1:
+        return c2, fits[0]["id"], None
+    return c2, None, "which person" if fits else "no such person"
+
+
+PERSON_GOALS = ("keepout", "driveout", "guideout", "track", "contain", "search")
+
+
 def _indoor_clause(clause, ctx):
+    """One clause -> (kind, goal, params, extra), with any described person resolved first."""
+    c2, who, why = resolve_person(clause.lower(), ctx)  # on the raw clause: its commas still tell urgency from depth ("quick, look")
+    if why:
+        return ("query", None, {}, {"why": why})
+    kind, goal, params, extra = _indoor_clause_core(c2, ctx)
+    if who is not None and kind == "goal" and goal in PERSON_GOALS:
+        params = dict(params, person=who)
+    return (kind, goal, params, extra)
+
+
+def _indoor_clause_core(clause, ctx):
     """One clause -> (kind, goal, params, extra). kind: goal | query | ignore | next | refuse-turn."""
     c = _strip(clause)
     if not c:
@@ -446,9 +538,11 @@ def interpret_indoor(text, ctx):
     if first[0] == "query":
         why = first[3].get("why")
         reply = {"negation": "Say what to do instead: " + INDOOR_OPTIONS + "?",
-                 "turn": "Indoors the drones take goals, not formation turns: " + INDOOR_OPTIONS + "."}.get(
+                 "turn": "Indoors the drones take goals, not formation turns: " + INDOOR_OPTIONS + ".",
+                 "which person": "Which person? Several people fit that. Say what they are wearing, or where they are.",
+                 "no such person": "I don't see anyone who fits that. Who do you mean?"}.get(
             why, "Say again? I can " + INDOOR_OPTIONS + ".")
-        return dict(base, action="query", reply=reply)
+        return dict(base, action="query", reply=reply, why=why)
     goal, params, extra = first[1], {k: v for k, v in first[2].items() if v is not None}, first[3]
     person = ctx.get("person") or {}
     where = person.get("room")

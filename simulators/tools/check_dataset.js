@@ -19,7 +19,11 @@ function checkIndoorPlan(f, r, H) { // swarm-indoor adds timed reference points,
   need(L.band === 'pressure' || L.band === 'comfort', `${f}: missing standoff band at ${r.t}`);
   need(typeof r.sft === 'boolean', `${f}: missing training flag (sft) at ${r.t}`);
   // perception: detections with confidence, the scanned map, search coverage, camera rays; truth marks which detections were the person
-  need(Array.isArray(r.obs.detections) && r.obs.detections.every(x => isVec3(x.p) && x.conf > 0 && x.conf < 1), `${f}: bad detections at ${r.t}`);
+  need(Array.isArray(r.obs.detections) && r.obs.detections.every(x => isVec3(x.p) && x.conf > 0 && x.conf < 1 && finite(x.age) && x.age >= 0), `${f}: bad detections at ${r.t}`);
+  need(Number.isInteger(r.obs.target_track) && r.obs.detections.every(x => Number.isInteger(x.track)) && Array.isArray(r.obs.people) && r.obs.people.every(o => Number.isInteger(o.track) && isVec3(o.p)), `${f}: bad tracks or other people at ${r.t}`);
+  need(Array.isArray(r.truth.people) && r.truth.people.every(h => isVec3(h.pos) && Number.isInteger(h.tid)) && r.truth.detections_who.length === r.obs.detections.length, `${f}: bad people truth at ${r.t}`);
+  need(Array.isArray(r.truth.drones) && r.truth.drones.length === 3 && r.truth.drones.every(t => t.length === 4 && t.every(finite)), `${f}: missing true drone poses at ${r.t}`);
+  need(r.team.every(d => d.cam === null || d.cam.every(v => v === null || (finite(v) && v >= 0))), `${f}: bad camera ray values at ${r.t}`);
   need(typeof r.obs.map === 'string' && r.obs.map.length === H.map.w * H.map.h && /^[#.?]*$/.test(r.obs.map), `${f}: bad scanned map at ${r.t}`);
   need(Array.isArray(r.obs.coverage) && r.obs.coverage.length === H.floor.rooms.length, `${f}: bad coverage at ${r.t}`);
   need(r.team.every(d => d.cam === null || (Array.isArray(d.cam) && d.cam.length === 31)), `${f}: bad camera rays at ${r.t}`);
@@ -39,7 +43,7 @@ for (const f of files) {
   let lastT = -1, lastV = -1;
   for (const r of recs) {
     count[r.type] = (count[r.type] || 0) + 1;
-    if (r.type === 'header') need(r.schema === 'dmc.contract.v0' && Number.isInteger(r.seed) && Array.isArray(r.doors) && Array.isArray(r.orders) && (!indoor || (r.map && r.perception && r.floor_role && floorOk(r.floor))), `${f}: bad header`);
+    if (r.type === 'header') need(r.schema === 'dmc.contract.v0' && Number.isInteger(r.seed) && Array.isArray(r.doors) && Array.isArray(r.orders) && (!indoor || (r.map && r.perception && r.floor_role && floorOk(r.floor) && finite(r.perception.pose_drift_of_distance) && Array.isArray(r.perception.light_by_room) && Array.isArray(r.cast) && r.cast.length >= 1 && r.cast.every(c => Number.isInteger(c.tid) && c.body && c.look))), `${f}: bad header`);
     if (r.type === 'order') need(typeof r.text === 'string' && r.intended && typeof r.applied === 'boolean' && r.situation, `${f}: bad order at ${r.t}`);
     if (r.type === 'plan') {
       need(r.t >= lastT, `${f}: time goes backwards at ${r.t}`); lastT = r.t;

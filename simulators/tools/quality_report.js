@@ -10,21 +10,25 @@ const dir = process.argv[2] || 'output/dataset/indoor1';
 const asJson = process.argv.includes('--json');
 const D = (a, b) => Math.hypot(a[0] - b[0], a[2] - b[2]);
 const D3 = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+const AMAX = 2.0; // the drones' horizontal acceleration limit (settings.aMax)
 const q = (xs, p) => { if (!xs.length) return null; const s = xs.slice().sort((a, b) => a - b); return s[Math.min(s.length - 1, Math.floor(p * s.length))]; };
 
 const rows = fs.readFileSync(path.join(dir, 'manifest.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
 const C = {
   ticks: 0, episodes: rows.length,
   vecBad: 0, standoffBad: 0, standoffChecked: 0, sepBad: 0, boundsBad: 0, altBad: 0, refsBad: 0,
-  flicker: 0, swaps: 0, stuck: 0, doorWait: 0, sft: 0, sftStuck: 0, sftUnsafe: 0, estErr: [], estTicks: 0, estFromFP: 0, tp: 0, fp: 0, fpAccepted: 0, falseFound: 0, autoHold: 0, hold: 0, seen: 0, estimate: 0, unknown: 0,
-  goal: {}, template: {}, band: {}, jitter: [], jitterByTemplate: {}, worst: {},
-  floor: 0, approach: 0, sepViol: 0, wallViol: 0, altViol: 0, passBy: 0, segments: 0,
+  flicker: 0, swaps: 0, stuck: 0, doorWait: 0, yieldT: 0, sft: 0, sftStuck: 0, sftUnsafe: 0, estErr: [], estTicks: 0, estFromFP: 0, tp: 0, other: 0, fp: 0, fpAccepted: 0, falseFound: 0, autoHold: 0, hold: 0, seen: 0, estimate: 0, unknown: 0,
+  goal: {}, template: {}, band: {}, jitter: [], jitterByTemplate: {}, worst: {}, refErr: [[], [], [], []], poseErr: [],
+  floor: 0, floorPerson: 0, approach: 0, sepViol: 0, wallViol: 0, altViol: 0, passBy: 0, segments: 0,
 };
 const note = (k, msg) => { if (!C.worst[k]) C.worst[k] = msg; };
 // the same counts per floor family: each episode's increments are added to its family
-const FAMKEYS = ['ticks', 'vecBad', 'standoffBad', 'sepBad', 'boundsBad', 'altBad', 'refsBad', 'flicker', 'swaps', 'stuck', 'doorWait', 'sft', 'sftStuck', 'sftUnsafe', 'estTicks', 'estFromFP',
+const FAMKEYS = ['ticks', 'vecBad', 'standoffBad', 'sepBad', 'boundsBad', 'altBad', 'refsBad', 'flicker', 'swaps', 'stuck', 'yieldT', 'doorWait', 'sft', 'sftStuck', 'sftUnsafe', 'estTicks', 'estFromFP',
   'falseFound', 'autoHold', 'hold', 'seen', 'floor', 'approach', 'sepViol', 'wallViol', 'altViol', 'passBy'];
 const F = {};
+// results by who the subject is (people item 6): each episode adds to its groups
+const GROUPS = {}, addG = (dim, key, e) => { const g = (GROUPS[dim] = GROUPS[dim] || {}), x = (g[key] = g[key] || { episodes: 0, view: 0, intr: 0, breached: 0, hid: 0, found: 0, vis: 0, guided: 0 });
+  x.episodes++; x.view += e.view; if (e.role === 'intruder' && e.intent !== 'hide') { x.intr++; x.breached += e.breached; } else if (e.intent === 'hide') { x.hid++; x.found += e.found; } else if (e.role === 'visitor') { x.vis++; x.guided += e.guided; } };
 
 for (const r of rows) {
   const recs = zlib.gunzipSync(fs.readFileSync(path.join(dir, r.file))).toString().trim().split('\n').map(l => JSON.parse(l));
@@ -33,13 +37,17 @@ for (const r of rows) {
   const W = H.floor.W, Dd = H.floor.D, ceil = H.floor.ceil;
   for (let k = 0; k < plans.length; k++) {
     const p = plans[k], L = p.label; C.ticks++;
+    const TP = i => (p.truth.drones ? p.truth.drones[i] : p.team[i].pos); // true drone positions; team holds the drones' estimates
+    if (p.truth.drones) for (let i = 0; i < 3; i++) if (TP(i)[1] > 0.5) C.poseErr.push(D(p.team[i].pos, TP(i)));
     C.goal[p.order.goal] = (C.goal[p.order.goal] || 0) + 1; C.template[L.template] = (C.template[L.template] || 0) + 1; C.band[L.band] = (C.band[L.band] || 0) + 1;
     if (p.order.goal === 'hold') C.hold++;
     if (p.order.src === 'auto') C.autoHold++;
     if (p.obs.seen) C.seen++; else if (p.obs.p) C.estimate++; else C.unknown++;
     // perception: how far the team's estimate is from the truth, and how often it came from a false positive
     if (p.obs.p) { C.estTicks++; if (p.truth.estimate_from_fp) C.estFromFP++; else if (p.obs.seen && p.truth.person.alive) C.estErr.push(D(p.obs.p, p.truth.person.pos)); }
-    p.obs.detections.forEach((x, k) => { if (p.truth.detections_tp[k]) C.tp++; else { C.fp++; if (x.conf >= 0.5) C.fpAccepted++; } });
+    // the subject, another person (a true detection of someone else), or nothing there (a false positive)
+    const who = p.truth.detections_who || [];
+    p.obs.detections.forEach((x, k) => { if (p.truth.detections_tp[k]) C.tp++; else if (who[k] > 0) C.other++; else { C.fp++; if (x.conf >= 0.5) C.fpAccepted++; } });
     const landing = L.template === 'return';
     // 1. vector = slot - position at plan time, for every drone
     for (let i = 0; i < 3; i++) { const v = L.vectors[i], s = L.slots[i], x = p.team[i].pos;
@@ -55,10 +63,19 @@ for (const r of rows) {
     // 4. slots inside the site and the altitude band
     for (const s of L.slots) { if (s[0] < 0 || s[2] < 0 || s[0] > W || s[2] > Dd) { C.boundsBad++; note('bounds', `${r.episode} t ${p.t}`); }
       if (!landing && (s[1] < 1.2 - 0.01 || s[1] > ceil - 0.5 + 0.01)) { C.altBad++; note('alt', `${r.episode} t ${p.t} y ${s[1]}`); } }
-    // 5. timed reference points: start near the drone, then at most 0.75 m (1.5 m/s x 0.5 s) between steps
-    for (let i = 0; i < 3; i++) { const R = L.refs[i], x = p.team[i].pos; let bad = D3(R[0], x) > 0.75 + 0.45;
-      for (let j = 1; j < 4; j++) if (D3(R[j], R[j - 1]) > 0.75 + 0.45) bad = true;
-      if (bad) { C.refsBad++; note('refs', `${r.episode} t ${p.t} ${p.team[i].id}`); } }
+    // 5. timed reference points a drone can fly: from its position and velocity, horizontal speed changes between consecutive
+    // 0.5 s steps of at most aMax x 0.5 s (2 m/s2), at most 2.5 m/s, and climbs of at most 0.8 m/s (0.05 m and 0.1 m/s rounding tolerance)
+    for (let i = 0; i < 3; i++) { const R = L.refs[i], x = p.team[i].pos, v0 = p.team[i].vel, h = (a, b) => Math.hypot(a[0] - b[0], a[2] - b[2]);
+      let bad = Math.hypot(R[0][0] - x[0] - v0[0] * 0.5, R[0][2] - x[2] - v0[2] * 0.5) > 0.5 * AMAX * 0.25 + 0.05;
+      let u = [(R[0][0] - x[0]) / 0.5, (R[0][2] - x[2]) / 0.5];
+      for (let j = 0; j < 4; j++) { const a = j ? R[j - 1] : x, w = [(R[j][0] - a[0]) / 0.5, (R[j][2] - a[2]) / 0.5];
+        if (Math.hypot(w[0], w[1]) > Math.max(2.5, Math.hypot(v0[0], v0[2])) + 0.1 || Math.abs(R[j][1] - a[1]) > 0.8 * 0.5 + 0.05) bad = true;
+        if (j && Math.hypot(w[0] - u[0], w[1] - u[1]) > AMAX * 0.5 + 0.1) bad = true; u = w; }
+      void h; if (bad) { C.refsBad++; note('refs', `${r.episode} t ${p.t} ${p.team[i].id}`); } }
+    // refs against the flight: where each drone actually was 0.5-2 s later, on ticks whose slot then stayed put (same order, within 0.1 m)
+    if (k + 4 < plans.length) for (let i = 0; i < 3; i++) { let same = true;
+      for (let j = 1; j <= 4 && same; j++) { const q = plans[k + j]; if (q.order.version !== p.order.version || D(q.label.slots[i], L.slots[i]) > 0.1) same = false; }
+      if (same && p.team[i].pos[1] > 0.5) for (let j = 1; j <= 4; j++) C.refErr[j - 1].push(D3(L.refs[i][j - 1], plans[k + j].team[i].pos)); }
     // 6. stability: a template that flips for one tick and back, follower slots swapping, slot jitter when nothing changed
     if (k > 0 && k < plans.length - 1) { const a = plans[k - 1], b = plans[k + 1];
       if (a.label.template === b.label.template && a.label.template !== L.template && a.order.version === b.order.version) { C.flicker++; note('flicker', `${r.episode} t ${p.t} ${a.label.template}->${L.template}->${b.label.template}`); } }
@@ -67,17 +84,32 @@ for (const r of rows) {
         const s1 = L.slots[1], s2 = L.slots[2], a1 = a.label.slots[1], a2 = a.label.slots[2];
         if (D(s1, a2) < 0.3 && D(s2, a1) < 0.3 && D(a1, a2) > 1.0) C.swaps++;
         const still = (a.obs.p === null && p.obs.p === null) || (a.obs.p && p.obs.p && D(a.obs.p, p.obs.p) < 0.1);
-        if (still) for (let i = 0; i < 3; i++) { const j = D(L.slots[i], a.label.slots[i]); C.jitter.push(j); (C.jitterByTemplate[L.template] = C.jitterByTemplate[L.template] || []).push(j); } } }
+        // a slot moved to keep clear of another person who moved is not jitter
+        if (still) for (let i = 0; i < 3; i++) { if (L.flags[i].includes('others') || a.label.flags[i].includes('others')) continue; const j = D(L.slots[i], a.label.slots[i]); C.jitter.push(j); (C.jitterByTemplate[L.template] = C.jitterByTemplate[L.template] || []).push(j); } } }
     // 7. a drone that has not moved for 5 s while its slot is more than 1 m away and its link is fresh
     // (the slot must have been over 1 m away at every tick of the window, under one order: holding still on purpose is not stuck)
     if (k >= 10) { const a = plans[k - 10]; for (let i = 0; i < 3; i++) {
       let far = a.order.version === p.order.version; for (let j = k - 10; j <= k && far; j++) { const v = plans[j].label.vectors[i]; if (Math.hypot(v[0], v[2]) <= 1.0) far = false; }
       if (p.team[i].wait_door != null) { C.doorWait++; continue; } // queuing for a doorway (one drone at a time) is expected, and counted apart
-      if (far && D(p.team[i].pos, a.team[i].pos) < 0.1 && p.team[i].link_age < 1 && p.team[i].pos[1] > 0.5) { C.stuck++; if (p.sft) C.sftStuck++; note('stuck', `${r.episode} t ${p.t} ${p.team[i].id} ${L.template}`); } } }
-    if (p.sft) { C.sft++; if (p.truth.person.alive && p.team.some(d => d.pos[1] > 0.5 && D(d.pos, p.truth.person.pos) < 1.2)) C.sftUnsafe++; }
+      const ta = a.truth.drones ? a.truth.drones[i] : a.team[i].pos;
+      const folk2 = (p.truth.person.alive ? [p.truth.person.pos] : []).concat((p.truth.people || []).filter(h => h.alive).map(h => h.pos));
+      if (far && D(TP(i), ta) < 0.1 && p.team[i].link_age < 1 && TP(i)[1] > 0.5 && folk2.some(f => D(TP(i), f) < 3.3)) { C.yieldT++; continue; } // held back near a person: yielding
+      if (far && D(TP(i), ta) < 0.1 && p.team[i].link_age < 1 && TP(i)[1] > 0.5) { C.stuck++; if (p.sft) C.sftStuck++; note('stuck', `${r.episode} t ${p.t} ${p.team[i].id} ${L.template}`); } } }
+    const folk = (p.truth.person.alive ? [p.truth.person.pos] : []).concat((p.truth.people || []).filter(h => h.alive).map(h => h.pos));
+    if (p.sft) { C.sft++; if ([0, 1, 2].some(i => TP(i)[1] > 0.5 && folk.some(f => D(TP(i), f) < 1.2))) C.sftUnsafe++; }
   }
   if (out.segments) C.segments += out.segments.length; C.falseFound += out.false_found || 0;
-  C.floor += out.floor_viol_s > 0; C.approach += out.standoff_approach_s > 0.5; C.sepViol += out.sep_viol_s > 0; C.wallViol += out.wall_viol_s > 0; C.altViol += out.alt_viol_s > 0; C.passBy += out.band_viol_s.comfort > 0;
+  C.floor += (out.floor_by_drone_s != null ? out.floor_by_drone_s : out.floor_viol_s) > 0; C.floorPerson += (out.floor_by_person_s || 0) > 0; C.approach += out.standoff_approach_s > 0.5; C.sepViol += out.sep_viol_s > 0; C.wallViol += out.wall_viol_s > 0; C.altViol += out.alt_viol_s > 0; C.passBy += out.band_viol_s.comfort > 0;
+  if (H.cast && H.cast[0]) { const c = H.cast[0], b = c.body, posture = {}; let vmax = 0, n = 0;
+    for (const x of plans) { const t = x.truth.person; if (!t.alive) continue; n++; posture[t.posture] = (posture[t.posture] || 0) + 1; vmax = Math.max(vmax, t.speed || 0); }
+    const e = { role: out.role, intent: r.intent, view: out.in_view_pct, breached: out.breaches > 0 ? 1 : 0, found: out.found > 0 ? 1 : 0, guided: out.guided > 0 ? 1 : 0 };
+    const low = n ? ((posture.lying || 0) + (posture.crouching || 0) + (posture.sitting || 0)) / n : 0;
+    addG('age', b.age < 13 ? 'child (<13)' : b.age < 18 ? 'teen (13-17)' : b.age < 65 ? 'adult (18-64)' : 'older (65+)', e);
+    addG('height', b.height < 1.5 ? '<1.50 m' : b.height < 1.7 ? '1.50-1.70 m' : b.height < 1.85 ? '1.70-1.85 m' : '>=1.85 m', e);
+    addG('mobility', b.aid || 'none', e); addG('posture', low > 0.5 ? 'mostly low (sitting, crouching, lying)' : 'mostly standing', e);
+    addG('speed', vmax >= 3 ? 'ran at 3 m/s or more' : 'never above 3 m/s', e);
+    addG('skin tone (Monk scale)', b.skinTone <= 3 ? '1-3' : b.skinTone <= 7 ? '4-7' : '8-10', e);
+    addG('other people', H.cast.length - 1 === 0 ? 'alone' : H.cast.length - 1 <= 2 ? '1-2 others' : '3+ others', e); }
   const G = F[fam] || (F[fam] = Object.assign(Object.fromEntries(FAMKEYS.map(k => [k, 0])), { episodes: 0, test: 0, estErr: [], minPressure: null, minComfort: null, area: 0, rooms: 0 }));
   for (const k of FAMKEYS) G[k] += C[k] - before[k];
   G.estErr.push(...C.estErr.slice(errBefore)); G.episodes++; G.test += r.split === 'test'; G.rooms += H.floor.rooms.length;
@@ -94,8 +126,9 @@ const gates = [
   { hard: true, name: 'slots keep the band standoff from the estimate', value: C.standoffBad, ok: C.standoffBad === 0 },
   { hard: true, name: 'slots at least 1 m apart', value: C.sepBad, ok: C.sepBad === 0 },
   { hard: true, name: 'slots inside the site and altitude band', value: C.boundsBad + C.altBad, ok: C.boundsBad + C.altBad === 0 },
-  { hard: true, name: 'reference points reachable', value: C.refsBad, ok: C.refsBad === 0 },
-  { hard: true, name: 'episodes inside the 1.2 m floor', value: C.floor, ok: C.floor === 0 },
+  { hard: true, name: 'reference points flyable (acceleration, speed, climb)', value: C.refsBad, ok: C.refsBad === 0 },
+  { hard: true, name: 'episodes where a drone came within the 1.2 m floor (drone moving toward the person, or both still while it could back away)', value: C.floor, ok: C.floor === 0 },
+  { hard: false, name: 'episodes where a person closed within 1.2 m of a drone not moving toward them (outrunning a retreating drone, or walking up to a pinned one)', value: C.floorPerson, ok: C.floorPerson <= Math.ceil(0.01 * C.episodes) },
   { hard: true, name: 'episodes with a drone closing in on a person', value: C.approach, ok: C.approach === 0 },
   { hard: true, name: 'episodes with separation / wall / altitude violations', value: C.sepViol + C.wallViol + C.altViol, ok: C.sepViol + C.wallViol + C.altViol === 0 },
   // soft gates: label noise and balance, thresholds chosen for SFT
@@ -108,6 +141,8 @@ const gates = [
   { hard: false, name: 'ticks fit for training (sft share)', value: +share(C.sft).toFixed(3), ok: share(C.sft) > 0.8 },
   { hard: false, name: 'estimate error while in sight, p95 (m)', value: q(C.estErr, 0.95) === null ? null : +q(C.estErr, 0.95).toFixed(2), ok: q(C.estErr, 0.95) !== null && q(C.estErr, 0.95) < 1.0 },
   { hard: false, name: 'ticks whose estimate came from a false positive (share of ticks with an estimate)', value: +(C.estFromFP / Math.max(1, C.estTicks)).toFixed(4), ok: C.estFromFP / Math.max(1, C.estTicks) < 0.02 },
+  { hard: false, name: 'drone pose error from odometry drift, p95 (m)', value: q(C.poseErr, 0.95) === null ? null : +q(C.poseErr, 0.95).toFixed(2), ok: q(C.poseErr, 0.95) === null || q(C.poseErr, 0.95) < 1.5 },
+  { hard: false, name: 'held back by the safety layer near a person, yielding (share of drone-ticks)', value: +(C.yieldT / (3 * C.ticks)).toFixed(4), ok: C.yieldT / (3 * C.ticks) < 0.1 },
   { hard: false, name: 'queuing for a doorway (share of drone-ticks)', value: +(C.doorWait / (3 * C.ticks)).toFixed(4), ok: C.doorWait / (3 * C.ticks) < 0.05 },
   { hard: false, name: 'automatic hold after an order finished (share of ticks)', value: +share(C.autoHold).toFixed(3), ok: share(C.autoHold) < 0.15 },
   { hard: false, name: 'hold, all causes (share of ticks)', value: +share(C.hold).toFixed(3), ok: share(C.hold) < 0.25 },
@@ -115,12 +150,15 @@ const gates = [
 const families = Object.fromEntries(Object.entries(F).sort().map(([f, G]) => [f, {
   episodes: G.episodes, test: G.test, ticks: G.ticks, rooms: +(G.rooms / G.episodes).toFixed(1), floor_m2: Math.round(G.area / G.episodes),
   label_rule_breaks: G.vecBad + G.standoffBad + G.sepBad + G.boundsBad + G.altBad + G.refsBad, sft: +(G.sft / G.ticks).toFixed(3), sft_stuck: G.sftStuck, sft_unsafe: G.sftUnsafe,
-  stuck: +(G.stuck / (3 * G.ticks)).toFixed(4), door_wait: +(G.doorWait / (3 * G.ticks)).toFixed(4), hold: +(G.hold / G.ticks).toFixed(3), auto_hold: +(G.autoHold / G.ticks).toFixed(3),
+  stuck: +(G.stuck / (3 * G.ticks)).toFixed(4), yielding: +(G.yieldT / (3 * G.ticks)).toFixed(4), door_wait: +(G.doorWait / (3 * G.ticks)).toFixed(4), hold: +(G.hold / G.ticks).toFixed(3), auto_hold: +(G.autoHold / G.ticks).toFixed(3),
   flicker: +(G.flicker / G.ticks).toFixed(4), seen: +(G.seen / G.ticks).toFixed(3), estimate_error_p95: q(G.estErr, 0.95) === null ? null : +q(G.estErr, 0.95).toFixed(2),
   estimate_from_fp: +(G.estFromFP / Math.max(1, G.estTicks)).toFixed(4), episodes_below_floor: G.floor, episodes_closing_in: G.approach, episodes_sep_wall_alt: G.sepViol + G.wallViol + G.altViol,
   min_pressure_m: G.minPressure, min_comfort_m: G.minComfort, comfort_pass_by_episodes: G.passBy }]));
-const report = { dir, episodes: C.episodes, ticks: C.ticks, gates, families, standoff_checked: C.standoffChecked, jitter_p50: J50, jitter_by_template: jitterBy,
-  perception: { detections_true: C.tp, detections_false: C.fp, false_accepted: C.fpAccepted, estimate_error_p50: q(C.estErr, 0.5), estimate_error_p95: q(C.estErr, 0.95), searches_ended_on_a_false_positive: C.falseFound },
+const refVsFlight = C.refErr.map((e, j) => ({ after_s: 0.5 * (j + 1), n: e.length, p50: q(e, 0.5) === null ? null : +q(e, 0.5).toFixed(2), p95: q(e, 0.95) === null ? null : +q(e, 0.95).toFixed(2) }));
+const byGroup = Object.fromEntries(Object.entries(GROUPS).map(([dim, g]) => [dim, Object.fromEntries(Object.entries(g).sort().map(([k, x]) => [k, { episodes: x.episodes, in_view_pct: +(x.view / x.episodes).toFixed(1),
+  intruders_breached: x.intr ? `${x.breached}/${x.intr}` : null, hiders_found: x.hid ? `${x.found}/${x.hid}` : null, visitors_guided_out: x.vis ? `${x.guided}/${x.vis}` : null }]))]));
+const report = { dir, episodes: C.episodes, ticks: C.ticks, gates, families, by_subject_group: byGroup, refs_vs_flight: refVsFlight, pose_error: { p50: q(C.poseErr, 0.5), p95: q(C.poseErr, 0.95) }, standoff_checked: C.standoffChecked, jitter_p50: J50, jitter_by_template: jitterBy,
+  perception: { detections_true: C.tp, detections_other_people: C.other, detections_false: C.fp, false_accepted: C.fpAccepted, estimate_error_p50: q(C.estErr, 0.5), estimate_error_p95: q(C.estErr, 0.95), searches_ended_on_a_false_positive: C.falseFound },
   obs: { seen: +share(C.seen).toFixed(3), estimate_only: +share(C.estimate).toFixed(3), unknown: +share(C.unknown).toFixed(3) },
   goals: C.goal, templates: C.template, bands: C.band, comfort_pass_by_episodes: C.passBy, examples: C.worst };
 if (asJson) console.log(JSON.stringify(report, null, 1));
@@ -128,8 +166,13 @@ else {
   console.log(`${dir}: ${C.episodes} episodes, ${C.ticks} plan ticks (${C.standoffChecked} with a person estimate)`);
   for (const g of gates) console.log(`${g.ok ? 'PASS' : 'FAIL'} ${g.hard ? 'hard' : 'soft'}  ${g.name}: ${g.value}${!g.ok && C.worst[{ 'vector = slot - position': 'vec', 'slots keep the band standoff from the estimate': 'standoff', 'slots at least 1 m apart': 'sep', 'reference points reachable': 'refs', 'one-tick template flicker (share of ticks)': 'flicker', 'stuck drones, all ticks (share of drone-ticks)': 'stuck' }[g.name]] ? '   e.g. ' + C.worst[{ 'vector = slot - position': 'vec', 'slots keep the band standoff from the estimate': 'standoff', 'slots at least 1 m apart': 'sep', 'reference points reachable': 'refs', 'one-tick template flicker (share of ticks)': 'flicker', 'stuck drones, all ticks (share of drone-ticks)': 'stuck' }[g.name]] : ''}`);
   console.log(`observations: seen ${report.obs.seen}, estimate only ${report.obs.estimate_only}, unknown ${report.obs.unknown}; comfort pass-bys in ${C.passBy} episodes`);
-  console.log(`perception (records' last frames): ${C.tp} true and ${C.fp} false detections (${C.fpAccepted} false ones confident enough to count); estimate error in sight p50 ${q(C.estErr, 0.5) && q(C.estErr, 0.5).toFixed(2)} m, p95 ${q(C.estErr, 0.95) && q(C.estErr, 0.95).toFixed(2)} m; searches ended on a false positive: ${C.falseFound}`);
+  console.log(`perception (records' last frames): ${C.tp} of the subject, ${C.other} of other people, ${C.fp} false (${C.fpAccepted} confident enough to count); estimate error in sight p50 ${q(C.estErr, 0.5) && q(C.estErr, 0.5).toFixed(2)} m, p95 ${q(C.estErr, 0.95) && q(C.estErr, 0.95).toFixed(2)} m; searches ended on a false positive: ${C.falseFound}`);
+  console.log('refs against the flight (slot unchanged), p50/p95 m: ' + refVsFlight.map(x => `+${x.after_s} s ${x.p50}/${x.p95}`).join(', '));
   console.log('slot jitter p50/p95 by template:', Object.entries(jitterBy).map(([k, v]) => `${k} ${v.p50}/${v.p95}`).join(', '));
+  if (Object.keys(byGroup).length) {
+    console.log('\nby who the subject is (the simulated detector does not model skin tone: that split is a baseline for a real detector on frames)');
+    for (const [dim, g] of Object.entries(byGroup)) for (const [k, x] of Object.entries(g)) console.log(`  ${dim.padEnd(24)} ${k.padEnd(40)} ${String(x.episodes).padStart(4)} eps · in view ${x.in_view_pct}% · intruders in ${x.intruders_breached || '—'} · hiders found ${x.hiders_found || '—'} · visitors out ${x.visitors_guided_out || '—'}`);
+  }
   if (Object.keys(families).length) {
     console.log('\nby floor family: episodes (test) · rooms · m2 · ticks | label rule breaks · sft share · sft stuck/unsafe · stuck · door queue · hold (auto) · flicker | seen · est. err p95 · from FP | ' +
       'episodes below 1.2 m · closing in · sep/wall/alt · comfort pass-by | closest: pressure / comfort (m)');

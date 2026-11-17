@@ -11,11 +11,19 @@ const settings={ceil:3.0,lintel:2.0,wallT:0.2,
   dS:2.5,dS2:3.0,dPress:1.5,floorPress:1.2,floorComfort:2.0,reflex:0.3,atDoor:4.0,pathAvoid:'comfort',doorGuard:true,escape:true,
   percHz:10,pNear:0.97,pFar:0.35,pEdge:0.6,fpRate:0.002,acceptConf:0.5,noise0:0.08,noiseK:0.03,mapRes:0.6,depthRange:5,rPush:2.5,fearCap:3,sep:1.0,wallClr:0.4,zMin:1.2,zNom:1.6,zDoor:1.6,vMax:1.5,vSlow:0.5,aMax:2.0,
   camFov:90,camRange:8,chestH:1.3,hideH:1.0,walk:1.2,run:2.0,visitorWalk:0.9,
-  rloss:0.05,rlat:0.2,linkTimeout:1.0,yawRate:120,spinRate:90,mass:0.45,twr:2.2,tiltMax:30,levelCov:{2:0.6,3:0.8,5:0.95},gateN:3,gateRange:9};
+  rloss:0.05,rlat:0.2,linkTimeout:1.0,yawRate:120,spinRate:90,mass:0.45,twr:2.2,tiltMax:30,levelCov:{2:0.6,3:0.8,5:0.95},gateN:3,gateRange:9,
+  beliefSpeed:4.5,beliefSlack:1.0,people:'diverse',crowd:'auto',reidSwitch:0.003,realism:true,poseDrift:null,yawDriftDegMin:null,depthNoiseK:null,depthMiss:null,unreliableWalls:null,depthMode:'stereo',lightLevels:null,blurDegS:60,shareVia:'radio',relocM:3};
 const SETTINGS0=JSON.parse(JSON.stringify(settings)); // reset() starts every episode from these, so settings never leak between episodes
 let simT=0;
-let rngState=12345, prngState=7, crngState=11; function seed(n){ let h=(n>>>0)^0x9e3779b9; h=Math.imul(h^(h>>>16),0x85ebca6b); h=Math.imul(h^(h>>>13),0xc2b2ae35); h^=h>>>16; rngState=(h>>>0)||1; prngState=(Math.imul(h^0x5bd1e995,0x27d4eb2d)>>>0)||7; crngState=(Math.imul(h^0x68e31da4,0x165667b1)>>>0)||11; } function rng(){ rngState^=rngState<<13; rngState>>>=0; rngState^=rngState>>>17; rngState^=rngState<<5; rngState>>>=0; return rngState/4294967296; } // seeds are mixed so small seeds still give varied layouts
+let rngState=12345, prngState=7, crngState=11, nrngState=13, arngState=17, wrngState=19; function seed(n){ let h=(n>>>0)^0x9e3779b9; h=Math.imul(h^(h>>>16),0x85ebca6b); h=Math.imul(h^(h>>>13),0xc2b2ae35); h^=h>>>16; rngState=(h>>>0)||1; prngState=(Math.imul(h^0x5bd1e995,0x27d4eb2d)>>>0)||7; crngState=(Math.imul(h^0x68e31da4,0x165667b1)>>>0)||11; nrngState=(Math.imul(h^0x2545f491,0x4f6cdd1d)>>>0)||13; arngState=(Math.imul(h^0x7feb352d,0x846ca68b)>>>0)||17; wrngState=(Math.imul(h^0x1b873593,0xcc9e2d51)>>>0)||19; } function rng(){ rngState^=rngState<<13; rngState>>>=0; rngState^=rngState>>>17; rngState^=rngState<<5; rngState>>>=0; return rngState/4294967296; } // seeds are mixed so small seeds still give varied layouts
 function crng(){ crngState^=crngState<<13; crngState>>>=0; crngState^=crngState>>>17; crngState^=crngState<<5; crngState>>>=0; return crngState/4294967296; } // the camera detector's own stream
+// sensor noise (pose drift, depth, lighting) and the sharing of detections, map and coverage over the radio: its own stream,
+// with a fixed number of draws per step or frame, so the person can never change what the team's noise does (no leak)
+function nrng(){ nrngState^=nrngState<<13; nrngState>>>=0; nrngState^=nrngState>>>17; nrngState^=nrngState<<5; nrngState>>>=0; return nrngState/4294967296; }
+// the cast (who is in the building, bodies and clothes) and the other people's walking: two more streams
+function arng(){ arngState^=arngState<<13; arngState>>>=0; arngState^=arngState>>>17; arngState^=arngState<<5; arngState>>>=0; return arngState/4294967296; }
+function wrng(){ wrngState^=wrngState<<13; wrngState>>>=0; wrngState^=wrngState>>>17; wrngState^=wrngState<<5; wrngState>>>=0; return wrngState/4294967296; }
+const gauss=(u1,u2)=>Math.sqrt(-2*Math.log(Math.max(1e-9,u1)))*Math.cos(2*Math.PI*u2);
 function prng(){ prngState^=prngState<<13; prngState>>>=0; prngState^=prngState>>>17; prngState^=prngState<<5; prngState>>>=0; return prngState/4294967296; } // the person's own stream
 const clamp=(v,a,b)=>v<a?a:v>b?b:v;
 const hyp=Math.hypot;
@@ -275,7 +283,7 @@ let WALK, FLY, FLYRAW, ROOMN, DZONE; // 0.2 m: walk blocked, fly blocked (inflat
 // 0.2 m: free cells joined to the main free region (on foot: the outside strip, so every exit; by air: the pads). Furniture
 // can close off a pocket of free floor (behind a table, between a bed and a wall); targets snap out of such pockets, since a
 // path search into one fails only after exploring the whole floor
-let WALKOK=null, FLYOK=null;
+let WALKOK=null, FLYOK=null, WALKW=null, WALKWOK=null; // WALKW: walking with a wheelchair or pushchair (0.4 m clear of obstacles)
 let roomDist=null;              // room-to-room distance via doors (m)
 let CLR=null;                    // 0.1 m: distance (m) to the nearest obstacle at drone flight height (top >= 1.1 m), chamfer transform
 const COVP=[];                   // coverage points per room: {x,z,seen}
@@ -303,10 +311,11 @@ function buildWorld(p){
     walkRaw[k]=hw>0.3?1:0; FLYRAW[k]=hw>1.0?1:0;
     const x=(i+0.5)*NAV, z=(j+0.5)*NAV; ROOMN[k]=ROOMC[cellIdx(x,z)];
     if(i===0||j===0||i===NX-1||j===NZ-1){ walkRaw[k]=1; FLYRAW[k]=1; } }
-  WALK=dilate(walkRaw,1); FLY=dilate(FLYRAW,2);
+  WALK=dilate(walkRaw,1); FLY=dilate(FLYRAW,2); WALKW=dilate(walkRaw,2);
   for(const d of p.doors){ const halfT=Math.max(d.w/2-0.3,NAV*0.55);
     for(let j=0;j<NZ;j++)for(let i=0;i<NX;i++){ const x=(i+0.5)*NAV, z=(j+0.5)*NAV; const {n,t}=doorCoords(d,x,z); const k=j*NX+i;
       if(Math.abs(t)<=halfT&&Math.abs(n)<=1.2&&!FLYRAW[k])FLY[k]=0;
+      if(Math.abs(t)<=Math.max(d.w/2-0.35,NAV*0.55)&&Math.abs(n)<=1.0&&!walkRaw[k])WALKW[k]=0;
       if(Math.abs(t)<=d.w/2+0.2&&Math.abs(n)<=0.8)DZONE[k]=d.id+1; } }
   // room graph distances (room centre -> door -> room centre), Floyd–Warshall on a handful of rooms
   const nR=p.rooms.length+1; roomDist=Array.from({length:nR},(_,i)=>Array.from({length:nR},(_,j)=>i===j?0:Infinity));
@@ -317,7 +326,7 @@ function buildWorld(p){
   const a=CELL, b=CELL*Math.SQRT2;
   for(let j=0;j<GZ;j++)for(let i=0;i<GX;i++){ const k=j*GX+i; let v=CLR[k]; if(i>0)v=Math.min(v,CLR[k-1]+a); if(j>0){ v=Math.min(v,CLR[k-GX]+a); if(i>0)v=Math.min(v,CLR[k-GX-1]+b); if(i<GX-1)v=Math.min(v,CLR[k-GX+1]+b); } CLR[k]=v; }
   for(let j=GZ-1;j>=0;j--)for(let i=GX-1;i>=0;i--){ const k=j*GX+i; let v=CLR[k]; if(i<GX-1)v=Math.min(v,CLR[k+1]+a); if(j<GZ-1){ v=Math.min(v,CLR[k+GX]+a); if(i<GX-1)v=Math.min(v,CLR[k+GX+1]+b); if(i>0)v=Math.min(v,CLR[k+GX-1]+b); } CLR[k]=v; }
-  WALKOK=mainRegion(WALK,0.7,0.7); FLYOK=mainRegion(FLY,p.pads[0].x,p.pads[0].z);
+  WALKOK=mainRegion(WALK,0.7,0.7); WALKWOK=mainRegion(WALKW,0.7,0.7); FLYOK=mainRegion(FLY,p.pads[0].x,p.pads[0].z);
   // coverage points (0.5 m) where a hidden person could be: floor below 0.3 m he can walk to, per room
   COVP.length=0; for(const q of p.rooms){ const pts=[]; for(let z=q.z0+0.45;z<q.z1-0.3;z+=0.5)for(let x=q.x0+0.45;x<q.x1-0.3;x+=0.5){ if(ROOMC[cellIdx(x,z)]===q.id&&Hg[cellIdx(x,z)]<0.3&&!WALK[navIdx(x,z)]&&WALKOK[navIdx(x,z)])pts.push({x,z,seen:0}); } COVP.push(pts); }
 }
@@ -344,6 +353,9 @@ function los(ax,ay,az,bx,by,bz){
     if(Hg[c]>=y)return false; if(DOORC[c]&&y>settings.lintel)return false; }
   return true;
 }
+// a drone's proximity sensing (and the truth metrics) count a person as near if a line reaches their torso (1.3 m) or their legs
+// (0.5 m): a lintel can hide the torso from a drone flying high, and a table can hide the legs
+function senses(x,y,z,h){ return los(x,y,z,h.x,1.3,h.z)||los(x,y,z,h.x,0.5,h.z); }
 function losGrid(grid,ax,az,bx,bz){ const L=hyp(bx-ax,bz-az); const n=Math.max(1,Math.ceil(L/0.1)); for(let k=0;k<=n;k++){ const t=k/n; if(grid[navIdx(ax+(bx-ax)*t,az+(bz-az)*t)])return false; } return true; }
 function astar(grid,sx,sz,gx,gz,extra){
   const N=NX*NZ; const g=new Float32Array(N).fill(Infinity); const came=new Int32Array(N).fill(-1); const closed=new Uint8Array(N); const heap=[];
@@ -363,7 +375,7 @@ function astar(grid,sx,sz,gx,gz,extra){
 }
 function shortcut(grid,pts){ if(!pts||pts.length<3)return pts; const out=[pts[0]]; let a=0; while(a<pts.length-1){ let b=pts.length-1; while(b>a+1&&!losGrid(grid,pts[a].x,pts[a].z,pts[b].x,pts[b].z))b--; out.push(pts[b]); a=b; } return out; }
 // nearest unblocked nav cell to (x,z) within maxM metres (breadth-first over cells)
-function nearestFreeNav(grid,x,z,maxM){ const ok=grid===WALK?WALKOK:grid===FLY?FLYOK:null, k0=navIdx(x,z); if(!grid[k0]&&(!ok||ok[k0]))return {x,z}; const i0=k0%NX, j0=(k0-i0)/NX, R=Math.ceil((maxM||3)/NAV); let best=null,bd=Infinity;
+function nearestFreeNav(grid,x,z,maxM){ const ok=grid===WALK?WALKOK:grid===FLY?FLYOK:grid===WALKW?WALKWOK:null, k0=navIdx(x,z); if(!grid[k0]&&(!ok||ok[k0]))return {x,z}; const i0=k0%NX, j0=(k0-i0)/NX, R=Math.ceil((maxM||3)/NAV); let best=null,bd=Infinity;
   for(let dj=-R;dj<=R;dj++)for(let di=-R;di<=R;di++){ const i=i0+di,j=j0+dj; if(i<0||j<0||i>=NX||j>=NZ||grid[j*NX+i]||(ok&&!ok[j*NX+i]))continue; const d=di*di+dj*dj; if(d<bd){ bd=d; best={x:(i+0.5)*NAV,z:(j+0.5)*NAV}; } } return best; }
 // the free cells 4-connected to the free cell nearest (x, z): what a path search from there can reach
 function mainRegion(grid,x,z){ const ok=new Uint8Array(NX*NZ), k0=navIdx(x,z), i0=k0%NX, j0=(k0-i0)/NX; let s=-1,bd=Infinity;
@@ -379,6 +391,19 @@ function planPath(grid,from,to,extra){
   const cells=astar(grid,si,(s-si)/NX,gi,(g-gi)/NX,extra); if(!cells)return null;
   let pts=shortcut(grid,cells); if(pts.length&&hyp(pts[0].x-from.x,pts[0].z-from.z)<0.3)pts=pts.slice(1);
   if(!pts.length||hyp(pts[pts.length-1].x-t.x,pts[pts.length-1].z-t.z)>0.05)pts.push({x:t.x,z:t.z}); return pts; }
+// reference points: the flight law itself (a carrot 0.6 m ahead on the path, the same gains), run forward from the drone's position and
+// velocity with at most aMax of horizontal acceleration and vlim of speed (a faster drone slows at aMax), and the vertical law
+// (at most 0.8 m/s), so a label never asks for a start, turn or stop that a drone cannot fly
+function refTrack(d,path,s,vlim){ const dt=1/60, dm=settings.aMax*dt; let x=d.x,z=d.z,vx=d.vx,vz=d.vz,y=d.y,vy=d.vy||0,t=0; const rem=path.slice(), out=[];
+  for(const T of [0.5,1,1.5,2]){ for(;t<T-1e-9;t+=dt){
+      while(rem.length>1&&hyp(rem[0].x-x,rem[0].z-z)<0.3)rem.shift();
+      const c=rem.length?pointAlong(rem,{x,z},0.6):{x:s.x,z:s.z};
+      let ax=2.0*(c.x-x)-2.4*vx, az=2.0*(c.z-z)-2.4*vz; const ah=hyp(ax,az); if(ah>settings.aMax){ ax*=settings.aMax/ah; az*=settings.aMax/ah; }
+      let nvx=vx+ax*dt, nvz=vz+az*dt; const nv=hyp(nvx,nvz); if(nv>vlim){ nvx*=vlim/nv; nvz*=vlim/nv; }
+      let dvx=nvx-vx, dvz=nvz-vz; const dv=hyp(dvx,dvz); if(dv>dm){ dvx*=dm/dv; dvz*=dm/dv; } vx+=dvx; vz+=dvz;
+      vy=clamp(vy+(3*(s.y-y)-3*vy)*dt,-0.8,0.8); x+=vx*dt; z+=vz*dt; y+=vy*dt; }
+    out.push([+x.toFixed(3),+y.toFixed(3),+z.toFixed(3)]); }
+  return out; }
 function pathLength(pts,from){ let L=0,px=from.x,pz=from.z; for(const p of pts){ L+=hyp(p.x-px,p.z-pz); px=p.x; pz=p.z; } return L; }
 function pointAlong(pts,from,s){ let px=from.x,pz=from.z; for(const p of pts){ const L=hyp(p.x-px,p.z-pz); if(s<=L&&L>1e-9){ const t=s/L; return {x:px+(p.x-px)*t,z:pz+(p.z-pz)*t}; } s-=L; px=p.x; pz=p.z; } return {x:px,z:pz}; }
 function walkDist(a,b){ const p=planPath(WALK,a,b); return p?pathLength(p,a):Infinity; }
@@ -404,55 +429,152 @@ function outsidePoint(d,dist){ const n=doorNormal(d,d.rooms[0]); const k=Math.mi
 // a free point in a room: a rectangle chosen by area (one draw, only for rooms of several rectangles), then a point inside it
 function randomPointIn(rid,grid,rnd){ rnd=rnd||rng; const q=plan.rooms[rid];
   for(let k=0;k<60;k++){ let r=q.rects[0]; if(q.rects.length>1){ let u=rnd()*q.area; for(const rr of q.rects){ r=rr; u-=(rr.x1-rr.x0)*(rr.z1-rr.z0); if(u<=0)break; } }
-    const x=r.x0+0.5+rnd()*(r.x1-r.x0-1), z=r.z0+0.5+rnd()*(r.z1-r.z0-1), k=navIdx(x,z), ok=grid===WALK?WALKOK:grid===FLY?FLYOK:null; if(!grid[k]&&(!ok||ok[k]))return {x,z}; }
+    const x=r.x0+0.5+rnd()*(r.x1-r.x0-1), z=r.z0+0.5+rnd()*(r.z1-r.z0-1), k=navIdx(x,z), ok=grid===WALK?WALKOK:grid===FLY?FLYOK:grid===WALKW?WALKWOK:null; if(!grid[k]&&(!ok||ok[k]))return {x,z}; }
   return nearestFreeNav(grid,q.cx,q.cz,4)||{x:q.cx,z:q.cz}; }
 
 // ---------- metrics ----------
 const metrics={breaches:0,left:0,deterred:0,guided:0,found:0,falseFound:0,fpFrames:0,tFound:null,seenT:0,totT:0,minStandoff:Infinity,minSep:Infinity,minWall:Infinity,
-  standoffViol:0,standoffApproach:0,floorViol:0,bandViol:{pressure:0,comfort:0},bandT:{pressure:0,comfort:0},minPressure:Infinity,minComfort:Infinity,sepViol:0,wallViol:0,altViol:0,doorWait:0,doorShare:0,radioDrops:0,linkHolds:0,orders:0,maxMargin:0,coverage:0,mapped:0};
+  standoffViol:0,standoffApproach:0,floorViol:0,floorByDrone:0,floorByPerson:0,bandViol:{pressure:0,comfort:0},bandT:{pressure:0,comfort:0},minPressure:Infinity,minComfort:Infinity,sepViol:0,wallViol:0,altViol:0,doorWait:0,doorShare:0,radioDrops:0,linkHolds:0,orders:0,maxMargin:0,coverage:0,mapped:0};
 
 // ---------- the person (simulated; an explicit assumption, see docs/TACTICS.md) ----------
 // Intents: enter a room, wander, hide, leave. Drones within R_react push him away (k_fear) and he sidesteps around the strongest
 // one (k_flank). Blocked for T_resolve seconds in total, an intruder gives up and leaves. Hidden from the teacher.
+// Bodies and gait (docs/DATASET_PLAN.md, "Diverse people"): adult stature from CDC NHANES 2015-18 (Fryar et al. 2021, public domain),
+// children's by age consistent with the CDC references; comfortable walking speed by age and sex from Bohannon & Andrews 2011 (SD after
+// Bohannon 1997); shoulder width from ANSUR II (Gordon et al. 2014); wheelchair (654 mm wide on average, Steinfeld et al. 2010; 0.8-1.2
+// m/s, Tolerico et al. 2007 and Gales et al. 2020) and cane (about 0.9 m/s, Gales et al. 2020) users. Running and sprint ranges are our
+// assumption (no large normative study of ordinary adults exists; walk-to-run near 2 m/s, Rotstein et al. 2005).
+const BODY={adultH:{m:[1.753,0.074],f:[1.613,0.069]},childH:[[4,1.03],[6,1.16],[8,1.28],[10,1.39],[12,1.51],[14,1.63],[16,1.71]],childSD:0.055,
+  walk:{m:[[29,1.36],[39,1.43],[49,1.43],[59,1.43],[69,1.34],[79,1.26],[120,0.97]],f:[[29,1.34],[39,1.34],[49,1.39],[59,1.31],[69,1.24],[79,1.13],[120,0.94]]},walkSD:0.16,
+  aids:{wheelchair:{walk:[0.8,1.15],run:[1.3,1.7],width:0.68,radius:0.45},cane:{walk:[0.65,1.1],run:[0.85,1.3],width:0.5,radius:0.3},pushchair:{walk:[0.95,1.3],run:[1.5,1.9],width:0.6,radius:0.42}}};
+const lerpT=(tab,a)=>{ if(a<=tab[0][0])return tab[0][1]; for(let k=1;k<tab.length;k++)if(a<=tab[k][0]){ const [a0,v0]=tab[k-1],[a1,v1]=tab[k]; return v0+(v1-v0)*(a-a0)/(a1-a0); } return tab[tab.length-1][1]; };
+const pick1=(u,a)=>a[Math.min(a.length-1,Math.floor(u*a.length))];
+// a person's body and movement style, drawn from u (20 uniform draws): who, how tall and wide, how fast, how they move
+function drawPerson(role,u,uniform){ const sex=u[0]<0.5?'f':'m';
+  let age; if(role==='visitor')age=u[1]<0.15?4+12*u[2]:u[1]<0.35?65+25*u[2]:18+47*u[2]; else if(role==='staff')age=20+45*u[2]; else age=16+44*u[2];
+  age=+age.toFixed(1); const gz=gauss(u[3],u[4]); let H=age<18?lerpT(BODY.childH,age)+BODY.childSD*gz:BODY.adultH[sex][0]+BODY.adultH[sex][1]*gz-(age>65?0.02+0.001*(age-65):0);
+  H=clamp(H,0.95,2.05);
+  let aid=null; if(uniform){ /* identical people: the old fixed model */ } else if(role==='visitor'){ const pa=age>=65?[0.06,0.18,0]:age<18?[0.01,0,0]:[0.02,0.02,0.06]; aid=u[5]<pa[0]?'wheelchair':u[5]<pa[0]+pa[1]?'cane':u[5]<pa[0]+pa[1]+pa[2]?'pushchair':null; }
+  else if(role==='staff'&&u[5]<0.02)aid='wheelchair';
+  // walking speed by age and sex (children slower), varied per person; running and sprinting by age; aids set their own
+  let walk=age<18?1.05+0.25*clamp((age-4)/12,0,1):lerpT(BODY.walk[sex],age); walk=clamp(walk+BODY.walkSD*gauss(u[6],u[7]),0.55,1.9);
+  const young=age>=16&&age<=40, mid=age>40&&age<65; let run=young?3.0+1.2*u[8]:mid?2.5+0.9*u[8]:age<16?2.4+1.0*u[8]:1.5+0.8*u[8], sprint=young?4.8+1.6*u[9]:mid?3.8+1.2*u[9]:age<16?3.4+1.4*u[9]:2.2+0.8*u[9];
+  if(aid){ const A=BODY.aids[aid]; walk=A.walk[0]+(A.walk[1]-A.walk[0])*u[6]; run=sprint=A.run[0]+(A.run[1]-A.run[0])*u[8]; }
+  if(uniform){ walk=role==='visitor'?0.9:1.2; run=sprint=2.0; H=1.75; }
+  const shoulder=clamp(H*(sex==='m'?0.235:0.225),0.24,0.5), radius=aid?BODY.aids[aid].radius:clamp(shoulder/2+0.05,0.15,0.3);
+  const style=uniform?{pauseRate:0,hesitate:0,doubleBack:0,dodge:0,wallHug:false,bursts:false,crawl:false,hidePosture:'crouching'}:{
+    pauseRate:role==='visitor'?1.5+3*u[10]:0.2+1.2*u[10], hesitate:0.15+0.6*u[11], doubleBack:role==='visitor'?0.4*u[12]:0.25*u[12],
+    dodge:role==='intruder'&&!aid?u[13]:0, wallHug:!aid&&u[14]<0.25, bursts:role==='intruder'&&!aid&&age<65&&u[15]<0.7,
+    crawl:role==='intruder'&&!aid&&age<60&&u[16]<0.35, hidePosture:aid==='wheelchair'?'sitting':pick1(u[17],['crouching','crouching','lying','sitting'])};
+  return {sex,age:+age.toFixed(1),height:+H.toFixed(3),shoulder:+shoulder.toFixed(3),radius:+radius.toFixed(2),aid,walk:+walk.toFixed(2),run:+run.toFixed(2),sprint:+sprint.toFixed(2),
+    skinTone:1+Math.floor(u[18]*10),style}; }
+// heights of three points the camera must see (head, chest, hip) for a posture, and the body's apparent size for the detector
+function bodyPoints(b,posture){ const H=b.height; return posture==='lying'?[0.32,0.24,0.16]:posture==='crouching'?[0.6*H,0.42*H,0.25*H]:posture==='sitting'?(b.aid==='wheelchair'?[0.74*H+0.05,0.55*H,0.38*H]:[0.72*H,0.52*H,0.33*H]):[0.94*H,0.74*H,0.52*H]; }
+function bodySize(b,posture){ const h=posture==='lying'?0.3:posture==='crouching'?0.6*b.height:posture==='sitting'?0.74*b.height:b.height, w=b.aid?BODY.aids[b.aid].width:b.shoulder*1.2;
+  return Math.sqrt(h*w/(1.7*0.45)); }
+// ---------- the cast: the subject (cast[0], the intruder or the lost visitor) and the other people in the building ----------
+// Staff and visitors (some in groups of 2-3) by floor family; each with a body, clothes (staff in a uniform where the family has one) and
+// a track id the detector reports. Drawn from its own stream (arng) right after the floor, so simulators/tools/floors.js can describe them.
+const COLOURS=['red','blue','green','black','white','grey','yellow','brown'], TOPS=['jacket','hoodie','shirt','coat','sweater'];
+const STAFF_LOOK={warehouse:['yellow','hi-vis vest'],corridor:['blue','uniform'],retail:['green','staff shirt']};
+const CROWD_BY_FAMILY={office:[1,4],house:[0,2],warehouse:[1,4],openplan:[2,6],corridor:[2,6],retail:[2,6],single:[0,3],irregular:[1,3]};
+function drawLook(role,family,u){ const uni=role==='staff'&&STAFF_LOOK[family]; return {colour:uni?uni[0]:pick1(u[0],COLOURS),top:uni?uni[1]:pick1(u[1],TOPS),hat:u[2]<0.18,bag:u[3]<0.3,mask:u[4]<0.05,glasses:u[5]<0.3}; }
+function drawCast(role,family){ const U=n=>Array.from({length:n},()=>arng()); let tid=1+Math.floor(arng()*20); const nextTid=()=>(tid+=1+Math.floor(arng()*7));
+  const subject={tid:nextTid(),role,body:drawPerson(role,U(20),settings.people!=='diverse'),look:drawLook(role,family,U(6)),group:null};
+  const R=CROWD_BY_FAMILY[family]||[0,2], n=settings.crowd==='auto'?R[0]+Math.floor(arng()*(R[1]-R[0]+1)):Math.max(0,+settings.crowd||0), crowdL=[]; let g=0;
+  while(crowdL.length<n){ if(arng()<0.55){ crowdL.push({tid:nextTid(),role:'staff',body:drawPerson('staff',U(20),false),look:drawLook('staff',family,U(6)),group:null}); continue; }
+    const size=Math.min(n-crowdL.length,1+Math.floor(arng()*3)); g++; for(let k=0;k<size;k++)crowdL.push({tid:nextTid(),role:'visitor',body:drawPerson('visitor',U(20),false),look:drawLook('visitor',family,U(6)),group:size>1?g:null}); }
+  return {subject,crowd:crowdL}; }
+// everyone in the building the drones must keep clear of: the subject and the other people
+function everyone(){ const out=[]; if(person.alive)out.push(person); for(const w of crowd.list)if(w.alive)out.push(w); return out; }
+// the other people walk between rooms with pauses (staff sit now and then); a group follows its first member side by side; they step
+// aside from drones within about 2 m; they never leave the building
+const crowd={list:[],
+  reset(cast){ this.list=cast.map(c=>({tid:c.tid,role:c.role,body:c.body,look:c.look,group:c.group,leader:null,x:0,z:0,vx:0,vz:0,path:[],target:null,replanT:0,pauseT:0,noPath:false,
+      posture:c.body.aid==='wheelchair'?'sitting':'standing',grid:c.body.radius>0.35?WALKW:WALK,alive:true,room:-1,side:0}));
+    for(const w of this.list)if(w.group!=null){ const L=this.list.find(o=>o.group===w.group); if(L!==w)w.leader=L; }
+    for(const w of this.list){ if(w.leader)continue; const p=randomPointIn(Math.floor(wrng()*plan.rooms.length),w.grid,wrng); w.x=p.x; w.z=p.z; }
+    for(const w of this.list){ w.side=wrng()<0.5?-1:1; if(!w.leader)continue; const p=nearestFreeNav(w.grid,w.leader.x+(wrng()-0.5)*1.6,w.leader.z+(wrng()-0.5)*1.6,2)||{x:w.leader.x,z:w.leader.z}; w.x=p.x; w.z=p.z; }
+    for(const w of this.list){ w.room=roomAt(w.x,w.z); w.pauseT=wrng()*10; } },
+  step(dt,drones){ for(const w of this.list)stepWalker(w,dt,drones); } };
+function stepWalker(w,dt,drones){ if(!w.alive)return; let fx=0,fz=0, block=false;
+  // people give hovering drones a berth: pushed aside within 2.5 m, and they wait while one hovers within 1.7 m ahead of them
+  for(const d of drones){ if(d.y<0.4)continue; const dx=w.x-d.x, dz=w.z-d.z, dd=Math.max(0.3,hyp(dx,dz)), s2=clamp(2.5/dd-1,0,2); if(s2>0){ fx+=s2*dx/dd; fz+=s2*dz/dd; }
+    const v=hyp(w.vx,w.vz); if(dd<1.7&&v>0.1&&(-dx*w.vx-dz*w.vz)/(dd*v)>0.3)block=true; }
+  // waiting on a drone ahead, or getting nowhere, for 3 s: give up on the target and pick another, so a walker and a drone that
+  // cannot move cannot hold each other (one such pair stood 1.19 m apart for 92 s)
+  if(block){ w.vx=w.vz=0; w.pauseT=Math.max(w.pauseT,0.5); w.blockT=(w.blockT||0)+dt; if(w.blockT>3){ w.blockT=0; w.target=null; } return; } w.blockT=0;
+  let goal=null, speed=w.body.walk;
+  if(w.leader&&w.leader.alive){ const L=w.leader, lv=hyp(L.vx,L.vz), h=lv>0.1?{x:L.vx/lv,z:L.vz/lv}:{x:0,z:1}; goal={x:L.x-h.z*0.7*w.side-h.x*0.4,z:L.z+h.x*0.7*w.side-h.z*0.4};
+    speed=Math.min(w.body.walk*1.3,lv+0.4); if(!w.body.aid)w.posture=L.posture==='sitting'?'sitting':'standing';
+    if(hyp(goal.x-w.x,goal.z-w.z)<0.35&&hyp(fx,fz)<0.05){ w.vx=w.vz=0; return; } }
+  else if(w.pauseT>0){ w.pauseT-=dt; w.vx=w.vz=0; if(w.pauseT>3&&w.role==='staff'&&!w.body.aid&&w.posture==='standing'&&wrng()<0.004)w.posture='sitting'; if(hyp(fx,fz)<0.3)return; }
+  else { if(w.posture==='sitting'&&!w.body.aid)w.posture='standing';
+    if(!w.target||hyp(w.target.x-w.x,w.target.z-w.z)<0.4){ if(w.target){ w.target=null; w.pauseT=w.role==='staff'?5+20*wrng():2+8*wrng(); return; } w.target=randomPointIn(Math.floor(wrng()*plan.rooms.length),w.grid,wrng); w.path=[]; w.replanT=0; }
+    goal=w.target; }
+  w.replanT-=dt; if(goal&&(w.replanT<=0||(!w.path.length&&!w.noPath))){ w.replanT=1.5; w.path=planPath(w.grid,w,goal)||planPath(WALK,w,goal)||[]; w.noPath=!w.path.length; }
+  while(w.path.length&&hyp(w.path[0].x-w.x,w.path[0].z-w.z)<0.25)w.path.shift();
+  let gx=0,gz=0; const wp=w.path[0]||goal; if(wp){ const L=hyp(wp.x-w.x,wp.z-w.z); if(L>0.05){ gx=(wp.x-w.x)/L; gz=(wp.z-w.z)/L; } }
+  const hx=gx+1.0*fx, hz=gz+1.0*fz, hn=hyp(hx,hz); if(hn<0.05){ w.vx=w.vz=0; return; }
+  const sp=w.pauseT>0?0.6*speed:speed, x0=w.x, z0=w.z; person.moveBy.call(w,hx/hn*sp*dt,hz/hn*sp*dt);
+  // the velocity is the motion made: a walker pressed against a wall is standing, not walking
+  w.vx=(w.x-x0)/dt; w.vz=(w.z-z0)/dt; if(hyp(w.vx,w.vz)<0.3*sp){ w.stuckT=(w.stuckT||0)+dt; if(w.stuckT>3){ w.stuckT=0; w.target=null; w.pauseT=1; } } else w.stuckT=0;
+  const r=roomAt(w.x,w.z); if(r>=0)w.room=r; }
 const person={
   reset(o){ o=o||{};
     this.role=o.role||'intruder'; this.intent=o.intent||(this.role==='intruder'?'enter':'wander');
+    this.body=o.body||drawPerson(this.role,Array.from({length:20},()=>prng()),settings.people!=='diverse');
+    this.grid=this.body.radius>0.35?WALKW:WALK; this.posture=this.body.aid==='wheelchair'?'sitting':'standing'; this.speedF=1; this.burstT=0; this.burstNext=0;
+    this.nextPause=this.body.style.pauseRate>0?60/this.body.style.pauseRate*(0.5+prng()):Infinity; this.nextBack=this.body.style.doubleBack>0?60/this.body.style.doubleBack*(0.5+prng()):Infinity; this.lastDoor=0; this.resume=null; this.trailP=[];
     const P=o.params||{}; this.params={Rreact:P.Rreact!=null?P.Rreact:2.5+2*prng(),kFear:P.kFear!=null?P.kFear:0.5*Math.pow(6,prng()),kFlank:P.kFlank!=null?P.kFlank:prng(),Tresolve:P.Tresolve!=null?P.Tresolve:10+50*prng()};
     this.targetRoom=o.targetRoom!=null?o.targetRoom:(plan.protect!=null?plan.protect:0);
     let start;
     if(o.start==='outside'||(o.start==null&&this.role==='intruder')){ const ex=exitDoors(); const e=o.startExit!=null?plan.doors[o.startExit]:ex[Math.floor(prng()*ex.length)]; start=outsidePoint(e,1.6); this.entry=e.id; }
-    else { const rid=o.start!=null?o.start:Math.floor(prng()*plan.rooms.length); start=randomPointIn(rid,WALK,prng); this.entry=null; }
+    else { const rid=o.start!=null?o.start:Math.floor(prng()*plan.rooms.length); start=randomPointIn(rid,this.grid,prng); this.entry=null; }
     Object.assign(this,{x:start.x,z:start.z,y:0,vx:0,vz:0,heading:0,path:[],replanT:0,blockedT:0,lastRemain:Infinity,state:this.intent==='hide'?'hiding':'approach',
-      insideT:0,alive:true,breached:false,threat:0,pauseT:o.delay||0,delay:o.delay||0,room:roomAt(start.x,start.z),hideAt:null,following:false});
-    this.setTarget(this.intent==='enter'?randomPointIn(this.targetRoom,WALK,prng):this.intent==='hide'?this.hidingSpot(this.room>=0&&this.room<plan.rooms.length?this.room:this.targetRoom):this.intent==='leave'?this.exitTarget():randomPointIn(Math.floor(prng()*plan.rooms.length),WALK,prng));
+      insideT:0,alive:true,breached:false,threat:0,pauseT:o.delay||0,delay:o.delay||0,room:roomAt(start.x,start.z),hideAt:null,following:false,followT:undefined,crawled:false,crawling:false,deterredBy:null,noPath:false});
+    this.setTarget(this.intent==='enter'?randomPointIn(this.targetRoom,this.grid,prng):this.intent==='hide'?this.hidingSpot(this.room>=0&&this.room<plan.rooms.length?this.room:this.targetRoom):this.intent==='leave'?this.exitTarget():randomPointIn(Math.floor(prng()*plan.rooms.length),this.grid,prng));
   },
   setTarget(p){ this.target=p; this.path=[]; this.replanT=0; this.lastRemain=Infinity; this.noPath=false; },
-  // the nearest exit on foot, avoiding one with drones hovering at it (each counts as 12 m more walking)
-  exitTarget(){ let best=null,bl=Infinity; for(const e of exitDoors()){ const L=doorWalk(e.id,this)+12*team.drones.filter(d=>d.y>0.4&&hyp(d.x-e.x,d.z-e.z)<2.0).length; if(L<bl){ bl=L; best=outsidePoint(e,1.8); } } return best||outsidePoint(exitDoors()[0],1.8); },
-  hidingSpot(rid){ const q=plan.rooms[rid]; const ds=plan.doors.filter(d=>d.rooms.includes(rid)); let best=null,bs=-1; for(let k=0;k<40;k++){ const p=randomPointIn(rid,WALK,prng); const s=Math.min(...ds.map(d=>hyp(d.x-p.x,d.z-p.z))); if(s>bs){ bs=s; best=p; } } this.hideAt=best; return best; },
+  // the nearest exit on foot; an intruder avoids one with drones hovering at it (each counts as 12 m more walking), while a visitor
+  // being guided goes where the drones are
+  exitTarget(){ let best=null,bl=Infinity; for(const e of exitDoors()){ const L=doorWalk(e.id,this)+(this.role==='intruder'?12*team.drones.filter(d=>d.y>0.4&&hyp(d.x-e.x,d.z-e.z)<2.0).length:0); if(L<bl){ bl=L; best=outsidePoint(e,1.8); } } return best||outsidePoint(exitDoors()[0],1.8); },
+  hidingSpot(rid){ const q=plan.rooms[rid]; const ds=plan.doors.filter(d=>d.rooms.includes(rid)); let best=null,bs=-1; for(let k=0;k<40;k++){ const p=randomPointIn(rid,this.grid,prng); const s=Math.min(...ds.map(d=>hyp(d.x-p.x,d.z-p.z))); if(s>bs){ bs=s; best=p; } } this.hideAt=best; return best; },
   inBuilding(){ return this.room>=0&&this.room<plan.rooms.length; },
   step(dt,drones){
     if(!this.alive)return;
     const P=this.params; let px=0,pz=0,threat=0,maxS=0,maxDir=null;
     // a visitor who stopped being guided stops following (and walks somewhere of her own)
-    if(this.role==='visitor'&&this.following&&mission.goal!=='guideout'&&this.state!=='leave'){ this.following=false; this.setTarget(randomPointIn(this.room>=0&&this.room<plan.rooms.length?this.room:0,WALK,prng)); }
+    if(this.role==='visitor'&&this.following&&mission.goal!=='guideout'&&this.state!=='leave'){ this.following=false; this.setTarget(randomPointIn(this.room>=0&&this.room<plan.rooms.length?this.room:0,this.grid,prng)); }
     const guide=this.role==='visitor'&&this.following&&mission.goal==='guideout'?team.drones[mission.leader||0]:null;
     for(const d of drones){ if(d.y<0.4)continue; const dx=this.x-d.x, dz=this.z-d.z, dd=Math.max(0.3,hyp(dx,dz)); const s=clamp(P.Rreact/dd-1,0,settings.fearCap)*(d===guide?0.3:1); if(s<=0)continue;
       px+=s*dx/dd; pz+=s*dz/dd; threat+=s; if(s>maxS){ maxS=s; maxDir={x:dx/dd,z:dz/dd}; } }
     this.threat=threat;
     // guide-out: a lost visitor follows the leading drone when it is close and in sight
-    if(this.role==='visitor'&&mission.goal==='guideout'&&this.state!=='leave'){ const L=team.drones[mission.leader||0]; const near=L&&L.y>0.4&&hyp(L.x-this.x,L.z-this.z)<6&&los(L.x,L.y,L.z,this.x,1.6,this.z);
-      if(near&&roomAt(L.x,L.z)===plan.OUT){ this.following=true; this.state='leave'; this.setTarget(this.exitTarget()); }
+    if(this.role==='visitor'&&mission.goal==='guideout'&&this.state!=='leave'){ const L=team.drones[mission.leader||0]; const near=L&&L.y>0.4&&hyp(L.x-this.x,L.z-this.z)<6&&los(L.x,L.y,L.z,this.x,bodyPoints(this.body,this.posture)[0],this.z);
+      // the guide outside, or hovering at an exit close to her: "this way out", and she leaves by it
+      const atExit=near?exitDoors().find(e=>hyp(L.x-e.x,L.z-e.z)<2.5&&doorWalk(e.id,this)<6):null;
+      if(near&&(roomAt(L.x,L.z)===plan.OUT||atExit)){ this.following=true; this.state='leave'; this.setTarget(atExit?outsidePoint(atExit,1.8):this.exitTarget()); }
       else if(near){ this.following=true; this.followT=simT; if(!this.target||hyp(this.target.x-L.x,this.target.z-L.z)>0.8)this.setTarget({x:L.x,z:L.z}); if(hyp(L.x-this.x,L.z-this.z)<3.0){ this.vx=this.vz=0; return; } }
       else if(this.following&&simT-(this.followT||-99)<5){ if(L&&(!this.target||hyp(this.target.x-L.x,this.target.z-L.z)>0.8))this.setTarget({x:L.x,z:L.z}); } else this.following=false; }
-    if(this.state==='hiding'&&this.hideAt&&hyp(this.x-this.hideAt.x,this.z-this.hideAt.z)<0.4){ this.vx=this.vz=0; return; }
-    this.pauseT-=dt; if(this.pauseT>0){ this.vx=this.vz=0; return; }
+    if(this.state==='hiding'&&this.hideAt&&hyp(this.x-this.hideAt.x,this.z-this.hideAt.z)<0.4){ this.vx=this.vz=0; this.posture=this.body.style.hidePosture;
+      // a crawler slips away to another hiding place in the room when a drone comes within his reaction range
+      if(this.body.style.crawl&&threat>0.3&&!this.crawled){ this.crawled=true; this.posture='lying'; const r=this.room>=0&&this.room<plan.rooms.length?this.room:this.targetRoom; const h=this.hidingSpot(r); this.setTarget(h); this.crawling=true; }
+      else return; }
+    if(this.state==='hiding'&&!this.crawling)this.posture=this.body.aid==='wheelchair'?'sitting':'standing';
+    // stop-and-go, hesitating at a doorway, doubling back: only while calm (no drone pressing him) and not leaving
+    const calm=threat<0.3&&this.state!=='leave'&&!this.following;
+    if(calm&&simT>=this.nextPause){ this.pauseT=Math.max(this.pauseT,0.5+2.5*prng()); this.nextPause=simT+60/Math.max(0.01,this.body.style.pauseRate)*(0.5+prng()); }
+    { const z=DZONE[navIdx(this.x,this.z)]; if(z&&z!==this.lastDoor&&calm&&prng()<this.body.style.hesitate)this.pauseT=Math.max(this.pauseT,0.5+1.5*prng()); this.lastDoor=z; }
+    if(calm&&simT>=this.nextBack&&this.trailP.length>8&&!this.resume){ this.nextBack=simT+60/Math.max(0.01,this.body.style.doubleBack)*(0.5+prng()); const back=this.trailP[Math.max(0,this.trailP.length-1-Math.floor(4+5*prng()))]; this.resume=this.target; this.setTarget(back); }
+    this.pauseT-=dt; if(this.pauseT>0){ this.vx=this.vz=0; if(this.role==='visitor'&&this.pauseT>2&&!this.body.aid&&this.posture==='standing'&&prng()<0.002)this.posture='sitting'; return; }
+    if(this.posture==='sitting'&&!this.body.aid&&this.state!=='hiding')this.posture='standing';
     this.replanT-=dt;
     // replan every second, or at once when the path ran out; a search that found no path waits for the next second
     if(this.target&&(this.replanT<=0||(!this.path.length&&!this.noPath))){
       this.replanT=1.0; const low=drones.filter(d=>d.y>0.4);
       const extra=(i,j)=>{ const cx=(i+0.5)*NAV, cz=(j+0.5)*NAV; for(const d of low)if((cx-d.x)**2+(cz-d.z)**2<0.36)return true; return false; };
-      this.path=planPath(WALK,this,this.target,extra)||planPath(WALK,this,this.target)||[]; this.noPath=!this.path.length;
+      this.path=planPath(this.grid,this,this.target,extra)||planPath(this.grid,this,this.target)||(this.grid!==WALK?planPath(WALK,this,this.target):null)||[]; this.noPath=!this.path.length;
       const remain=this.path.length?pathLength(this.path,this):Infinity;
       if(this.role==='intruder'&&threat>0.2&&remain>this.lastRemain-0.2)this.blockedT+=1.0; else this.blockedT=Math.max(0,this.blockedT-0.5);
       this.lastRemain=remain;
@@ -466,36 +588,55 @@ const person={
     let hx=gx+P.kFear*px, hz=gz+P.kFear*pz;
     if(maxDir&&P.kFlank>0&&(gx||gz)){ let tx=-maxDir.z, tz=maxDir.x; if(tx*gx+tz*gz<0){ tx=-tx; tz=-tz; } hx+=P.kFlank*maxS*tx; hz+=P.kFlank*maxS*tz; }
     const hn=hyp(hx,hz); const fleeing=threat>0.5&&hn>0.05&&(hx*px+hz*pz)>0, toward=maxDir&&hn>0.05&&(hx*maxDir.x+hz*maxDir.z)<0;
-    const speed=this.role==='visitor'?settings.visitorWalk:(fleeing||this.state==='leave'?settings.run:settings.walk*(toward?Math.max(0.4,1-0.3*Math.min(2,threat)):1))*(this.state==='inside'?0.7:1);
-    if(hn>0.05&&(gx||gz||threat>0)){ const ux=hx/hn, uz=hz/hn; this.heading=Math.atan2(ux,uz); this.moveBy(ux*speed*dt,uz*speed*dt); this.vx=ux*speed; this.vz=uz*speed; } else { this.vx=this.vz=0; }
+    // his own speeds, drifting +/-10% within the episode; an intruder fleeing or leaving runs, with sprint bursts of 2-6 s if he has them
+    if(settings.people==='diverse')this.speedF+=((1+0.1*gauss(prng(),prng()))-this.speedF)*Math.min(1,dt/5); const B=this.body; let speed;
+    if(this.crawling)speed=0.35; else if(this.role==='intruder'&&(fleeing||this.state==='leave')){
+      if(B.style.bursts){ if(this.burstT>0)this.burstT-=dt; else if(simT>=this.burstNext){ this.burstT=2+4*prng(); this.burstNext=simT+this.burstT+4+6*prng(); } }
+      speed=this.burstT>0?B.sprint:B.run; }
+    else speed=(this.role==='visitor'?0.85:1)*B.walk*this.speedF*(toward?Math.max(0.4,1-0.3*Math.min(2,threat)):1)*(this.state==='inside'?0.7:1);
+    // wall-hugging: drift toward the nearest wall while more than 0.6 m from it; dodging: a sidestep weave while a drone presses him
+    if(B.style.wallHug&&!this.crawling){ const c=CLR[cellIdx(this.x,this.z)]; if(c>0.6&&c<3){ const g=clearanceGrad(this.x,this.z); hx-=g.x*0.35; hz-=g.z*0.35; } }
+    if(B.style.dodge>0&&threat>0.5&&hn>0.05){ const w=Math.sin(simT*2*Math.PI*0.7)*B.style.dodge*0.8, sx=-hz/hn, sz=hx/hn; hx+=sx*w; hz+=sz*w; }
+    const hn2=hyp(hx,hz); if(hn2>0.05&&(gx||gz||threat>0)){ const ux=hx/hn2, uz=hz/hn2; this.heading=Math.atan2(ux,uz); this.moveBy(ux*speed*dt,uz*speed*dt); this.vx=ux*speed; this.vz=uz*speed; } else { this.vx=this.vz=0; }
+    if(!this.trailP.length||hyp(this.trailP[this.trailP.length-1].x-this.x,this.trailP[this.trailP.length-1].z-this.z)>0.5){ this.trailP.push({x:this.x,z:this.z}); if(this.trailP.length>40)this.trailP.shift(); }
     const r=roomAt(this.x,this.z); if(r!==-1&&r!==this.room)this.enterRoom(r);
     if(this.state==='inside'){ this.insideT+=dt; if(this.insideT>10){ this.state='leave'; this.setTarget(this.exitTarget()); say('intruder','Done in here. Leaving.'); } }
     if(this.state==='leave'&&this.room===plan.OUT){ const near=exitDoors().some(e=>hyp(e.x-this.x,e.z-this.z)<0.9); if(!near){ this.alive=false; metrics.left++; if(!this.breached&&this.role==='intruder')metrics.deterred++;
       if(this.role==='visitor')metrics.guided++; say(this.role==='visitor'?'site':'intruder',this.role==='visitor'?'The visitor is outside and safe.':'Out of the building. Gone.'); if(world.endOnGone)world.ended=true; } }
   },
-  moveBy(dx,dz){ const nx=this.x+dx, nz=this.z+dz; if(!WALK[navIdx(nx,nz)]){ this.x=nx; this.z=nz; return; } if(!WALK[navIdx(nx,this.z)]){ this.x=nx; return; } if(!WALK[navIdx(this.x,nz)])this.z=nz; },
+  moveBy(dx,dz){ const G=this.grid&&!this.grid[navIdx(this.x,this.z)]?this.grid:WALK, nx=this.x+dx, nz=this.z+dz; if(!G[navIdx(nx,nz)]){ this.x=nx; this.z=nz; return; } if(!G[navIdx(nx,this.z)]){ this.x=nx; return; } if(!G[navIdx(this.x,nz)])this.z=nz; },
   enterRoom(r){ const from=this.room; this.room=r;
     if(from===plan.OUT&&r>=0&&r<plan.rooms.length){ const e=exitDoors().filter(d=>d.rooms[0]===r).sort((a,b)=>hyp(a.x-this.x,a.z-this.z)-hyp(b.x-this.x,b.z-this.z))[0];
       if(e){ team.lkp={x:e.x,z:e.z}; team.lkpT=simT; team.lkpRoom=r; team.everSeen=true; say('site','Door sensor: '+e.name+' opened.'); } }
-    if(this.role==='intruder'&&this.state==='approach'&&r===this.targetRoom){ this.state='inside'; this.breached=true; this.insideT=0; metrics.breaches++; say('intruder','I\'m in the '+plan.rooms[r].name+'.'); say('site','BREACH: '+plan.rooms[r].name+'.'); this.setTarget(randomPointIn(r,WALK,prng)); } },
-  arrived(){ if(this.state==='approach'&&this.intent==='enter'){ this.setTarget(randomPointIn(this.targetRoom,WALK,prng)); return; }
-    if(this.state==='inside'){ this.setTarget(randomPointIn(this.room,WALK,prng)); return; }
-    if(this.intent==='wander'&&this.state!=='leave'){ this.pauseT=3+5*prng(); this.setTarget(randomPointIn(Math.floor(prng()*plan.rooms.length),WALK,prng)); } }
+    if(this.role==='intruder'&&this.state==='approach'&&r===this.targetRoom){ this.state='inside'; this.breached=true; this.insideT=0; metrics.breaches++; say('intruder','I\'m in the '+plan.rooms[r].name+'.'); say('site','BREACH: '+plan.rooms[r].name+'.'); this.setTarget(randomPointIn(r,this.grid,prng)); } },
+  arrived(){ if(this.resume){ const t=this.resume; this.resume=null; this.setTarget(t); return; }
+    if(this.crawling){ this.crawling=false; this.posture=this.body.style.hidePosture; this.hideAt={x:this.x,z:this.z}; return; }
+    if(this.state==='approach'&&this.intent==='enter'){ this.setTarget(randomPointIn(this.targetRoom,this.grid,prng)); return; }
+    if(this.state==='inside'){ this.setTarget(randomPointIn(this.room,this.grid,prng)); return; }
+    if(this.intent==='wander'&&this.state!=='leave'){ this.pauseT=3+5*prng(); this.setTarget(randomPointIn(Math.floor(prng()*plan.rooms.length),this.grid,prng)); } }
 };
 
 // ---------- the team: what the drones perceive ----------
 const team={drones:[],seen:false,lkp:null,lkpT:-1,vel:{x:0,z:0},trail:[],beliefRooms:new Set(),cleared:new Set(),xmark:{},everSeen:false,
   sees(d){ if(!person.alive||d.y<0.4)return false; const dx=person.x-d.x, dz=person.z-d.z, dd=hyp(dx,dz); if(dd>settings.camRange)return false;
     if(dd>0.5&&Math.abs(wrapPi(Math.atan2(dx,dz)-d.yaw))>settings.camFov*Math.PI/360)return false;
-    return los(d.x,d.y,d.z,person.x,person.state==='hiding'?settings.hideH:settings.chestH,person.z); },
+    return los(d.x,d.y,d.z,person.x,bodyPoints(person.body,person.posture)[1],person.z); },
   // The team sees only what the detectors report (detectFrame): a sighting is a detection with confidence >= acceptConf.
   // The estimate is the most confident detection averaged with others within 1.5 m of it. `trueSeen` and `fromFP`
   // say whether that was really the person; they feed metrics and the record's truth, never a decision.
   perceive(dt){
     metrics.totT+=dt; if(person.alive&&person.inBuilding()&&this.trueSeen)metrics.seenT+=dt;
     this.percT=(this.percT||0)+dt; if(this.percT<1/settings.percHz-1e-9)return; const fdt=this.percT; this.percT=0;
-    const dets=[]; for(const d of this.drones)for(const x of detectFrame(d))dets.push(x); this.dets=dets;
-    const acc=dets.filter(x=>x.conf>=settings.acceptConf); for(const d of this.drones)d.sees=acc.some(x=>x.drone===d.id);
+    const fresh=[]; for(const d of this.drones)for(const x of detectFrame(d)){ x.t=simT; fresh.push(x); }
+    for(const d of this.drones)d.sees=fresh.some(x=>x.drone===d.id&&x.track===this.targetTid&&x.conf>=settings.acceptConf);
+    // the master's own detections count at once; a follower's reach the master over the radio, with its latency and loss (two draws per
+    // follower per frame, whatever was detected)
+    const dets=fresh.filter(x=>x.drone==='M');
+    for(const d of this.drones){ if(d.k===0)continue; const u1=nrng(), u2=nrng(), pk=fresh.filter(x=>x.drone===d.id); if(!pk.length)continue;
+      if(settings.shareVia!=='radio')dets.push(...pk); else if(u1>=settings.rloss)shareQ.push({at:simT+settings.rlat*(0.6+0.8*u2),dets:pk}); }
+    for(let i=0;i<shareQ.length;){ const q=shareQ[i]; if(q.dets&&q.at<=simT+1e-9){ dets.push(...q.dets); shareQ.splice(i,1); } else i++; }
+    this.dets=dets; for(const x of dets)if(x.track!==this.targetTid&&x.conf>=settings.acceptConf)this.others[x.track]={x:x.x,z:x.z,t:simT};
+    const acc=dets.filter(x=>x.track===this.targetTid&&x.conf>=settings.acceptConf);
     const seenNow=acc.length>0;
     if(seenNow){ const top=acc.reduce((a,b)=>b.conf>a.conf?b:a), grp=acc.filter(x=>hyp(x.x-top.x,x.z-top.z)<1.5); let w=0,mx=0,mz=0; for(const x of grp){ w+=x.conf; mx+=x.x*x.conf; mz+=x.z*x.conf; } mx/=w; mz/=w;
       if(this.lkp&&simT-this.lkpT<1){ const a=Math.min(1,fdt/0.3)*0.35; this.vel.x+=((mx-this.lkp.x)/Math.max(fdt,1e-3)-this.vel.x)*a; this.vel.z+=((mz-this.lkp.z)/Math.max(fdt,1e-3)-this.vel.z)*a; }
@@ -505,10 +646,14 @@ const team={drones:[],seen:false,lkp:null,lkpT:-1,vel:{x:0,z:0},trail:[],beliefR
     this.seen=seenNow; this.trueSeen=acc.some(x=>x.tp); if(seenNow&&!this.trueSeen)metrics.fpFrames++;
   },
   est(){ return this.lkp&&(this.seen||simT-this.lkpT<4)?{x:this.lkp.x,z:this.lkp.z}:null; },
+  // other people the team has placed in the last 2 s (any track but the target's), for keeping clear of them
+  othersEst(){ const out=[]; for(const k in this.others){ const o=this.others[k]; if(simT-o.t<2)out.push({x:o.x,z:o.z,track:+k,age:simT-o.t}); } return out; },
   // rooms he could be in: within running distance of the last-known room, minus rooms cleared since (docs/TACTICS.md, search)
   updateBelief(){ const nR=plan.rooms.length; const B=new Set();
-    if(this.seen&&this.lkpRoom>=0){ B.add(this.lkpRoom); }
-    else if(this.everSeen&&this.lkpRoom>=0){ const reach=settings.run*(simT-this.lkpT)+3;
+    // the estimate is uncertain by up to about 1 m (detector noise, odometry drift, radio delay): every room within 1 m of it counts
+    const near=new Set(); if(this.lkp)for(const [a,b] of [[0,0],[1,0],[-1,0],[0,1],[0,-1],[0.7,0.7],[0.7,-0.7],[-0.7,0.7],[-0.7,-0.7]]){ const r=roomAt(this.lkp.x+a*settings.beliefSlack,this.lkp.z+b*settings.beliefSlack); if(r>=0&&r<nR)near.add(r); }
+    if(this.seen&&this.lkpRoom>=0){ B.add(this.lkpRoom); for(const r of near)B.add(r); }
+    else if(this.everSeen&&this.lkpRoom>=0){ const reach=settings.beliefSpeed*(simT-this.lkpT)+3; for(const r of near)B.add(r);
       // walking distance from where he was last seen to each room's nearest door (room-centre distances miss a man at a doorway)
       for(let r=0;r<nR;r++){ if(r===this.lkpRoom){ B.add(r); continue; } let best=Infinity; for(const d of plan.doors){ if(!d.rooms.includes(r))continue; const w=doorWalk(d.id,this.lkp); if(w<best)best=w; } if(best<=reach)B.add(r); } }
     else for(let r=0;r<nR;r++)B.add(r);
@@ -518,9 +663,10 @@ const team={drones:[],seen:false,lkp:null,lkpT:-1,vel:{x:0,z:0},trail:[],beliefR
     for(const c of this.cleared)B.delete(c); this.beliefRooms=B; },
   watches(d,door){ if(d.y<0.4)return false; const dx=door.x-d.x, dz=door.z-d.z, dd=hyp(dx,dz); if(dd>settings.camRange)return false; if(dd>0.5&&Math.abs(wrapPi(Math.atan2(dx,dz)-d.yaw))>settings.camFov*Math.PI/360)return false; return los(d.x,d.y,d.z,door.x,1.0,door.z); },
   // search coverage: floor points seen by any camera at hidden-person height, per room
-  cover(){ for(const d of this.drones){ if(d.y<0.4)continue; const fov=settings.camFov*Math.PI/360, R=settings.camRange;
-      for(let r=0;r<COVP.length;r++){ const q=plan.rooms[r]; if(q.x1<d.x-R||q.x0>d.x+R||q.z1<d.z-R||q.z0>d.z+R)continue;
-        for(const pt of COVP[r]){ if(pt.seen)continue; const dx=pt.x-d.x, dz=pt.z-d.z, dd=hyp(dx,dz); if(dd>R)continue; if(dd>0.5&&Math.abs(wrapPi(Math.atan2(dx,dz)-d.yaw))>fov)continue; if(los(d.x,d.y,d.z,pt.x,settings.hideH,pt.z))pt.seen=1; } } } },
+  cover(){ for(const d of this.drones){ const u1=nrng(), u2=nrng(); if(d.y<0.4)continue; const fov=settings.camFov*Math.PI/360, R=settings.camRange, ex=d.x+d.ox, ez=d.z+d.oz, ey=d.yaw+d.oyaw, marks=[];
+      for(let r=0;r<COVP.length;r++){ const q=plan.rooms[r]; if(q.x1<ex-R||q.x0>ex+R||q.z1<ez-R||q.z0>ez+R)continue;
+        for(let i=0;i<COVP[r].length;i++){ const pt=COVP[r][i]; if(pt.seen)continue; const dx=pt.x-ex, dz=pt.z-ez, dd=hyp(dx,dz); if(dd>R)continue; if(dd>0.5&&Math.abs(wrapPi(Math.atan2(dx,dz)-ey))>fov)continue; if(los(ex,d.y,ez,pt.x,settings.hideH,pt.z))marks.push([r,i]); } }
+      if(d.k===0||settings.shareVia!=='radio')for(const [r,i] of marks)COVP[r][i].seen=1; else if(u1>=settings.rloss&&marks.length)shareQ.push({at:simT+settings.rlat*(0.6+0.8*u2),cov:marks}); } },
   roomCoverage(r){ const pts=COVP[r]; if(!pts||!pts.length)return 1; let s=0; for(const p of pts)s+=p.seen; return s/pts.length; },
   resetCoverage(){ for(const pts of COVP)for(const p of pts)p.seen=0; this.cleared.clear(); this.xmark={}; this.clearSaid={}; }
 };
@@ -571,10 +717,12 @@ function tKeepout(I){
   return {key:'barrier',text:'screen the '+Dstar.name+(others.length?' and the '+others[0].name:''),pts:[watch,screen,second],door:Dstar.id,room:P,yawTo:I||team.lkp||{x:Dstar.x+n.x*3,z:Dstar.z+n.z*3}}; // unseen: watch where he was last known (a door sensor counts), not straight out of the door
 }
 function tDrive(I,guide){
-  if(mission.exitId==null||simT-(mission.exitT||-9)>3){ let ne=mission.params.exit!=null?mission.params.exit:nearestExit(I).id;
+  // drive out avoids an exit where our drones stand in his way; a guide wants them ahead, so guide out keeps plain walking distance
+  const cost=guide?(e,p)=>doorWalk(e.id,p):exitCost;
+  if(mission.exitId==null||simT-(mission.exitT||-9)>3){ let ne=mission.params.exit!=null?mission.params.exit:(guide?exitDoors().reduce((b,e)=>cost(e,I)<cost(b,I)?e:b):nearestExit(I)).id;
     // a guide must already be ahead of him on the way out: drones cannot pass a person in a corridor at the standoff
     if(guide&&mission.params.exit==null){ let bl=Infinity; for(const e of exitDoors()){ const wi=doorWalk(e.id,I); if(team.drones.some(d=>doorWalk(e.id,d)<wi-1)&&wi<bl){ bl=wi; ne=e.id; } } }
-    if(mission.exitId==null||mission.params.exit!=null||exitCost(plan.doors[ne],I)<exitCost(plan.doors[mission.exitId],I)-5)mission.exitId=ne; mission.exitT=simT; }
+    if(mission.exitId==null||mission.params.exit!=null||cost(plan.doors[ne],I)<cost(plan.doors[mission.exitId],I)-5)mission.exitId=ne; mission.exitT=simT; }
   const E=plan.doors[mission.exitId];
   const ahead=descend(E.id,I,2.0); let gx=ahead.x-I.x, gz=ahead.z-I.z; const L=hyp(gx,gz)||1; gx/=L; gz/=L; const nx=-gz, nz=gx, y=settings.zNom;
   if(guide&&doorWalk(E.id,I)<4.5){ const t=doorTangent(E), o=outsidePoint(E,1.0), sn=nearestFreeNav;
@@ -678,14 +826,22 @@ function tExplore(){
 // distance (noise0 + noiseK x d metres) and its confidence follows the detection odds. A rare false positive appears in the
 // cone on open floor, mostly with low confidence. The camera stream draws the same 8 numbers every frame, so a person the
 // team cannot see never changes any other draw. `tp` (was it the person) is truth only.
-function detectFrame(d){ const u=[]; for(let k=0;k<8;k++)u.push(crng()); const out=[]; if(d.y<0.4)return out; const half=settings.camFov*Math.PI/360;
-  if(person.alive){ const dx=person.x-d.x, dz=person.z-d.z, dd=hyp(dx,dz), off=dd>0.3?Math.abs(wrapPi(Math.atan2(dx,dz)-d.yaw)):0;
-    if(dd<=settings.camRange&&off<=half){ const hs=person.state==='hiding'?[1.0,0.7,0.4]:[1.7,1.3,0.9]; let v=0; for(const h of hs)if(los(d.x,d.y,d.z,person.x,h,person.z))v++; v/=hs.length;
-      if(v>0){ const e30=30*Math.PI/180, pd=dd<=3?settings.pNear:settings.pNear-(settings.pNear-settings.pFar)*(dd-3)/(settings.camRange-3), pa=off<=e30?1:1-(1-settings.pEdge)*(off-e30)/(half-e30), pr=pd*pa*v;
-        if(u[0]<pr){ const sg=settings.noise0+settings.noiseK*dd, r=Math.sqrt(-2*Math.log(Math.max(1e-9,u[2]))), n1=r*Math.cos(2*Math.PI*u[3]), n2=r*Math.sin(2*Math.PI*u[3]);
-          out.push({drone:d.id,x:person.x+n1*sg,z:person.z+n2*sg,conf:clamp(0.3+0.65*pr+0.2*(u[1]-0.5),0.05,0.99),tp:true}); } } } }
+function detectFrame(d){ const nC=crowd.list.length, u=[]; for(let k=0;k<10+5*nC;k++)u.push(crng()); const out=[]; if(d.y<0.4)return out; const half=settings.camFov*Math.PI/360;
+  // one person h: hit (u[iH]), confidence (u[iC]), position noise (u[iN], u[iN+1]), and an identity switch to someone within 1.5 m (u[iS])
+  const see=(h,iH,iC,iN,iS,who)=>{ const dx=h.x-d.x, dz=h.z-d.z, dd=hyp(dx,dz), off=dd>0.3?Math.abs(wrapPi(Math.atan2(dx,dz)-d.yaw)):0; if(dd>settings.camRange||off>half)return;
+    const hs=bodyPoints(h.body,h.posture), sz=bodySize(h.body,h.posture); let v=0; for(const y of hs)if(los(d.x,d.y,d.z,h.x,y,h.z))v++; v/=hs.length; if(v<=0)return;
+    // light in the person's room (lit, dim or dark this episode) and motion blur while the drone turns faster than blurDegS scale the hit rate
+    const rm=roomAt(h.x,h.z), lightF=settings.lightLevels?settings.lightLevels[rm>=0?rm:Math.max(0,roomAt(d.x,d.z))]||1:1, blurF=(d.yawRate||0)<=settings.blurDegS?1:Math.max(0.4,1-((d.yawRate||0)-settings.blurDegS)/150);
+    const e30=30*Math.PI/180, de=Math.min(settings.camRange,dd/Math.pow(Math.max(0.2,sz),0.8)), pd=de<=3?settings.pNear:settings.pNear-(settings.pNear-settings.pFar)*(de-3)/(settings.camRange-3), pa=off<=e30?1:1-(1-settings.pEdge)*(off-e30)/(half-e30), pr=pd*pa*v*lightF*blurF;
+    if(u[iH]>=pr)return; const sg=settings.noise0+settings.noiseK*dd, r=Math.sqrt(-2*Math.log(Math.max(1e-9,u[iN]))), n1=r*Math.cos(2*Math.PI*u[iN+1]), n2=r*Math.sin(2*Math.PI*u[iN+1]);
+    let track=h.tid; if(u[iS]<settings.reidSwitch){ const nb=everyone().find(g=>g!==h&&hyp(g.x-h.x,g.z-h.z)<1.5); if(nb)track=nb.tid; }
+    const q=placeEst(d,h.x+n1*sg-d.x,h.z+n2*sg-d.z); out.push({drone:d.id,x:q.x,z:q.z,conf:clamp(0.3+0.65*pr+0.2*(u[iC]-0.5),0.05,0.99),tp:who===0,who,track}); };
+  if(person.alive)see(person,0,1,2,8,0);
+  crowd.list.forEach((w,k)=>{ if(w.alive)see(w,10+5*k,11+5*k,12+5*k,14+5*k,k+1); });
+  // a false positive starts a new track, or is taken for the target's when it lands within 2 m of where he was last placed (half the time)
   if(u[4]<settings.fpRate){ const a=d.yaw+(u[6]-0.5)*2*half, rr=1+u[5]*(settings.camRange-1), x=d.x+Math.sin(a)*rr, z=d.z+Math.cos(a)*rr;
-    if(x>0&&z>0&&x<plan.W&&z<plan.D&&!WALK[navIdx(x,z)]&&los(d.x,d.y,d.z,x,1.0,z))out.push({drone:d.id,x,z,conf:clamp(0.1+0.45*u[7],0.05,0.99),tp:false}); }
+    if(x>0&&z>0&&x<plan.W&&z<plan.D&&!WALK[navIdx(x,z)]&&los(d.x,d.y,d.z,x,1.0,z)){ const q=placeEst(d,x-d.x,z-d.z), near=team.lkp&&hyp(q.x-team.lkp.x,q.z-team.lkp.z)<2&&u[9]<0.5;
+      out.push({drone:d.id,x:q.x,z:q.z,conf:clamp(0.1+0.45*u[7],0.05,0.99),tp:false,who:-1,track:near?team.targetTid:100+Math.floor(u[7]*899)}); } }
   return out; }
 // the scanned map at mapRes: '#' known blocked, '.' known free, '?' unknown (row-major, x then z)
 function coarseMap(){ const f=Math.max(1,Math.round(settings.mapRes/NAV)), W=Math.ceil(NX/f), H=Math.ceil(NZ/f), M=team.map; let s='';
@@ -693,14 +849,23 @@ function coarseMap(){ const f=Math.max(1,Math.round(settings.mapRes/NAV)), W=Mat
     s+=blk?'#':free*2>=n?'.':'?'; } return s; }
 function coarseDims(){ const f=Math.max(1,Math.round(settings.mapRes/NAV)); return {res:+(f*NAV).toFixed(2),w:Math.ceil(NX/f),h:Math.ceil(NZ/f)}; }
 // how far each camera sees at its own height: 31 rays across the view, cut by walls, shelves and door lintels
+// measured like the depth rays (noise, missing returns as null, unreliable walls); three draws per ray of an airborne drone
 function cameraRays(d){ if(d.y<0.4)return null; const half=settings.camFov*Math.PI/360, out=[];
-  for(let k=0;k<=30;k++){ const a=d.yaw-half+2*half*k/30, sx=Math.sin(a), sz=Math.cos(a); let s=0.1; for(;s<settings.camRange;s+=0.1){ const c=cellIdx(d.x+sx*s,d.z+sz*s); if(Hg[c]>=d.y-0.05||(DOORC[c]&&d.y>settings.lintel))break; } out.push(+Math.min(s,settings.camRange).toFixed(1)); }
+  for(let k=0;k<=30;k++){ const a=d.yaw-half+2*half*k/30, sx=Math.sin(a), sz=Math.cos(a); let s=0.1; for(;s<settings.camRange;s+=0.1){ const c=cellIdx(d.x+sx*s,d.z+sz*s); if(Hg[c]>=d.y-0.05||(DOORC[c]&&d.y>settings.lintel))break; }
+    const L=Math.min(s,settings.camRange), m=depthMeasure(L,L<settings.camRange?{x:d.x+sx*L,z:d.z+sz*L}:null); out.push(m==null?null:+Math.min(m,settings.camRange).toFixed(1)); }
   return out; }
 // the scanned map grows in every episode (depth rays, depthRange), not only while exploring
-function exploreObserve(){ const ex={bel:team.map}; for(const d of team.drones){ if(d.y<0.4)continue;
-    for(let dz=-0.6;dz<=0.6;dz+=NAV)for(let dx=-0.6;dx<=0.6;dx+=NAV){ const k=navIdx(d.x+dx,d.z+dz); if(!FLY[k]&&ex.bel[k]===0)ex.bel[k]=1; }
-    for(let a=-45;a<=45;a+=3){ const ang=d.yaw+a*Math.PI/180; const sx=Math.sin(ang), sz=Math.cos(ang);
-      for(let s=0.1;s<=settings.depthRange;s+=0.1){ const x=d.x+sx*s, z=d.z+sz*s; const c=cellIdx(x,z); const k=navIdx(x,z); if(Hg[c]>=d.y-0.2){ ex.bel[k]=2; break; } if(ex.bel[k]===0)ex.bel[k]=1; } } } }
+function exploreObserve(){ for(const d of team.drones){ const u1=nrng(), u2=nrng(); if(d.y<0.4)continue; const W=[];
+    for(let dz=-0.6;dz<=0.6;dz+=NAV)for(let dx=-0.6;dx<=0.6;dx+=NAV){ if(FLY[navIdx(d.x+dx,d.z+dz)])continue; const q=placeEst(d,dx,dz); W.push(navIdx(q.x,q.z),1); }
+    for(let a=-45;a<=45;a+=3){ const ang=d.yaw+a*Math.PI/180, sx=Math.sin(ang), sz=Math.cos(ang); let hit=-1;
+      for(let s=0.1;s<=settings.depthRange;s+=0.1){ if(Hg[cellIdx(d.x+sx*s,d.z+sz*s)]>=d.y-0.2){ hit=s; break; } }
+      const m=depthMeasure(hit<0?settings.depthRange:hit,hit<0?null:{x:d.x+sx*hit,z:d.z+sz*hit}); if(m==null)continue;
+      const end=hit<0?settings.depthRange:Math.min(m,settings.depthRange);
+      for(let s=0.1;s<end-1e-9;s+=0.1){ const q=placeEst(d,sx*s,sz*s); W.push(navIdx(q.x,q.z),1); }
+      if(hit>=0&&m<settings.depthRange){ const q=placeEst(d,sx*m,sz*m); W.push(navIdx(q.x,q.z),2); } }
+    if(d.k===0||settings.shareVia!=='radio')applyMapWrites(W); else if(u1>=settings.rloss&&W.length)shareQ.push({at:simT+settings.rlat*(0.6+0.8*u2),map:W}); } }
+// map writes [cell, value, ...]: free only where unknown, blocked always
+function applyMapWrites(W){ const M=team.map; for(let i=0;i<W.length;i+=2){ const k=W[i], v=W[i+1]; if(v===2)M[k]=2; else if(M[k]===0)M[k]=1; } }
 function tOverwatch(){
   if(mission.owCache&&simT-mission.owCache.t<5)return mission.owCache.out;
   const y=Math.min(2.2,settings.ceil-0.5); let targets=[], label;
@@ -720,7 +885,8 @@ function tReturn(){ const pts=team.drones.map((d,k)=>{ const p=plan.pads[k]; con
 
 // ---------- the safety validator (estimated positions; tests check the true ones) ----------
 function validate(pts,I,landing,band,doorsOk){
-  const flags=pts.map(()=>[]); const top=settings.ceil-0.5;
+  const flags=pts.map(()=>[]); const top=settings.ceil-0.5, others=team.othersEst();
+  const clearOthers=()=>{ for(const o of others)pts.forEach((p,k)=>{ const dx=p.x-o.x, dz=p.z-o.z, d=hyp(dx,dz); if(d<settings.dS){ const ux=d>1e-3?dx/d:1, uz=d>1e-3?dz/d:0; p.x=o.x+ux*(settings.dS+0.01); p.z=o.z+uz*(settings.dS+0.01); if(!flags[k].includes('others'))flags[k].push('others'); fix(p,k); } }); };
   // only door-holding tactics park in a doorway: anywhere else a parked drone holds the door's lock and blocks the others
   if(!doorsOk&&!landing)pts.forEach((p,k)=>{ const z=DZONE[navIdx(p.x,p.z)]; if(!z)return; const door=plan.doors[z-1], c=doorCoords(door,p.x,p.z);
     const sgn=Math.abs(c.n)>0.05?Math.sign(c.n):(Math.sign(doorCoords(door,team.drones[k].x,team.drones[k].z).n)||1), nn=door.axis==='h'?{x:0,z:1}:{x:1,z:0}, push=sgn*1.0-c.n;
@@ -732,29 +898,57 @@ function validate(pts,I,landing,band,doorsOk){
   for(let it=0;it<6;it++){
     for(let a=0;a<3;a++)for(let b=a+1;b<3;b++){ const dx=pts[b].x-pts[a].x, dz=pts[b].z-pts[a].z, d=hyp(dx,dz); if(d<settings.sep){ const ux=d>1e-3?dx/d:1, uz=d>1e-3?dz/d:0, m=(settings.sep-d)/2+0.02;
         pts[a].x-=ux*m; pts[a].z-=uz*m; pts[b].x+=ux*m; pts[b].z+=uz*m; for(const k of [a,b])if(!flags[k].includes('separation'))flags[k].push('separation'); fix(pts[a],a); fix(pts[b],b); } }
+    if(!landing)clearOthers();
     if(I){ const near=pts.filter(p=>hyp(p.x-I.x,p.z-I.z)<4.05).length; const dS=band==='pressure'?settings.dPress:near>=2?settings.dS2:settings.dS;
       pts.forEach((p,k)=>{ const dx=p.x-I.x, dz=p.z-I.z, d=hyp(dx,dz); if(d<dS){ const ux=d>1e-3?dx/d:1, uz=d>1e-3?dz/d:0; p.x=I.x+ux*(dS+0.01); p.z=I.z+uz*(dS+0.01); if(!flags[k].includes('standoff'))flags[k].push('standoff'); fix(p,k); } }); } }
   // pairs still short of the separation move apart around him, keeping their distance from him; the rotation can bring a second
   // slot within 4 m of him, which raises the standoff to 3 m, and that push can close a pair again in a cramped corner, so the two
   // passes alternate until both hold (the standoff pass, the stricter rule, always runs last)
   const short=()=>{ for(let a=0;a<3;a++)for(let b=a+1;b<3;b++)if(hyp(pts[b].x-pts[a].x,pts[b].z-pts[a].z)<settings.sep-0.03)return true; return false; };
-  if(I)for(let round=0;round<4&&(round===0||short());round++){
-    for(let it=0;it<3;it++)for(let a=0;a<3;a++)for(let b=a+1;b<3;b++){ const d=hyp(pts[b].x-pts[a].x,pts[b].z-pts[a].z); if(d>=settings.sep-0.03)continue;
-      const ang=p=>Math.atan2(p.x-I.x,p.z-I.z), sg=wrapPi(ang(pts[b])-ang(pts[a]))>=0?1:-1, r=Math.max(1,Math.min(hyp(pts[a].x-I.x,pts[a].z-I.z),hyp(pts[b].x-I.x,pts[b].z-I.z))), turn=(settings.sep+0.05-d)/r;
-      for(const [k,sk] of [[a,-sg],[b,sg]]){ const p=pts[k], rr=hyp(p.x-I.x,p.z-I.z), th=ang(p)+sk*turn/2; p.x=I.x+Math.sin(th)*rr; p.z=I.z+Math.cos(th)*rr; fix(p,k); } }
-    const near=pts.filter(p=>hyp(p.x-I.x,p.z-I.z)<4.05).length, dS=band==='pressure'?settings.dPress:near>=2?settings.dS2:settings.dS;
-    pts.forEach((p,k)=>{ const dx=p.x-I.x, dz=p.z-I.z, d=hyp(dx,dz); if(d<dS){ const ux=d>1e-3?dx/d:1, uz=d>1e-3?dz/d:0; p.x=I.x+ux*(dS+0.01); p.z=I.z+uz*(dS+0.01); if(!flags[k].includes('standoff'))flags[k].push('standoff'); fix(p,k); } }); }
+  const sepPass=()=>{ for(let a=0;a<3;a++)for(let b=a+1;b<3;b++){ const dx=pts[b].x-pts[a].x, dz=pts[b].z-pts[a].z, d=hyp(dx,dz); if(d<settings.sep){ const ux=d>1e-3?dx/d:1, uz=d>1e-3?dz/d:0, m=(settings.sep-d)/2+0.02;
+        pts[a].x-=ux*m; pts[a].z-=uz*m; pts[b].x+=ux*m; pts[b].z+=uz*m; for(const k of [a,b])if(!flags[k].includes('separation'))flags[k].push('separation'); fix(pts[a],a); fix(pts[b],b); } } };
+  // each round: clear of the other people, then apart from each other, then around him (a rotation keeps the distance from him),
+  // then his standoff, the strictest rule, last; until both the separation and his standoff hold
+  for(let round=0;round<5;round++){
+    if(!landing){ clearOthers(); sepPass(); }
+    if(I){ for(let it=0;it<3;it++)for(let a=0;a<3;a++)for(let b=a+1;b<3;b++){ const d=hyp(pts[b].x-pts[a].x,pts[b].z-pts[a].z); if(d>=settings.sep-0.03)continue;
+        const ang=p=>Math.atan2(p.x-I.x,p.z-I.z), sg=wrapPi(ang(pts[b])-ang(pts[a]))>=0?1:-1, r=Math.max(1,Math.min(hyp(pts[a].x-I.x,pts[a].z-I.z),hyp(pts[b].x-I.x,pts[b].z-I.z))), turn=(settings.sep+0.05-d)/r;
+        for(const [k,sk] of [[a,-sg],[b,sg]]){ const p=pts[k], rr=hyp(p.x-I.x,p.z-I.z), th=ang(p)+sk*turn/2; p.x=I.x+Math.sin(th)*rr; p.z=I.z+Math.cos(th)*rr; fix(p,k); } }
+      const near=pts.filter(p=>hyp(p.x-I.x,p.z-I.z)<4.05).length, dS=band==='pressure'?settings.dPress:near>=2?settings.dS2:settings.dS;
+      pts.forEach((p,k)=>{ const dx=p.x-I.x, dz=p.z-I.z, d=hyp(dx,dz); if(d<dS){ const ux=d>1e-3?dx/d:1, uz=d>1e-3?dz/d:0; p.x=I.x+ux*(dS+0.01); p.z=I.z+uz*(dS+0.01); if(!flags[k].includes('standoff'))flags[k].push('standoff'); fix(p,k); } }); }
+    if(!short())break; }
+  // a pair still short in a cramped corner: move one of the two (whichever needs the shorter move, preferring the follower) to the
+  // nearest free point, on rings 0.2 m apart and 24 bearings out to 4 m, that keeps 1 m from the other slots and every slot's
+  // standoff from him, and if it can the other people's comfort standoff; flagged 'cramped'
+  if(!landing&&short()){
+    // the moved slot keeps his standoff, and no other slot newly falls short of it (moving into the 4 m ring raises it to 3 m for
+    // all); a slot already short of it, pushed against a wall and flagged, does not block the move (it once blocked every candidate)
+    const dSof=at=>{ const near=[0,1,2].filter(j=>hyp(at(j).x-I.x,at(j).z-I.z)<4.05).length; return band==='pressure'?settings.dPress:near>=2?settings.dS2:settings.dS; };
+    const fits=(k,x,z)=>{ if(pts.some((o,j)=>j!==k&&hyp(o.x-x,o.z-z)<settings.sep))return false; if(!I)return true;
+      const at=j=>j===k?{x,z}:pts[j], d0=dSof(j=>pts[j]), d1=dSof(at); if(hyp(x-I.x,z-I.z)<d1)return false;
+      return [0,1,2].every(j=>{ if(j===k)return true; const r=hyp(pts[j].x-I.x,pts[j].z-I.z); return r<d0||r>=d1; }); };
+    const place=k=>{ const p=pts[k]; let fall=null;
+      for(let r=0.2;r<=4.01;r+=0.2)for(let q=0;q<24;q++){ const th=q*Math.PI/12, x=p.x+Math.sin(th)*r, z=p.z+Math.cos(th)*r, n=navIdx(x,z);
+        if(FLY[n]||(FLYOK&&!FLYOK[n])||(!doorsOk&&DZONE[n])||!fits(k,x,z))continue;
+        if(others.every(o=>hyp(o.x-x,o.z-z)>=settings.dS))return {x,z,r,ok:true}; if(!fall)fall={x,z,r,ok:false}; }
+      return fall; };
+    const better=(u,v)=>!!u&&(!v||(u.ok&&!v.ok)||(u.ok===v.ok&&u.r<=v.r));
+    for(let it=0;it<3&&short();it++)for(let a=0;a<3;a++)for(let b=a+1;b<3;b++){ if(hyp(pts[b].x-pts[a].x,pts[b].z-pts[a].z)>=settings.sep-0.03)continue;
+      const ca=place(a), cb=place(b); if(!ca&&!cb){ flags[a].push('cramped'); flags[b].push('cramped'); continue; }
+      const [k,c]=better(cb,ca)?[b,cb]:[a,ca]; pts[k].x=c.x; pts[k].z=c.z; flags[k].push('cramped'); if(!c.ok)flags[k].push('others'); fix(pts[k],k); } }
   return flags.map(f=>[...new Set(f)]);
 }
 
 // ---------- drones: local motion control, door locks, radio ----------
 const doorLock={}; // door id -> drone index holding it
 function makeDrone(k,p){ return {k,name:['master','follower 1','follower 2'][k],id:['M','S1','S2'][k],x:p.x,y:0.1,z:p.z,vx:0,vy:0,vz:0,yaw:Math.PI,yawT:null,spin:false,
-  slot:{x:p.x,y:settings.zNom,z:p.z},vec:{x:0,y:0,z:0},target:{x:p.x,y:settings.zNom,z:p.z},path:[],pathFor:null,replanT:0,rxT:0,lock:-1,waitT:0,T:0,roll:0,pitch:0,rotors:[0,0,0,0],sees:false,hold:false,band:'comfort'}; }
+  slot:{x:p.x,y:settings.zNom,z:p.z},vec:{x:0,y:0,z:0},target:{x:p.x,y:settings.zNom,z:p.z},path:[],pathFor:null,replanT:0,rxT:0,lock:-1,waitT:0,T:0,roll:0,pitch:0,rotors:[0,0,0,0],sees:false,hold:false,band:'comfort',ox:0,oz:0,oyaw:0,ddir:0,yawRate:0}; }
 function segDist(p,a,b){ const vx=b.x-a.x, vz=b.z-a.z, L2=vx*vx+vz*vz; const t=L2>1e-9?clamp(((p.x-a.x)*vx+(p.z-a.z)*vz)/L2,0,1):0; return hyp(a.x+vx*t-p.x,a.z+vz*t-p.z); }
 function droneBand(d){ return d.k>0&&simT-d.rxT>settings.linkTimeout?'comfort':(d.band||'comfort'); }
 function nearPerson(d){ const I=team.est(); return I&&hyp(I.x-d.x,I.z-d.z)<4; }
 function droneStep(d,dt){
+  // navigation runs where the drone thinks it is (true pose + odometry drift); sensing, repulsion, collisions and motion use the true pose
+  const tX=d.x, tZ=d.z; d.x+=d.ox; d.z+=d.oz;
   if(d.k>0&&simT-d.rxT>settings.linkTimeout){ if(!d.hold){ d.hold=true; metrics.linkHolds++; d.target={x:d.x,y:Math.max(d.y,settings.zMin),z:d.z}; d.path=[]; } } else d.hold=false;
   const tg=d.target; d.replanT-=dt;
   if(d.pathFor&&hyp(d.pathFor.x-tg.x,d.pathFor.z-tg.z)>2)d.avoid=[];
@@ -782,31 +976,69 @@ function droneStep(d,dt){
   const vlim=inDoor?settings.vSlow:settings.vMax; // near a person only the approach is slowed, below
   let ax=2.0*(carrot.x-d.x)-2.4*d.vx, az=2.0*(carrot.z-d.z)-2.4*d.vz; const ah=hyp(ax,az); if(ah>settings.aMax){ ax*=settings.aMax/ah; az*=settings.aMax/ah; }
   const ty=inDoor?Math.min(tg.y,settings.zDoor):d.boxed!=null&&simT-d.boxed<2?settings.ceil-0.55:tg.y; let ay=3*(ty-d.y)-3*d.vy; // boxed in by a person: climb above reach
+  d.x=tX; d.z=tZ;
   // on the pad: no take-off while a person is within the standoff, and no sliding sideways before it is airborne
-  if(d.y<0.4&&ty>d.y&&person.alive&&hyp(person.x-d.x,person.z-d.z)<settings.floorComfort+0.5){ ay=-3*d.vy; d.vy=Math.min(d.vy,0); }
+  if(d.y<0.4&&ty>d.y&&everyone().some(h=>hyp(h.x-d.x,h.z-d.z)<settings.floorComfort+0.5)){ ay=-3*d.vy; d.vy=Math.min(d.vy,0); }
   for(const o of team.drones){ if(o===d||o.y<0.3)continue; const ox=d.x-o.x, oz=d.z-o.z, od=hyp(ox,oz); if(od<1.25&&od>1e-3){ const g=(1.25-od)*6+(od<0.9?(0.9-od)*25:0); ax+=ox/od*g; az+=oz/od*g; } }
-  // onboard proximity sensing (not the teacher's knowledge): keep clear of a person in line of sight, and off the walls
-  let pu=null; if(person.alive&&d.y>0.3){ const px=d.x-person.x, pz=d.z-person.z, pd=hyp(px,pz); if(pd<4.5&&los(d.x,Math.max(d.y,0.6),d.z,person.x,1.3,person.z)){ pu={x:px/Math.max(pd,1e-3),z:pz/Math.max(pd,1e-3),d:pd};
-      const closing=person.vx*pu.x+person.vz*pu.z, buf=settings.reflex+0.6*Math.max(0,closing)+Math.max(0,-(d.vx*pu.x+d.vz*pu.z))*0.4, dB=bandDist(droneBand(d));
+  // onboard proximity sensing (not the teacher's knowledge): keep clear of the most pressing person in sight (anyone; the pressure
+  // band applies only to the subject), and off the walls. In sight: a line reaches their torso or legs. The no-approach clamp below
+  // also holds anyone seen in the last 10 s who is still within 4.5 m but out of sight, as an onboard tracker keeps a person who
+  // stepped behind a shelf or a door jamb: without it a drone drifted toward someone standing 1.5 m away in the ticks they flickered
+  // out of sight, and one boxed in above head height fled over a shelf onto a visitor it had lost 2 s before. Backing away uses sight
+  // alone, so a tracker is not pushed back from a person who has just turned a corner (that cut track's time in view from 42% to 34%)
+  const sensed=new Set(), inSight=new Set(); if(d.y>0.3){ const mem=d.sensedT||(d.sensedT=new Map());
+    for(const h of everyone()){ if(hyp(d.x-h.x,d.z-h.z)>=4.5)continue; if(senses(d.x,Math.max(d.y,0.6),d.z,h)){ mem.set(h,simT); sensed.add(h); inSight.add(h); } else { const t=mem.get(h); if(t!=null&&simT-t<10)sensed.add(h); } } }
+  let pu=null, Q=null, qb='comfort'; if(d.y>0.3){ let qm=Infinity; for(const h of inSight){ const pd0=hyp(d.x-h.x,d.z-h.z); const b=h===person?droneBand(d):'comfort', m=pd0-bandDist(b); if(m<qm){ qm=m; Q=h; qb=b; } } }
+  if(Q){ const px=d.x-Q.x, pz=d.z-Q.z, pd=hyp(px,pz); { pu={x:px/Math.max(pd,1e-3),z:pz/Math.max(pd,1e-3),d:pd,band:qb};
+      const closing=Q.vx*pu.x+Q.vz*pu.z, buf=settings.reflex+0.6*Math.max(0,closing)+Math.max(0,-(d.vx*pu.x+d.vz*pu.z))*0.4, dB=bandDist(qb);
       if(pd<dB+buf){ const g=(dB+buf-pd)*7;
-        // back straight away; if a wall or a corner is in the way, take the free direction (of 16) that best opens the distance
-        let best=!settings.escape||!blockedAt(d.x+pu.x*0.35,d.y,d.z+pu.z*0.35)?{x:pu.x,z:pu.z}:null, bs=1;
-        if(!best){ bs=-Infinity; for(let k=0;k<16;k++){ const a=k*Math.PI/8, ex=Math.sin(a), ez=Math.cos(a), nx=d.x+ex*0.35, nz=d.z+ez*0.35; if(blockedAt(nx,d.y,nz))continue; const gain=hyp(nx-person.x,nz-person.z)-pd; if(gain>bs){ bs=gain; best={x:ex,z:ez}; } } }
-        if(best&&bs>0.02){ ax+=best.x*g; az+=best.z*g; } else { ax+=pu.x*g; az+=pu.z*g; d.boxed=simT; } // boxed in: push back and climb (below)
+        // back straight away; if a wall or a corner is in the way, take the free direction (of 16) that best opens the distance. A
+        // direction is free if the way is open at 0.1, 0.2 and 0.35 m: a drone beside a wall end once took a direction whose end
+        // point lay past a blocked cell, could not take its first step, and hovered 1.15 m from a bystander for 98 s
+        // It must also close on no one else inside their limit (people in sight or remembered, neighbours within 0.9 m), which the
+        // clamp below would cancel; with no such direction the drone is pinned
+        const others=[]; for(const h of sensed){ if(h===Q)continue; const ex=h.x-d.x, ez=h.z-d.z, hd=hyp(ex,ez), lim=h===person&&droneBand(d)==='pressure'?settings.floorPress:settings.floorComfort; if(hd<lim+0.3&&hd>1e-3)others.push({ux:ex/hd,uz:ez/hd}); }
+        for(const o of team.drones){ if(o===d||o.y<0.3)continue; const ex=o.x-d.x, ez=o.z-d.z, od=hyp(ex,ez); if(od<0.9&&od>1e-3)others.push({ux:ex/od,uz:ez/od}); }
+        const open=(ex,ez)=>!blockedAt(d.x+ex*0.1,d.y,d.z+ez*0.1)&&!blockedAt(d.x+ex*0.2,d.y,d.z+ez*0.2)&&!blockedAt(d.x+ex*0.35,d.y,d.z+ez*0.35)&&!others.some(c=>ex*c.ux+ez*c.uz>0.02);
+        let best=!settings.escape||open(pu.x,pu.z)?{x:pu.x,z:pu.z}:null, bs=1;
+        if(!best){ bs=-Infinity; for(let k=0;k<16;k++){ const a=k*Math.PI/8, ex=Math.sin(a), ez=Math.cos(a), nx=d.x+ex*0.35, nz=d.z+ez*0.35; if(!open(ex,ez))continue; const gain=hyp(nx-Q.x,nz-Q.z)-pd; if(gain>bs){ bs=gain; best={x:ex,z:ez}; } } }
+        if(best&&bs>0.02){ ax+=best.x*g; az+=best.z*g; } else { ax+=pu.x*g; az+=pu.z*g; d.boxed=d.pinnedT=simT; } // boxed in: push back and climb (below)
         // he is closing in: also sidestep out of his path
-        if(closing>0.2){ const sp=hyp(person.vx,person.vz)||1; let sx=-person.vz/sp, sz=person.vx/sp; if(sx*pu.x+sz*pu.z<0){ sx=-sx; sz=-sz; } ax+=sx*closing*4; az+=sz*closing*4; } } } }
+        if(closing>0.2){ const sp=hyp(Q.vx,Q.vz)||1; let sx=-Q.vz/sp, sz=Q.vx/sp; if(sx*pu.x+sz*pu.z<0){ sx=-sx; sz=-sz; } ax+=sx*closing*4; az+=sz*closing*4; } } } }
   const clr=wallClearance(d); if(d.y>0.4&&clr<0.45){ const gr=clearanceGrad(d.x,d.z); const g=(0.45-clr)*8; ax+=gr.x*g; az+=gr.z*g; }
   if(d.y<0.3){ ax=0; az=0; d.vx=0; d.vz=0; }
-  d.vx+=ax*dt; d.vz+=az*dt; d.vy=clamp(d.vy+ay*dt,-0.8,0.8); const vcap=pu&&pu.d<bandDist(droneBand(d))+0.5?Math.max(vlim,2.5):vlim; const v=hyp(d.vx,d.vz); if(v>vcap){ d.vx*=vcap/v; d.vz*=vcap/v; }
+  d.vx+=ax*dt; d.vz+=az*dt; d.vy=clamp(d.vy+ay*dt,-0.8,0.8); const vcap=pu&&pu.d<bandDist(pu.band)+0.5?Math.max(vlim,2.5):vlim; const v=hyp(d.vx,d.vz); if(v>vcap){ d.vx*=vcap/v; d.vz*=vcap/v; }
   if(d.y>0.3)for(const o of team.drones){ if(o===d||o.y<0.3)continue; const ox=o.x-d.x, oz=o.z-d.z, od=hyp(ox,oz); if(od<0.9&&od>1e-3){ const cl=(d.vx*ox+d.vz*oz)/od; if(cl>0){ d.vx-=ox/od*cl; d.vz-=oz/od*cl; } } }
   // toward a person in sight: at most vSlow, and not at all inside the band's limit (+0.3 m), whatever else pushes the drone
-  if(pu){ const toward=-(d.vx*pu.x+d.vz*pu.z), lim=droneBand(d)==='pressure'?settings.floorPress:settings.floorComfort, cap=pu.d<lim+0.3?0:settings.vSlow;
+  if(pu){ const toward=-(d.vx*pu.x+d.vz*pu.z), lim=pu.band==='pressure'?settings.floorPress:settings.floorComfort, cap=pu.d<lim+0.3?0:settings.vSlow;
     if(toward>cap){ const ex=toward-cap; d.vx+=pu.x*ex; d.vz+=pu.z*ex; } }
-  const nx=d.x+d.vx*dt, nz=d.z+d.vz*dt, ny=clamp(d.y+d.vy*dt,0.1,settings.ceil-0.3);
-  if(d.y>0.3&&blockedAt(nx,ny,nz)){ if(!blockedAt(nx,ny,d.z)){ d.x=nx; d.vz=0; } else if(!blockedAt(d.x,ny,nz)){ d.z=nz; d.vx=0; } else { d.vx=d.vz=0; } } else { d.x=nx; d.z=nz; } d.y=ny;
+  // and not toward anyone in sight inside their limit + 0.3 m (comfort for everyone but the subject), nor toward a neighbour within
+  // 0.9 m; removing one component can add another (the person pass once undid the neighbour pass, and two drones held near people
+  // closed to 0.59 m), so the pass repeats until none is left (zero always satisfies them all)
+  const nearDrones=d.y>0.3?team.drones.filter(o=>o!==d&&o.y>=0.3&&hyp(o.x-d.x,o.z-d.z)<0.9&&hyp(o.x-d.x,o.z-d.z)>1e-3):[];
+  if(d.y>0.3){ const folk=everyone().map(h=>{ const ex=h.x-d.x, ez=h.z-d.z, pd=hyp(ex,ez), lim=h===person&&droneBand(d)==='pressure'?settings.floorPress:settings.floorComfort;
+      return pd<lim+0.3&&pd>1e-3&&sensed.has(h)?{ux:ex/pd,uz:ez/pd}:null; }).filter(Boolean).concat(nearDrones.map(o=>{ const ex=o.x-d.x, ez=o.z-d.z, od=hyp(ex,ez); return {ux:ex/od,uz:ez/od}; }));
+    for(let it=0;it<4&&folk.length;it++){ let any=false; for(const f of folk){ const toward=d.vx*f.ux+d.vz*f.uz; if(toward>1e-6){ d.vx-=f.ux*toward; d.vz-=f.uz*toward; any=true; } } if(!any)break; if(it===3){ d.vx=0; d.vz=0; } } }
+  const px0=d.x, pz0=d.z, nx=d.x+d.vx*dt, nz=d.z+d.vz*dt, ny=clamp(d.y+d.vy*dt,0.1,settings.ceil-0.3);
+  // sliding along a wall keeps one axis of the motion, which can point at a person: then the drone stops instead
+  const nearFolk=d.y>0.3?everyone().filter(h=>hyp(h.x-d.x,h.z-d.z)<(h===person&&droneBand(d)==='pressure'?settings.floorPress:settings.floorComfort)+0.3):[];
+  const closes=(vx,vz)=>nearFolk.concat(nearDrones).some(h=>(vx*(h.x-d.x)+vz*(h.z-d.z))/Math.max(1e-3,hyp(h.x-d.x,h.z-d.z))>0.02);
+  if(d.y>0.3&&blockedAt(nx,ny,nz)){ if(!blockedAt(nx,ny,d.z)&&!closes(d.vx,0)){ d.x=nx; d.vz=0; } else if(!blockedAt(d.x,ny,nz)&&!closes(0,d.vz)){ d.z=nz; d.vx=0; } else { d.vx=d.vz=0; } } else { d.x=nx; d.z=nz; } d.y=ny;
+  // someone closing in on a drone that cannot back away (between people, or pinned): climb above head height (below)
+  if(d.y>0.3&&nearFolk.some(h=>{ const pd=Math.max(1e-3,hyp(h.x-d.x,h.z-d.z)); return pd<settings.floorPress+0.6&&(h.vx*(d.x-h.x)+h.vz*(d.z-h.z))/pd>0.2; })&&hyp(d.vx,d.vz)<0.2)d.boxed=simT;
+  // odometry drift: the estimate wanders by poseDrift of the distance flown, in a slowly turning direction, and the heading drifts; near
+  // the home pads (known markers) it re-localizes within about a second; two draws per drone per step, whatever happens
+  { const n1=nrng(), n2=nrng(), moved=hyp(d.x-px0,d.z-pz0);
+    if(d.y>0.3){ d.ddir+=(n1-0.5)*0.6*Math.sqrt(dt); d.ox+=Math.cos(d.ddir)*settings.poseDrift*moved; d.oz+=Math.sin(d.ddir)*settings.poseDrift*moved;
+      d.oyaw=wrapPi(d.oyaw+settings.yawDriftDegMin*Math.PI/180/60*dt+(n2-0.5)*0.004*Math.sqrt(dt));
+      const pad=plan.pads[d.k]; if(pad&&hyp(d.x-pad.x,d.z-pad.z)<settings.relocM){ const f=Math.exp(-dt); d.ox*=f; d.oz*=f; d.oyaw*=f; } }
+    else { d.ox=d.oz=d.oyaw=0; } }
   // yaw: toward the requested direction, or a slow spin while searching
-  const yawT=d.lookAt&&hyp(d.lookAt.x-d.x,d.lookAt.z-d.z)>0.3?Math.atan2(d.lookAt.x-d.x,d.lookAt.z-d.z):(v>0.3?Math.atan2(d.vx,d.vz):null);
+  // the requested direction is in the drone's estimated frame (position and heading)
+  const yawT=d.lookAt&&hyp(d.lookAt.x-d.x-d.ox,d.lookAt.z-d.z-d.oz)>0.3?wrapPi(Math.atan2(d.lookAt.x-d.x-d.ox,d.lookAt.z-d.z-d.oz)-d.oyaw):(v>0.3?Math.atan2(d.vx,d.vz):null);
+  const yaw0=d.yaw;
   if(d.spin)d.yaw=wrapPi(d.yaw+settings.spinRate*Math.PI/180*dt); else if(yawT!=null){ const e=wrapPi(yawT-d.yaw), m=settings.yawRate*Math.PI/180*dt; d.yaw=wrapPi(d.yaw+clamp(e,-m,m)); }
+  d.yawRate=Math.abs(wrapPi(d.yaw-yaw0))/dt*180/Math.PI;
   // rotor-layer telemetry, as in Swarm Mind's law L4m: thrust, tilt and a 4-rotor mix from the commanded acceleration
   const g=9.81, m=settings.mass, T=Math.min(m*hyp(ax,ay+g,az),m*g*settings.twr); d.T=T; const tilt=Math.atan2(hyp(ax,az),ay+g);
   d.pitch=clamp(Math.atan2(ax*Math.sin(d.yaw)+az*Math.cos(d.yaw),ay+g),-0.6,0.6); d.roll=clamp(Math.atan2(-(ax*Math.cos(d.yaw)-az*Math.sin(d.yaw)),ay+g),-0.6,0.6);
@@ -821,9 +1053,36 @@ function blockedAt(x,y,z){ const c=cellIdx(x,z); if(CLR[c]<0.3)return true; if(H
 function wallClearance(d){ return Math.max(0,CLR[cellIdx(d.x,d.z)]-CELL/2); }
 function clearanceGrad(x,z){ const e=0.1; const gx=CLR[cellIdx(x+e,z)]-CLR[cellIdx(x-e,z)], gz=CLR[cellIdx(x,z+e)]-CLR[cellIdx(x,z-e)]; const n=hyp(gx,gz); return n>1e-6?{x:gx/n,z:gz/n}:{x:0,z:0}; }
 const radio=[];
+// detections, map updates and coverage marks a follower sends the master: {at, dets | map | cov}
+const shareQ=[];
+function deliverShare(){ for(let i=0;i<shareQ.length;){ const q=shareQ[i]; if(q.dets||q.at>simT+1e-9){ i++; continue; }
+    if(q.map)applyMapWrites(q.map); if(q.cov)for(const [r,j] of q.cov)if(COVP[r]&&COVP[r][j])COVP[r][j].seen=1; shareQ.splice(i,1); } }
+// the teacher plans from where the drones think they are; physics, sensing and safety use where they are (TRUEPOSE while planning)
+let TRUEPOSE=null;
+function withEstimates(fn){ TRUEPOSE=team.drones.map(d=>({x:d.x,y:d.y,z:d.z,yaw:d.yaw})); for(const d of team.drones){ d.x+=d.ox; d.z+=d.oz; d.yaw=wrapPi(d.yaw+d.oyaw); }
+  try{ fn(); } finally { team.drones.forEach((d,k)=>{ const t=TRUEPOSE[k]; d.x=t.x; d.z=t.z; d.yaw=t.yaw; }); TRUEPOSE=null; } }
+// a point measured relative to the drone's true pose, as the drone places it: from its estimated position and heading
+function placeEst(d,rx,rz){ const c=Math.cos(d.oyaw), s=Math.sin(d.oyaw); return {x:d.x+d.ox+rx*c+rz*s,z:d.z+d.oz+rz*c-rx*s}; }
+// a depth reading of true range L (hitting `at`, or nothing within range): stereo-like noise (0.01 + 0.006 L^2) x depthNoiseK, a missing
+// return with probability depthMiss, and 70% missing on unreliable walls (glass, mirror, blank); null when missing; three draws
+function depthMeasure(L,at){ const u1=nrng(), u2=nrng(), u3=nrng();
+  if(u3<settings.depthMiss||(at&&unreliableAt(at.x,at.z)&&u3<0.7))return null; return Math.max(0.1,L+gauss(u1,u2)*(0.01+0.006*L*L)*settings.depthNoiseK); }
+// a wall cell in a 0.8 m block marked unreliable for depth this episode (glass, mirror or blank wall)
+function unreliableAt(x,z){ if(!settings.unreliableWalls||Hg[cellIdx(x,z)]<settings.ceil-0.01)return false; let h=(Math.imul(Math.floor(x/0.8),73856093)^Math.imul(Math.floor(z/0.8),19349663)^settings.wallHash)>>>0;
+  h=Math.imul(h^(h>>>13),0x5bd1e995)>>>0; return (h%10000)/10000<settings.unreliableWalls; }
+// this episode's perception realism (kept where opts.settings set it): odometry drift 0.5-2% of distance, heading drift up to
+// +/-0.5 deg/min, depth noise scale 0.7-1.5 (x3 single-camera), 1-5% missing returns, up to 15% unreliable walls, light per room
+function drawRealism(){ const S=settings, on=!!S.realism, u=[]; for(let k=0;k<6;k++)u.push(nrng());
+  if(S.poseDrift==null)S.poseDrift=on?+(0.005+0.015*u[0]).toFixed(4):0;
+  if(S.yawDriftDegMin==null)S.yawDriftDegMin=on?+((u[1]-0.5)*1.0).toFixed(3):0;
+  if(S.depthNoiseK==null)S.depthNoiseK=on?+((0.7+0.8*u[2])*(S.depthMode==='mono'?3:1)).toFixed(3):0;
+  if(S.depthMiss==null)S.depthMiss=on?+(0.01+0.04*u[3]).toFixed(4):0;
+  if(S.unreliableWalls==null)S.unreliableWalls=on?+(0.15*u[4]).toFixed(3):0;
+  S.wallHash=(u[5]*4294967296)>>>0;
+  if(S.lightLevels==null)S.lightLevels=plan.rooms.map(()=>{ const v=nrng(); return !on?1:v<0.6?1:v<0.9?0.75:0.45; }).concat([1]); }
 function deliverRadio(){ for(let i=radio.length-1;i>=0;i--){ const pk=radio[i]; if(pk.at>simT)continue; radio.splice(i,1); const d=pk.d;
     // the follower's target height: landing below 0.5 m, otherwise inside the altitude band
-    const ty=d.y+pk.vec.y; d.target={x:d.x+pk.vec.x,y:ty<0.5?Math.max(0.1,ty):clamp(ty,settings.zMin,settings.ceil-0.5),z:d.z+pk.vec.z}; d.lookAt=pk.look; d.spin=pk.spin; d.band=pk.band; d.rxT=simT; } }
+    const ty=d.y+pk.vec.y; d.target={x:d.x+d.ox+pk.vec.x,y:ty<0.5?Math.max(0.1,ty):clamp(ty,settings.zMin,settings.ceil-0.5),z:d.z+d.oz+pk.vec.z}; d.lookAt=pk.look; d.spin=pk.spin; d.band=pk.band; d.rxT=simT; } }
 
 // ---------- orders, the master's plan tick, completion and the dataset record ----------
 function roomByName(n){ if(n==null)return null; if(typeof n==='number')return n; const s=String(n).toLowerCase(); const q=plan.rooms.find(r=>r.name===s)||plan.rooms.find(r=>s.includes(r.name)||r.name.includes(s)); return q?q.id:null; }
@@ -833,6 +1092,8 @@ function resolveParams(goal,p){ const out={};
   if(p.door!=null){ out.door=doorByName(p.door,false); if(out.door==null)delete out.door; }
   if(p.exit!=null){ out.exit=doorByName(p.exit,true); if(out.exit==null)delete out.exit; }
   if(goal==='search')out.level=[2,3,5].includes(+p.level)?+p.level:3;
+  // a described person (their track id): the team follows that track from now on
+  if(p.person!=null&&everyone().some(h=>h.tid===+p.person)){ out.person=+p.person; team.targetTid=out.person; }
   if(goal==='overwatch'&&out.door==null&&out.room==null){ const m=doorByName('main entrance',false); out.door=m!=null?m:exitDoors()[0].id; }
   return out; }
 function describeGoal(){ const p=mission.params, g=mission.goal;
@@ -892,32 +1153,42 @@ function planTick(){
   for(const d of team.drones.slice(1)){ d.slot=d.slotNew; d.vec={x:d.slot.x-d.x,y:d.slot.y-d.y,z:d.slot.z-d.z};
     if(rng()<settings.rloss){ metrics.radioDrops++; radioEv.push({to:d.id,dropped:true,latency:null}); continue; }
     const lat=settings.rlat*(0.6+0.8*rng()); radio.push({d,vec:d.vec,look:d.lookCmd,spin:d.spinCmd,band:mission.band,at:simT+lat}); radioEv.push({to:d.id,dropped:false,latency:+lat.toFixed(3)}); }
-  // timed reference points along each drone's path to its slot (+0.5, +1, +1.5, +2 s)
+  // timed reference points along each drone's path to its slot (+0.5, +1, +1.5, +2 s), flown from its current position and velocity
   const refs=team.drones.map(d=>{ const s=d.slot; let path;
-    if(d.pathFor&&hyp(d.pathFor.x-s.x,d.pathFor.z-s.z)<0.5&&d.path.length)path=d.path; else if(losGrid(FLY,d.x,d.z,s.x,s.z))path=[{x:s.x,z:s.z}]; else { path=planPath(FLY,d,s)||[{x:s.x,z:s.z}]; if(d.k===0){ d.path=path; d.pathFor={x:s.x,z:s.z}; d.replanT=3.0; } } const v=(DZONE[navIdx(d.x,d.z)]||nearPerson(d))?settings.vSlow:settings.vMax; const Ltot=pathLength(path,d);
-    return [0.5,1,1.5,2].map(t=>{ const p=pointAlong(path,d,Math.min(Ltot,v*t)); return [+p.x.toFixed(3),+(d.y+clamp(s.y-d.y,-0.8*t,0.8*t)).toFixed(3),+p.z.toFixed(3)]; }); });
+    if(d.pathFor&&hyp(d.pathFor.x-s.x,d.pathFor.z-s.z)<0.5&&d.path.length)path=d.path; else if(losGrid(FLY,d.x,d.z,s.x,s.z))path=[{x:s.x,z:s.z}]; else { path=planPath(FLY,d,s)||[{x:s.x,z:s.z}]; if(d.k===0){ d.path=path; d.pathFor={x:s.x,z:s.z}; d.replanT=3.0; } } const v=(DZONE[navIdx(d.x,d.z)]||nearPerson(d))?settings.vSlow:settings.vMax;
+    return refTrack(d,path,s,v); });
   const margin=marginNow(); if(margin>metrics.maxMargin)metrics.maxMargin=margin;
   mission.template=out.text; mission.templateKey=out.key; mission.lastOut=out;
+  // the camera rays draw depth noise: measured every tick, logged or not, so logging never changes what happens next
+  const cams=team.drones.map((d,k)=>cameraRays(TRUEPOSE?TRUEPOSE[k]:d));
   if(typeof mission.onPlan==='function'){ const r3=v=>[+v.x.toFixed(3),+v.y.toFixed(3),+v.z.toFixed(3)];
     mission.onPlan({type:'plan',t:+simT.toFixed(3),tick:mission.tick,
       order:{goal:mission.goal,version:mission.version,text:mission.order?mission.order.text:null,src:mission.order?mission.order.src:null,params:mission.params,status:mission.status},
       obs:{seen:team.seen,p:I?[+I.x.toFixed(3),0,+I.z.toFixed(3)]:null,v:I?[+team.vel.x.toFixed(2),0,+team.vel.z.toFixed(2)]:null,last_seen_age:team.lkpT>=0?+(simT-team.lkpT).toFixed(2):null,
         room:team.lkpRoom!=null&&team.lkpRoom>=0?team.lkpRoom:null,belief_rooms:[...team.beliefRooms].sort((a,b)=>a-b),cleared:[...team.cleared].sort((a,b)=>a-b),
-        detections:team.dets.map(x=>({drone:x.drone,p:[+x.x.toFixed(2),0,+x.z.toFixed(2)],conf:+x.conf.toFixed(2)})),coverage:plan.rooms.map((q,i)=>+team.roomCoverage(i).toFixed(2)),map:coarseMap()},
-      team:team.drones.map(d=>({id:d.id,pos:r3(d),vel:r3({x:d.vx,y:d.vy,z:d.vz}),yaw:+d.yaw.toFixed(3),room:roomAt(d.x,d.z),link_age:+(simT-d.rxT).toFixed(2),wait_door:d.waitNowT!=null&&simT-d.waitNowT<0.05?d.waitFor:null,cam:cameraRays(d)})),
+        detections:team.dets.map(x=>({drone:x.drone,p:[+x.x.toFixed(2),0,+x.z.toFixed(2)],conf:+x.conf.toFixed(2),age:+(simT-(x.t!=null?x.t:simT)).toFixed(2),track:x.track})),target_track:team.targetTid,
+        people:team.othersEst().map(o=>({track:o.track,p:[+o.x.toFixed(2),0,+o.z.toFixed(2)],age:+o.age.toFixed(2)})),coverage:plan.rooms.map((q,i)=>+team.roomCoverage(i).toFixed(2)),map:coarseMap()},
+      team:team.drones.map((d,k)=>({id:d.id,pos:r3(d),vel:r3({x:d.vx,y:d.vy,z:d.vz}),yaw:+d.yaw.toFixed(3),room:roomAt(d.x,d.z),link_age:+(simT-d.rxT).toFixed(2),wait_door:d.waitNowT!=null&&simT-d.waitNowT<0.05?d.waitFor:null,cam:cams[k]})),
       label:{template:out.key,text:out.text,band:mission.band,door:out.door!=null?out.door:null,room:out.room!=null?out.room:null,exit:out.exit!=null?out.exit:null,
         slots:team.drones.map(d=>r3(d.slot)),vectors:team.drones.map(d=>r3(d.vec)),yaw:team.drones.map(d=>d.yawCmd==null?null:+d.yawCmd.toFixed(3)),spin:team.drones.map(d=>!!d.spinCmd),refs,flags:team.drones.map(d=>d.flags.slice())},
       radio:radioEv,
-      truth:{person:{pos:[+person.x.toFixed(3),0,+person.z.toFixed(3)],room:person.room,state:person.state,role:person.role,alive:person.alive},margin:+margin.toFixed(3),
+      truth:{person:{pos:[+person.x.toFixed(3),0,+person.z.toFixed(3)],room:person.room,state:person.state,role:person.role,alive:person.alive,tid:person.tid,posture:person.posture,speed:+hyp(person.vx,person.vz).toFixed(2)},
+        people:crowd.list.map(w=>({tid:w.tid,role:w.role,pos:[+w.x.toFixed(3),0,+w.z.toFixed(3)],room:w.room,posture:w.posture,alive:w.alive})),detections_who:team.dets.map(x=>x.who),margin:+margin.toFixed(3),
+        drones:(TRUEPOSE||team.drones).map(t=>[+t.x.toFixed(3),+t.y.toFixed(3),+t.z.toFixed(3),+t.yaw.toFixed(3)]),
         detections_tp:team.dets.map(x=>x.tp),estimate_from_fp:!!(team.lkp&&team.fromFP)}}); }
   const changed=!mission.lastSay||mission.lastSay.key!==out.key||mission.lastSay.text!==out.text||mission.lastSay.band!==mission.band||simT-mission.lastSay.t>(mission.narrate==='tick'?0:4);
   if(changed){ mission.lastSay={key:out.key,text:out.text,band:mission.band,t:simT}; say('master',(team.seen?'':I?'Last seen '+(simT-team.lkpT).toFixed(1)+' s ago. ':'Person unseen. ')+'Template: '+out.text+'. Vectors '+team.drones.map(d=>d.id+fmtV(d.vec)+' '+hyp(d.vec.x,d.vec.y,d.vec.z).toFixed(1)+' m').join(' · ')+' · radio → S1, S2'+(mission.band==='pressure'?' · pressure band: '+settings.dPress+' m':'')); }
 }
 function truth(dt){ const air=team.drones.filter(d=>d.y>0.5);
-  if(person.alive)for(const d of air){ const s=hyp(d.x-person.x,d.z-person.z); if(s<4&&los(d.x,d.y,d.z,person.x,1.3,person.z)){ if(s<metrics.minStandoff)metrics.minStandoff=s; const b=droneBand(d), lim=b==='pressure'?settings.floorPress:settings.floorComfort;
+  for(const h of everyone())for(const d of air){ const s=hyp(d.x-h.x,d.z-h.z); if(s<4&&senses(d.x,d.y,d.z,h)){ if(s<metrics.minStandoff)metrics.minStandoff=s; const b=h===person?droneBand(d):'comfort', lim=b==='pressure'?settings.floorPress:settings.floorComfort;
       if(b==='pressure'){ metrics.bandT.pressure+=dt; if(s<metrics.minPressure)metrics.minPressure=s; } else { metrics.bandT.comfort+=dt; if(s<metrics.minComfort)metrics.minComfort=s; }
-      if(s<settings.floorPress)metrics.floorViol+=dt;
-      if(s<lim){ metrics.standoffViol+=dt; metrics.bandViol[b]+=dt; if((d.vx*(person.x-d.x)+d.vz*(person.z-d.z))/Math.max(s,1e-3)>0.1)metrics.standoffApproach+=dt; } } }
+      // inside the floor: the person's doing if the drone was not moving toward them while they closed in or walked or ran past
+      // (a person can outrun a retreating drone), or while the drone was pinned (walls and people on every side, so no direction
+      // opens the distance: it cannot get there by itself, since it never moves toward anyone inside their limit); otherwise the
+      // drone's, including both standing still when the drone could have backed away
+      if(s<settings.floorPress){ metrics.floorViol+=dt; const dTo=(d.vx*(h.x-d.x)+d.vz*(h.z-d.z))/Math.max(s,1e-3), hTo=(h.vx*(d.x-h.x)+h.vz*(d.z-h.z))/Math.max(s,1e-3), pinned=d.pinnedT!=null&&simT-d.pinnedT<0.2;
+        if(dTo<=0.05&&(hTo>=0.3||hyp(h.vx,h.vz)>=0.5||pinned))metrics.floorByPerson+=dt; else metrics.floorByDrone+=dt; }
+      if(s<lim){ metrics.standoffViol+=dt; metrics.bandViol[b]+=dt; if((d.vx*(h.x-d.x)+d.vz*(h.z-d.z))/Math.max(s,1e-3)>0.1)metrics.standoffApproach+=dt; } } }
   for(let a=0;a<air.length;a++)for(let b=a+1;b<air.length;b++){ const s=hyp(air[a].x-air[b].x,air[a].z-air[b].z); if(s<metrics.minSep)metrics.minSep=s; if(s<0.6)metrics.sepViol+=dt; }
   for(const d of air){ if(d.y<settings.zMin-0.3)continue; const w=wallClearance(d); if(w<metrics.minWall)metrics.minWall=w; if(w<0.25)metrics.wallViol+=dt; if(d.y>settings.ceil-0.45)metrics.altViol+=dt; } }
 
@@ -925,28 +1196,33 @@ const world={endOnGone:false,ended:false,scenario:null,
   // reset(opts): {family:'office'|'house'|…, layout:'fixed'|'random', plan, protect:'lab', person:{role,intent,start,targetRoom,startExit,params}, goal, params,
   // settings, endOnGone}. Call seed(n) first. `plan` (a finished plan) overrides family and layout; protect defaults to the plan's.
   reset(opts){ opts=opts||{}; Object.assign(settings,JSON.parse(JSON.stringify(SETTINGS0)),opts.settings||{});
-    buildWorld(opts.plan||makeFloor(opts.family||'office',opts.layout==='random'?rng:null));
-    simT=0; talk.length=0; talkVer++; log.length=0; logVer++; radio.length=0; for(const k in doorLock)delete doorLock[k];
+    buildWorld(opts.plan||makeFloor(opts.family||'office',opts.layout==='random'?rng:null)); drawRealism();
+    simT=0; talk.length=0; talkVer++; log.length=0; logVer++; radio.length=0; shareQ.length=0; for(const k in doorLock)delete doorLock[k];
     for(const k in metrics)metrics[k]=k.startsWith('min')?Infinity:(k==='tFound'?null:k==='bandViol'||k==='bandT'?{pressure:0,comfort:0}:0);
     const protect=roomByName(opts.protect)!=null?roomByName(opts.protect):(plan.protect!=null?plan.protect:0);
     this.scenario={family:plan.family,layout:opts.plan?'given':(opts.layout||'fixed'),protectedRoom:protect};
-    team.drones=plan.pads.map((p,k)=>makeDrone(k,p)); Object.assign(team,{seen:false,lkp:null,lkpT:-1,lkpRoom:-1,vel:{x:0,z:0},everSeen:false,beliefRooms:new Set(),map:new Uint8Array(NX*NZ),dets:[],percT:0,trueSeen:false,fromFP:false}); team.resetCoverage();
-    const po=Object.assign({targetRoom:protect},opts.person||{}); if(typeof po.targetRoom==='string')po.targetRoom=roomByName(po.targetRoom); if(typeof po.start==='string'&&po.start!=='outside')po.start=roomByName(po.start);
+    team.drones=plan.pads.map((p,k)=>makeDrone(k,p)); for(const d of team.drones)d.ddir=nrng()*2*Math.PI; Object.assign(team,{seen:false,lkp:null,lkpT:-1,lkpRoom:-1,vel:{x:0,z:0},everSeen:false,beliefRooms:new Set(),map:new Uint8Array(NX*NZ),dets:[],percT:0,trueSeen:false,fromFP:false}); team.resetCoverage();
+    const cast=drawCast((opts.person&&opts.person.role)||'intruder',plan.family);
+    const po=Object.assign({targetRoom:protect},opts.person||{}); if(!po.body)po.body=cast.subject.body; if(typeof po.targetRoom==='string')po.targetRoom=roomByName(po.targetRoom); if(typeof po.start==='string'&&po.start!=='outside')po.start=roomByName(po.start);
     if(typeof po.startExit==='string')po.startExit=doorByName(po.startExit,true);
-    person.reset(po); this.scenario.person={role:person.role,intent:person.intent,targetRoom:person.targetRoom,entry:person.entry,delay:person.delay,params:Object.assign({},person.params)};
+    person.reset(po); person.tid=cast.subject.tid; person.look=cast.subject.look; crowd.reset(cast.crowd); team.targetTid=person.tid; team.others={};
+    this.scenario.cast=[Object.assign({},cast.subject,{body:person.body})].concat(cast.crowd).map(c=>({tid:c.tid,role:c.role,group:c.group,body:c.body,look:c.look}));
+    this.scenario.person={role:person.role,intent:person.intent,targetRoom:person.targetRoom,entry:person.entry,delay:person.delay,params:Object.assign({},person.params)};
     this.endOnGone=!!opts.endOnGone; this.ended=false;
-    Object.assign(mission,{version:0,order:null,tick:0,template:'',templateKey:'',queued:null,lastSay:null,pair:'01',pairT:-9,coverT:0,lastOut:null,band:'comfort',ends:[]});
+    // truthT (the phase of the 0.05 s safety sampling) once carried over from the previous episode, so an episode's metrics depended
+    // on what had run before it in the same worker
+    Object.assign(mission,{version:0,order:null,tick:0,template:'',templateKey:'',queued:null,lastSay:null,pair:'01',pairT:-9,coverT:0,lastOut:null,band:'comfort',ends:[],truthT:0,exitT:null,explore:null});
     applyOrder(opts.goal||'hold',null,'auto',opts.params||{}); mission.version=0; mission.order=null;
     if(opts.grounded){ mission.status='landed'; mission.grounded=true; } else mission.grounded=false;
     say('site','Floor: '+plan.rooms.map(q=>q.name).join(', ')+'. '+(person.role==='intruder'?'An intruder is heading for the '+RM(person.targetRoom).name+'.':'A visitor is in the '+(person.room>=0&&person.room<plan.rooms.length?RM(person.room).name:'building')+'.')); },
-  step(dt){ simT+=dt; person.step(dt,team.drones); team.perceive(dt);
+  step(dt){ simT+=dt; person.step(dt,team.drones); crowd.step(dt,team.drones); team.perceive(dt);
     mission.coverT-=dt; if(mission.coverT<=0){ mission.coverT=0.25; if(mission.goal==='search'||mission.sub)team.cover(); exploreObserve(); }
-    mission.planT-=dt; if(mission.planT<=0){ mission.planT=0.5; planTick(); }
-    deliverRadio(); for(const d of team.drones)droneStep(d,dt); mission.truthT=(mission.truthT||0)+dt; if(mission.truthT>=0.05){ truth(mission.truthT); mission.truthT=0; } },
+    mission.planT-=dt; if(mission.planT<=0){ mission.planT=0.5; withEstimates(planTick); }
+    deliverRadio(); deliverShare(); for(const d of team.drones)droneStep(d,dt); mission.truthT=(mission.truthT||0)+dt; if(mission.truthT>=0.05){ truth(mission.truthT); mission.truthT=0; } },
   order(goal,text,src,params){ return applyOrder(goal,text,src,params); },
   setGoal(goal,params){ return applyOrder(goal,null,'button',params); },
   queue(goal,text,params){ if(!GOALS[goal])return false; mission.queued={goal,text,params}; say('master','Queued next: '+GOALS[goal]+'.'); return true; }
 };
 if(typeof module!=='undefined')module.exports={world,simT:()=>simT,metrics,settings,team,person,mission,GOALS,talk,log,seed,rng,los,getPlan:()=>plan,
-  grids:()=>({WALK,FLY,FLYRAW,DZONE,Hg,DOORC,ROOMC,NX,NZ,GX,GZ}),planPath,pathLength,makeOffice,makeFloor,FAMILIES,buildWorld,roomAt,heightAt,validate,COVP,doorLock,wallClearance,cellIdx,navIdx,roomByName,doorByName,coarseDims,coarseMap,cameraRays,detectFrame};
+  grids:()=>({WALK,FLY,FLYRAW,DZONE,Hg,DOORC,ROOMC,NX,NZ,GX,GZ}),planPath,pathLength,makeOffice,makeFloor,FAMILIES,drawCast,crowd,everyone,buildWorld,roomAt,heightAt,validate,COVP,doorLock,wallClearance,cellIdx,navIdx,roomByName,doorByName,coarseDims,coarseMap,cameraRays,detectFrame};
 </script>

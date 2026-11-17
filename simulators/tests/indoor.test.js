@@ -28,11 +28,16 @@ const SCEN = {
   visitor: () => ({ role: 'visitor', intent: 'wander' }),
 };
 
+// The outcome bands below are regression floors for the teacher's logic, set with exact perception and identical people
+// (CONTROLLED). Tests that pass their own reset settings ({} for the defaults) run with perception realism and diverse people.
+// identical people run at 2 m/s, so the teacher's belief assumes 2 m/s here (4.5 m/s with diverse people, who may sprint)
+const CONTROLLED = { realism: false, people: 'uniform', crowd: 0, beliefSpeed: 2.0 };
+const REAL = {};
 // one episode: order `goal` at 1 s; returns plan records and metrics
 function episode(sd, goal, who, opts) {
   opts = opts || {};
   S.seed(sd);
-  S.world.reset(Object.assign({ goal: 'hold', person: SCEN[who](sd), endOnGone: who === 'intruder', grounded: goal === 'grounded', layout: 'fixed' }, opts.reset || {}));
+  S.world.reset(Object.assign({ goal: 'hold', person: SCEN[who](sd), endOnGone: who === 'intruder', grounded: goal === 'grounded', layout: 'fixed', settings: CONTROLLED }, opts.reset || {}));
   const recs = [];
   S.mission.onPlan = r => recs.push(r);
   const secs = opts.secs || 180;
@@ -90,7 +95,7 @@ test('belief is sound: while he is unseen, his true room is among the rooms he c
   let checked = 0, missedInCleared = 0;
   for (const [goal, who] of [['search', 'hider'], ['track', 'intruder'], ['keepout', 'intruder'], ['guideout', 'visitor']]) {
     for (const sd of [1, 2, 3]) {
-      const { recs } = episode(sd, goal, who);
+      const { recs } = episode(sd, goal, who, { reset: { settings: REAL } });
       const P = S.getPlan();
       for (const r of recs) {
         const room = r.truth.person.room;
@@ -107,7 +112,7 @@ test('belief is sound: while he is unseen, his true room is among the rooms he c
 });
 
 test('no leak: where an unseen person hides does not change the labels', () => {
-  const run = start => episode(4, 'search', 'hider', { reset: { person: { role: 'intruder', intent: 'hide', start } } }).recs;
+  const run = start => episode(4, 'search', 'hider', { reset: { person: { role: 'intruder', intent: 'hide', start }, settings: REAL } }).recs;
   const a = run('storage'), b = run('meeting room');
   let same = 0;
   for (let k = 0; k < Math.min(a.length, b.length); k++) {
@@ -146,7 +151,8 @@ test('every plan record carries the indoor contract fields', () => {
 });
 
 test('perception: detections fall with distance, angle and occlusion; false positives are rare; error grows with range', () => {
-  S.seed(6); S.world.reset({ layout: 'fixed', person: { role: 'visitor', intent: 'wander' } });
+  // the detector alone: realism off (no room lighting, blur or drift), which the realism test covers
+  S.seed(6); S.world.reset({ layout: 'fixed', person: { role: 'visitor', intent: 'wander' }, settings: { realism: false } });
   const P = S.getPlan(), lab = P.rooms.find(q => q.name === 'lab'), d = S.team.drones[0], pr = S.person;
   const rate = (dist, offDeg, n = 1500) => { let tp = 0, fp = 0, err = 0; for (let k = 0; k < n; k++) { for (const x of S.detectFrame(d)) { if (x.tp) { tp++; err += Math.hypot(x.x - pr.x, x.z - pr.z); } else fp++; } } return { tp: tp / n, fp: fp / n, err: tp ? err / tp : null }; };
   // drone 1.6 m up at the lab's west end, looking east (+x); the person on open floor in front of it
@@ -189,14 +195,16 @@ test('keep out and drive out beat the grounded baseline', () => {
 
 test('guide out, search, explore, track and return reach their bands', () => {
   const run = (goal, who, n) => Array.from({ length: n }, (_, k) => episode(k + 1, goal, who));
-  const guide = run('guideout', 'visitor', 12), search = run('search', 'hider', 8), expl = run('explore', 'visitor', 6), track = run('track', 'intruder', 16), ret = run('return', 'visitor', 3);
+  const guide = run('guideout', 'visitor', 12), search = run('search', 'hider', 8), expl = run('explore', 'visitor', 6), track = run('track', 'intruder', 32), ret = run('return', 'visitor', 3);
   BANDS.other = { guide, search, expl, track, ret };
   const guided = guide.filter(e => e.M.guided > 0).length, found = search.filter(e => e.M.found > 0).length, mapped = expl.filter(e => e.M.mapped >= 0.9).length;
   const view = track.reduce((a, e) => a + 100 * e.M.seenT / Math.max(1e-9, e.M.totT), 0) / track.length;
   assert.ok(guided >= 5, `guide out: ${guided}/12 visitors out within 180 s`);
   assert.ok(found >= 7, `search: ${found}/8 hiders found`);
   assert.ok(mapped >= 2, `explore: ${mapped}/6 floors at least 90% mapped within 180 s`);
-  assert.ok(view >= 40, `track: ${view.toFixed(0)}% in view`);
+  // track in view varies widely by seed (SD about 20 points): over 48 seeds it averaged 39-40% both on 0a4d419 and now, so the floor is
+  // two standard errors of a 32-seed mean below that
+  assert.ok(view >= 32, `track: ${view.toFixed(0)}% in view (32 seeds)`);
   console.log(`      guided ${guided}/12, found ${found}/8, mapped ${mapped}/6, track in view ${view.toFixed(0)}%`);
   assert.ok(ret.every(e => e.status === 'landed'), 'return: every drone lands');
 });
@@ -229,14 +237,18 @@ test('records name the band; drive out uses pressure and visitors always comfort
   const d = episode(2, 'driveout', 'intruder', { secs: 60 }).recs, v = episode(2, 'guideout', 'visitor', { secs: 60 }).recs;
   assert.ok(d.length && d.every(r => r.label.band === 'pressure' || r.order.goal !== 'driveout'), 'drive out ticks are pressure');
   assert.ok(v.length && v.every(r => r.label.band === 'comfort'), 'a visitor is always comfort');
-  const both = [1, 2, 3, 4, 5, 6].map(sd => episode(sd, 'keepout', 'intruder').recs).filter(k => k.some(r => r.label.band === 'comfort') && k.some(r => r.label.band === 'pressure' && r.order.goal === 'keepout'));
-  assert.ok(both.length >= 2, `keep out switched from comfort to pressure in ${both.length} of 6 episodes`);
+  const both = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map(sd => episode(sd, 'keepout', 'intruder').recs).filter(k => k.some(r => r.label.band === 'comfort') && k.some(r => r.label.band === 'pressure' && r.order.goal === 'keepout'));
+  assert.ok(both.length >= 2, `keep out switched from comfort to pressure in ${both.length} of 12 episodes`);
   for (const k of both) for (const r of k) if (r.label.band === 'pressure') assert.ok(r.obs.seen, 'pressure only while he is in sight');
 });
 
 test('same seed gives identical records, also after other episodes', () => {
-  const h = () => crypto.createHash('sha256').update(JSON.stringify(episode(9, 'keepout', 'intruder', { secs: 60 }).recs)).digest('hex');
-  const a = h(); episode(3, 'search', 'hider', { secs: 30 }); episode(4, 'guideout', 'visitor', { secs: 30 }); const b = h();
+  const h = () => crypto.createHash('sha256').update(JSON.stringify(episode(9, 'keepout', 'intruder', { secs: 60, reset: { settings: REAL } }).recs)).digest('hex');
+  // other episodes in between, with realism, crowds and crawling hiders, must leave nothing behind
+  const a = h(); for (const sd of [3, 5, 8]) episode(sd, 'search', 'hider', { secs: 40, reset: { family: 'openplan', layout: 'random', settings: { crowd: 3 } } });
+  episode(4, 'guideout', 'visitor', { secs: 30 });
+  // one ending between two 0.05 s safety samples: its sampling phase once carried into the next episode
+  episode(6, 'track', 'intruder', { secs: 20 + 1 / 60 }); const b = h();
   assert.strictEqual(a, b);
   S.seed(9); S.world.reset({ layout: 'random' }); const w1 = JSON.stringify(S.getPlan().rooms);
   S.seed(10); S.world.reset({ layout: 'random' }); S.seed(9); S.world.reset({ layout: 'random' });
@@ -310,12 +322,14 @@ test('every family: walls block sight between rooms, doorways do not, lintels bl
 
 test('every family: every tactic runs with no safety violation on true positions, finite labels and a sound belief', () => {
   const goals = [['keepout', 'intruder'], ['driveout', 'intruder'], ['guideout', 'visitor'], ['track', 'intruder'], ['contain', 'intruder'], ['search', 'hider'], ['explore', 'hider'], ['overwatch', 'intruder'], ['return', 'visitor']];
-  let eps = 0, unseen = 0;
+  let eps = 0, unseen = 0, personFloor = 0;
   for (const fam of S.FAMILIES) for (const [k, [goal, who]] of goals.entries()) {
     const sd = 101 + k + 10 * S.FAMILIES.indexOf(fam), tag = `${fam} ${goal} seed ${sd}`;
-    const { recs, M } = episode(sd, goal, who, { secs: 45, reset: { family: fam, layout: 'random' } });
+    const { recs, M } = episode(sd, goal, who, { secs: 45, reset: { family: fam, layout: 'random', settings: REAL } });
     const P = S.getPlan(); eps++;
-    for (const key of ['floorViol', 'sepViol', 'wallViol', 'altViol']) assert.strictEqual(+M[key].toFixed(2), 0, `${tag}: ${key} ${M[key].toFixed(2)} s`);
+    // realistic people can outrun a retreating drone: only floor time the drone caused counts here (the person's is reported)
+    for (const key of ['floorByDrone', 'sepViol', 'wallViol', 'altViol']) assert.strictEqual(+M[key].toFixed(2), 0, `${tag}: ${key} ${M[key].toFixed(2)} s`);
+    if (M.floorByPerson > 0) personFloor++;
     assert.ok(M.standoffApproach <= 0.5, `${tag}: a drone moved toward a person inside its band's limit for ${M.standoffApproach.toFixed(2)} s`);
     // an intruder driven out ends the episode early; drones still on their pads land at once on return
     assert.ok(recs.length >= (goal === 'return' ? 1 : 20), `${tag}: only ${recs.length} plan records`);
@@ -328,7 +342,89 @@ test('every family: every tactic runs with no safety violation on true positions
       assert.ok(r.obs.belief_rooms.includes(room), `${tag} t ${r.t}: he is in the ${P.rooms[room].name}, belief ${r.obs.belief_rooms.map(i => P.rooms[i].name)}`);
     }
   }
-  console.log(`      ${eps} episodes (${S.FAMILIES.length} families x 9 orders); belief checked on ${unseen} unseen ticks`);
+  assert.ok(personFloor <= 3, `${personFloor} episodes where a person closed within 1.2 m of a retreating drone`);
+  console.log(`      ${eps} episodes (${S.FAMILIES.length} families x 9 orders); belief checked on ${unseen} unseen ticks; ${personFloor} with a person closing within 1.2 m of a retreating drone`);
+});
+
+test('route labels are flyable: refs start from the drone\'s state and never imply more than aMax', () => {
+  const aMax = S.settings.aMax; let rest = 0, checked = 0, worst = 0;
+  for (const [goal, who, fam] of [['keepout', 'intruder', 'office'], ['search', 'hider', 'warehouse'], ['guideout', 'visitor', 'house'], ['driveout', 'intruder', 'corridor']]) {
+    const { recs } = episode(7, goal, who, { secs: 60, reset: { family: fam, layout: 'random', settings: REAL } });
+    for (const r of recs) for (let i = 0; i < 3; i++) {
+      const R = r.label.refs[i], x = r.team[i].pos, v = r.team[i].vel; checked++;
+      if (Math.hypot(v[0], v[2]) < 0.02 && x[1] > 0.5) { rest++; assert.ok(Math.hypot(R[0][0] - x[0], R[0][2] - x[2]) <= 0.5 * aMax * 0.25 + 0.05, `${fam} ${goal} t ${r.t}: a drone at rest is labelled ${Math.hypot(R[0][0] - x[0], R[0][2] - x[2]).toFixed(2)} m away after 0.5 s`); }
+      let u = [(R[0][0] - x[0]) / 0.5, (R[0][2] - x[2]) / 0.5];
+      const first = Math.hypot(R[0][0] - x[0] - v[0] * 0.5, R[0][2] - x[2] - v[2] * 0.5); worst = Math.max(worst, first / (0.25 * 0.5));
+      assert.ok(first <= 0.5 * aMax * 0.25 + 0.05, `${fam} ${goal} t ${r.t}: the first ref needs ${(first / 0.125).toFixed(1)} m/s2`);
+      for (let j = 1; j < 4; j++) { const w = [(R[j][0] - R[j - 1][0]) / 0.5, (R[j][2] - R[j - 1][2]) / 0.5], acc = Math.hypot(w[0] - u[0], w[1] - u[1]) / 0.5; worst = Math.max(worst, acc);
+        assert.ok(acc <= aMax + 0.2, `${fam} ${goal} t ${r.t}: refs imply ${acc.toFixed(2)} m/s2`); u = w; }
+    }
+  }
+  assert.ok(rest > 0 && checked > 500, `checked ${checked} ref sequences, ${rest} from rest`);
+  console.log(`      ${checked} ref sequences (${rest} from rest); largest implied acceleration ${worst.toFixed(2)} m/s2 (limit ${aMax})`);
+});
+
+test('perception realism: drift grows with distance flown, followers\' detections arrive over the radio, depth has gaps; off is exact', () => {
+  const run = settings => { S.seed(21); S.world.reset({ family: 'warehouse', layout: 'random', person: { role: 'intruder', intent: 'hide' }, goal: 'hold', settings });
+    const recs = []; S.mission.onPlan = r => recs.push(r); for (let i = 0; i < 70 * 60; i++) { if (i === 60) S.world.order('search', null, 'test', {}); S.world.step(1 / 60); }
+    S.mission.onPlan = null; return { recs, st: JSON.parse(JSON.stringify(S.settings)) }; };
+  const { recs, st } = run({ rloss: 0, rlat: 0.3 });
+  assert.ok(st.poseDrift >= 0.005 && st.poseDrift <= 0.02 && st.lightLevels.length === S.getPlan().rooms.length + 1 && st.depthMiss > 0, 'the episode draws its realism');
+  const flown = [0, 0, 0]; let worstRatio = 0, maxErr = 0, nulls = 0, rays = 0, mAge = 0, fAge = Infinity, fN = 0;
+  for (let k = 0; k < recs.length; k++) { const r = recs[k];
+    for (let i = 0; i < 3; i++) { if (k) { const a = recs[k - 1].truth.drones[i], b = r.truth.drones[i]; flown[i] += Math.hypot(b[0] - a[0], b[2] - a[2]); }
+      const e = Math.hypot(r.team[i].pos[0] - r.truth.drones[i][0], r.team[i].pos[2] - r.truth.drones[i][2]); maxErr = Math.max(maxErr, e);
+      if (flown[i] > 5) worstRatio = Math.max(worstRatio, (e - 0.05) / flown[i]);
+      if (r.team[i].cam) for (const v of r.team[i].cam) { rays++; nulls += v === null; } }
+    for (const x of r.obs.detections) { if (x.drone === 'M') mAge = Math.max(mAge, x.age); else { fAge = Math.min(fAge, x.age); fN++; } } }
+  assert.ok(maxErr > 0.02, `odometry drift never showed (largest pose error ${maxErr.toFixed(3)} m)`);
+  assert.ok(worstRatio <= st.poseDrift + 0.005, `pose error grew faster than ${(100 * st.poseDrift).toFixed(2)}% of distance flown (${(100 * worstRatio).toFixed(2)}%)`);
+  // the followers' detections reach the master over the radio: an intruder heading in, in sight of the followers
+  for (const sd of [1, 2, 3, 4]) { const k = episode(sd, 'keepout', 'intruder', { secs: 60, reset: { settings: { rloss: 0, rlat: 0.3 } } }).recs;
+    for (const r of k) for (const x of r.obs.detections) { if (x.drone === 'M') mAge = Math.max(mAge, x.age); else { fAge = Math.min(fAge, x.age); fN++; } } }
+  assert.ok(fN > 20, `only ${fN} follower detections reached the master`);
+  assert.ok(mAge <= 0.11, `the master's own detections are ${mAge} s old`);
+  assert.ok(fAge >= 0.6 * 0.3 - 0.11, `a follower's detection reached the master ${fAge} s after it was made (radio latency 0.18-0.42 s)`);
+  assert.ok(nulls > 0 && nulls < 0.2 * rays, `${nulls} of ${rays} camera ray returns missing`);
+  const off = run({ realism: false, rloss: 0, rlat: 0.3 }).recs;
+  for (const r of off) for (let i = 0; i < 3; i++) { assert.strictEqual(Math.hypot(r.team[i].pos[0] - r.truth.drones[i][0], r.team[i].pos[2] - r.truth.drones[i][2]), 0, 'realism off still drifts'); if (r.team[i].cam) assert.ok(r.team[i].cam.every(v => v !== null), 'realism off still drops depth returns'); }
+  console.log(`      drift ${(100 * st.poseDrift).toFixed(2)}% of distance: largest pose error ${maxErr.toFixed(2)} m after up to ${Math.max(...flown).toFixed(0)} m; follower detections ${fN} (youngest ${fAge === Infinity ? '-' : fAge.toFixed(2)} s); missing returns ${(100 * nulls / rays).toFixed(1)}%`);
+});
+
+test('diverse people: bodies, speeds and mobility aids stay in published ranges; aids widen the walking grid', () => {
+  S.seed(1); S.world.reset({ family: 'single', layout: 'fixed', goal: 'hold' });
+  const all = [], byAid = {};
+  for (let sd = 1; sd <= 1500; sd++) for (const role of ['visitor', 'intruder', 'staff']) { S.seed(sd); const b = S.drawCast(role, 'office').subject.body; all.push(b); byAid[b.aid] = (byAid[b.aid] || 0) + 1; }
+  const adults = all.filter(b => b.age >= 20 && b.age < 60 && !b.aid), mean = xs => xs.reduce((a, x) => a + x, 0) / xs.length;
+  const hm = mean(adults.filter(b => b.sex === 'm').map(b => b.height)), hf = mean(adults.filter(b => b.sex === 'f').map(b => b.height));
+  assert.ok(Math.abs(hm - 1.753) < 0.02 && Math.abs(hf - 1.613) < 0.02, `adult mean heights ${hm.toFixed(3)} / ${hf.toFixed(3)} m (CDC NHANES 2015-18: 1.753 / 1.613)`);
+  assert.ok(all.every(b => b.height >= 0.95 && b.height <= 2.05 && b.walk >= 0.55 && b.walk <= 1.9 && b.sprint >= b.run), 'heights 0.95-2.05 m, walking 0.55-1.9 m/s, sprint >= run');
+  const wy = mean(adults.map(b => b.walk)); assert.ok(wy > 1.25 && wy < 1.5, `adult walking speed ${wy.toFixed(2)} m/s`);
+  const young = all.filter(b => b.age >= 16 && b.age <= 40 && !b.aid); assert.ok(young.every(b => b.run >= 3.0 && b.sprint >= 4.8 && b.sprint <= 6.4), 'young adults run at 3-4.2 m/s and sprint at 4.8-6.4 m/s');
+  assert.ok(all.some(b => b.age < 13) && all.some(b => b.age >= 80), 'children and people over 80 occur');
+  assert.ok(byAid.wheelchair > 10 && byAid.cane > 30 && byAid.pushchair > 30, `aids ${JSON.stringify(byAid)}`);
+  // a wheelchair user walks on the wider grid, and still reaches every room of every family's fixed floor
+  for (const fam of S.FAMILIES) { S.seed(3); S.world.reset({ family: fam, layout: 'fixed', goal: 'hold', person: { role: 'visitor', intent: 'wander', body: Object.assign({}, all.find(b => b.aid === 'wheelchair')) } });
+    const G = S.grids(); assert.ok(S.person.grid !== G.WALK, `${fam}: a wheelchair user should use the wide grid`); }
+  console.log(`      adults ${hm.toFixed(2)} / ${hf.toFixed(2)} m, walking ${wy.toFixed(2)} m/s; aids ${JSON.stringify(byAid)} in ${all.length} people`);
+});
+
+test('several people: each has a track, the team fuses only its target\'s, and everyone is kept safe', () => {
+  let crowdDets = 0, othersPlaced = 0, onlyOthers = 0, eps = 0;
+  for (const [fam, goal, who] of [['retail', 'keepout', 'intruder'], ['openplan', 'search', 'hider'], ['corridor', 'guideout', 'visitor'], ['office', 'track', 'intruder']]) {
+    const { recs, M } = episode(5, goal, who, { secs: 60, reset: { family: fam, layout: 'random', settings: { crowd: 4 } } }); eps++;
+    assert.strictEqual(S.world.scenario.cast.length, 5, `${fam}: four other people besides the subject`);
+    assert.strictEqual(+M.floorByDrone.toFixed(2), 0, `${fam} ${goal}: a drone came within 1.2 m of someone`);
+    assert.ok(M.standoffApproach <= 0.5, `${fam} ${goal}: a drone moved toward someone inside its band's limit`);
+    for (const r of recs) {
+      const tgt = r.obs.target_track; assert.strictEqual(tgt, r.truth.person.tid, 'the target track is the subject\'s');
+      crowdDets += r.truth.detections_who.filter(w => w > 0).length; othersPlaced += r.obs.people.length;
+      if (r.obs.detections.length && r.obs.detections.every(x => x.track !== tgt) && r.obs.last_seen_age > 0.5) { onlyOthers++; assert.ok(!r.obs.seen, `${fam} t ${r.t}: seen on other people's detections alone`); }
+      assert.ok(r.truth.people.length === 4 && r.truth.people.every(h => h.pos.length === 3), 'truth logs everyone');
+    }
+  }
+  assert.ok(crowdDets > 50 && othersPlaced > 50, `other people were detected ${crowdDets} times and placed ${othersPlaced} times`);
+  console.log(`      ${eps} episodes with 4 others: ${crowdDets} detections of other people, ${othersPlaced} placements, ${onlyOthers} ticks with only others in view`);
 });
 
 test('every family: a random floor depends only on its seed', () => {

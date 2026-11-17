@@ -176,12 +176,154 @@ Next steps:
 2. Swiss Dwellings, which needs about 1 GB of free disk.
 3. Multi-level floors (stairs, a mezzanine, an atrium), later.
 
+## The full dataset: one master log, rendered frames, training cuts (plan approved by Dan, 13 November 2026)
+
+Dan's goal: "build a dataset that includes camera frames and really everything all together. We can then break it up however we want for training." Three layers:
+
+1. **The master episode log is the canonical copy.** It holds everything the simulator knows, so any episode can be replayed exactly:
+   - the seed, the core version (`core_sha`), the scenario and the orders;
+   - the layout;
+   - labels, detections and the scanned map, as in contract v0;
+   - full 3-D poses at a high rate: each drone's position, velocity and attitude, with the camera's height, yaw and pitch; and every person's position, heading, posture and attributes.
+
+   Contract v0 grows a pose track for this: one `poses` record per second holding 30 Hz samples. That adds an estimated 0.2–0.3 MB per episode gzipped, so 10,000 episodes come to about 3 GB.
+2. **Frames are a derived layer, rendered by replaying the log.**
+   - Per drone camera: RGB, depth, segmentation, and person bounding boxes.
+   - Frames can be re-rendered at any resolution or camera model without simulating again.
+   - The simulation run does not write frames. At 640×480 RGB plus depth, from 3 drones at 10 Hz, an episode (88 s on average today) is about 0.5–1 GB. 10,000 episodes would be 5–10 TB.
+3. **Training sets are cuts across the layers.** Labels are identical in every cut.
+
+   | Cut | Inputs | Use |
+   |---|---|---|
+   | NN1 on perception outputs | detections, scanned map, coverage, camera rays, order, team state (contract v0 today) | the planner |
+   | Detector | frames with person boxes | train a real detector; compare its hit and false-positive rates with the simulated detector's |
+   | End-to-end | frames, order, team state | later |
+   | Held-out layouts | any of the above, split by floor family | generalization |
+
+**Renderer.**
+- Habitat-sim (MIT) or AI2-THOR (Apache-2.0). Both are open source, both have Mac builds, and both load ProcTHOR scenes, which ties in with the layout work.
+- Isaac Sim only if needed later: it needs an RTX GPU.
+- **People must appear in frames:** Habitat 3.0 humanoids or an equivalent, with varied body shapes and clothing (see "Diverse people").
+- **Our procedural families need 3-D versions**, ideally converted to the ProcTHOR / AI2-THOR scene format: walls from room rectangles, door openings, and furniture boxes mapped to assets.
+- **Licences:**
+  - **Confirmed 13 November:** Habitat 3.0's humanoids (CC BY-NC 4.0, built on SMPL-X) and SMPL-X itself (non-commercial; also bans military and surveillance use) cannot be used. MakeHuman exports can.
+  - **Still to check:** AI2-THOR's 3-D assets may carry terms separate from its code.
+- **Later:** run a real detector on the frames and compare it with the simulated detector's rates.
+- **Practical notes:**
+  - The Mac builds render in a window. Headless rendering on VMs uses the Linux builds (EGL for Habitat-sim, CloudRendering for AI2-THOR), hence one container image for both.
+  - The Mac pilot needs 25–50 GB of free disk at full size (about 5 GB was free on 13 November). Either free space or an external drive, or render the pilot at reduced size and extrapolate.
+
+**Azure scale-out (pending Dan's approval; no resources are created and nothing is spent before his explicit yes).** The proposal is written from the pilot's measured GB and render time per episode. It will cover:
+- **Container:** one image, the same on the Mac and the VMs.
+- **Jobs:** a queue with one episode log per job.
+- **Storage:** frames to Blob Storage in the same region.
+- **Compute:** spot GPU VMs (NCasT4_v3 for Habitat or THOR; NVadsA10_v5 if Isaac) in a pool that scales to zero.
+- **Training:** near the data.
+- **Numbers:** VM size and count, the estimated cost at prices checked on the day, and the runtime.
+
+## Diverse people (approved by Dan, 13 November 2026; items 1–4 built the same day)
+
+Before this, every episode had exactly one person: a point that followed a smooth shortest path, with fixed speeds (walk 1.2 m/s, run 2.0, visitor 0.9) and a fixed height.
+
+1. **Bodies (built).** Each person has an age, a sex, a height, a shoulder width and a collision radius. Visitors include children (15%) and people 65 or over (20%).
+   - **Stature:** adults from CDC NHANES 2015–18 (men 1.753 ± 0.074 m, women 1.613 ± 0.069 m; Fryar et al. 2021, public domain). Children by age, consistent with the CDC references.
+   - **Shoulder width:** from ANSUR II (Gordon et al. 2014, cleared for public release).
+   - **Mobility aids:**
+     - Wheelchair: 0.65 m wide (Steinfeld et al. 2010), 0.8–1.15 m/s (Tolerico et al. 2007; Gales et al. 2020).
+     - Cane: 0.65–1.1 m/s, about 0.9 on average (Gales et al. 2020).
+     - Pushchair.
+   - **Postures:** standing, crouching, sitting and lying. They set the three body points a camera must see and the target's apparent size, which shortens the detection range for small or low people.
+   - **Collisions:** wheelchairs and pushchairs walk on a wider grid (0.4 m clear of obstacles), with doorways opened along their centre line.
+   - **Guide-out:** the guide's pace already follows the visitor.
+2. **Speeds (built).**
+   - **Walking:** comfortable speed by age and sex from Bohannon & Andrews 2011 (1.36–1.43 m/s for adults, 0.94–0.97 over 80), with an SD of 0.16 after Bohannon 1997. Speeds drift ±10% within an episode.
+   - **Running and sprinting:** 3.0–4.2 m/s running and 4.8–6.4 m/s sprinting for 16–40-year-olds, less with age. This is **our assumption**: no large normative study of ordinary adults exists, and people switch from walking to running near 2 m/s (Rotstein et al. 2005).
+   - **Intruders:** when fleeing or leaving, they run, many with sprint bursts of 2–6 s.
+   - **Drones are slower:** the drones (1.5 m/s, 2.5 m/s to get clear of someone) cannot keep up with a sprinter, so results are reported separately for people who ran.
+   - **Belief:** the team's belief now assumes the person may run at 4.5 m/s.
+3. **Movement patterns (built).**
+   - stop-and-go pauses;
+   - hesitating at doorways;
+   - doubling back a few metres;
+   - dodging while a drone presses them;
+   - sprint bursts;
+   - wall-hugging;
+   - hiding while crouching, sitting or lying, and crawling away when a drone comes close.
+
+   Each person draws their own mix.
+   - **Tuning against real tracks is pending.** Of the open trajectory sets, only THÖR and THÖR-MAGNI (CC BY 4.0, open on Zenodo, about 0.5 GB and 1.1 GB of tracks) can be used commercially. ETH and ATC are research-only, UCY has only a credit-only notice and no licence, and JRDB is non-commercial. Downloading THÖR needs Dan's approval.
+4. **Several people (built).**
+   - **The cast:** staff, and visitors alone or in groups of two or three, in numbers that depend on the floor family (0–6). Staff wear a uniform where the family has one (hi-vis vest, uniform, staff shirt). Everyone else has clothes drawn per person.
+   - **Movement:** they walk between rooms, pause and sit, keep about 2.5 m from drones, and wait while one hovers ahead of them. After 3 s of waiting, or of getting nowhere, they pick somewhere else to go.
+   - **Tracks:** the detector sees everyone and reports a track id per person, with occasional identity switches between people within 1.5 m. A false positive near the target is sometimes taken for the target's track.
+   - **Fusion:** the team builds its estimate from its target's track only. Other people the team has placed go into `obs.people`, and slots keep the comfort standoff from them too.
+   - **Safety for everyone:** the 1.2 m floor and the onboard safety layer apply to every person, measured on true positions. A drone senses a person if a line reaches their torso or their legs, so a door lintel cannot hide someone from a drone flying high. It never moves toward anyone it saw in the last 10 s who is still within 4.5 m but out of sight, as an onboard tracker keeps a person who stepped behind a shelf or a door jamb.
+   - **Orders can describe the person:** "keep the man in the red coat out of the lab", "track the woman with the cane". The parser matches the description against the people on the floor and adds `params.person`, or asks which person when several fit or nobody does. The sampler writes unique descriptions (70% of first orders when others are present) and ambiguous ones (10%), answered with a question and then a clarifying order.
+   - **Truth logs everyone.** Observations hold only detections.
+5. **Appearance (render layer, with the frames pilot).**
+   - Skin tone is already drawn per person on the 10-point Monk scale, with clothes, hats, bags, masks and glasses, for the renderer.
+   - **Body-model licences:**
+     - **MakeHuman:** its bundled assets are CC0 and it claims nothing over exports, so it is usable.
+     - **SMPL-X:** non-commercial, and it explicitly bans military and surveillance use and training networks for commercial use. Do not use it.
+     - **Habitat 3.0 humanoids:** CC BY-NC 4.0 and built on SMPL-X. Do not use them.
+6. **Results by group (built in the quality report).** Episodes are split by age, height, mobility aid, posture, whether the person ran, skin tone and the number of other people. The simulated detector does not model skin tone, so that split stays flat until a real detector runs on rendered frames.
+
+Every person attribute is logged as metric-only: the cast in the header, and posture and speed in `truth`.
+
+## Perception realism and flyable route labels (approved by Dan, 13 November 2026; built the same day)
+
+- **Sharing over the radio.**
+  - The master's own detections count at once.
+  - A follower's detections, map updates and coverage marks reach the master with the episode's radio latency and loss (`obs.detections[].age` says how old each detection is).
+- **Odometry drift.**
+  - Each drone's position estimate wanders by 0.5–2% of the distance flown (drawn per episode), in a slowly turning direction, plus a heading drift of up to ±0.5°/min.
+  - It re-localizes near the home pads.
+  - **What uses which pose:**
+    - Drones navigate and place their detections, depth rays and coverage from the estimate.
+    - Flight, collisions and safety use the true pose.
+    - The teacher plans from the estimates.
+  - **Records:** `team[].pos` is the estimate, and `truth.drones` the true pose.
+- **Depth.**
+  - Stereo-like noise of (0.01 + 0.006 r²) m × a per-episode factor (0.7–1.5; ×3 in single-camera mode).
+  - 1–5% missing returns.
+  - Up to 15% of wall stretches that are glass, mirror or blank, where 70% of returns go missing.
+  - Camera rays record a missing return as `null`.
+- **Lighting and blur.**
+  - Each room is lit, dim or dark this episode (60/30/10%), scaling the hit rate (×1, ×0.75, ×0.45).
+  - The hit rate falls while a drone turns faster than 60°/s.
+- **Bookkeeping:** the episode's noise is recorded in the header's `perception` block. It draws from its own seeded stream, with a fixed number of draws per step, so determinism and the no-leak test hold.
+- **Route labels (`refs`) are flyable.**
+  - They are generated by running the flight law forward from each drone's current position and velocity, with at most 2 m/s² of acceleration and the band's speed limit.
+  - Before this, they assumed full speed from a standstill: a drone at rest was labelled 0.75 m away after 0.5 s, against 0.25 m it can actually fly.
+  - Quality gate 5 now checks acceleration, speed and climb.
+  - The report gives refs against the actual flight: on the office-only set, the old refs were off by 2.28 m (95th percentile at +2 s), and the new ones by 0.8 m.
+
+## Work queue (13 November 2026; updated 17 November)
+
+1. **Before the big indoor run:**
+   1. Single-level layouts. The eight procedural families are done. A ProcTHOR-10K converter is next, once Dan approves the download.
+   2. Done: route labels (refs) that respect acceleration and the drone's current velocity.
+   3. Done: perception realism (detections, map and coverage shared over the lossy radio; pose drift; depth noise; lighting and motion blur).
+   4. Done: diverse people 1–4 (bodies, speeds, movement patterns, several people). Tuning movement against THÖR tracks is next, once Dan approves the download.
+   5. Found by the 1,200-episode run (see "People and realism run"):
+      - Keep out and drive out against runners: the drones no longer stop intruders who run, so rework the tactics (for example, pre-position at doors early), or have a practitioner check how many intruders really run.
+      - The subject needs the bystanders' give-up rule, and its recorded velocity should be the step it made. A wandering visitor and a pinned drone held each other for 84 s.
+2. **The full dataset, after the layout work:**
+   1. Master-log replay with full 3-D poses, plus a determinism test (replay gives the same poses).
+   2. A pilot on Dan's Mac: about 50 episodes rendered locally, with diverse appearance (people item 5).
+      - Check that frames line up with the log: the person's true position, projected into the frame, must fall inside the box.
+      - Measure GB and render time per episode.
+   3. The Azure scale-out proposal, for Dan's approval.
+3. Done: **results by group** (people item 6) in the quality report; the frames phase adds appearance to it.
+
 ## Volumes
 
 | Stage | Size |
 |---|---|
 | Swarm Mind, proving the pipeline | 1,000 episodes of 3 minutes each, about 360k plan ticks |
 | First indoor SFT set | 10,000–50,000 episodes, about 1,000 distinct phrasings across about 10 goals |
+| Master logs with 30 Hz poses | about 0.3 MB per episode, so about 3 GB for 10,000 episodes (estimate) |
+| Rendered frames, 640×480 RGB + depth, 3 drones at 10 Hz | about 0.5–1 GB per episode, so 5–10 TB for 10,000 episodes (estimate; the pilot will measure it) |
 
 Variety of layouts and phrasings matters more than tick count.
 
@@ -227,10 +369,10 @@ These are Swarm Mind's outdoor yard and its scripted intruder. They prove the pi
 ## Generating data today (milestone 2, indoor)
 
 ```
-voice/.venv/bin/python voice/sampler.py --sim indoor --episodes 1200 --seed 0 --out output/dataset/indoor2
-node simulators/tools/generate.js --sim indoor --orders output/dataset/indoor2/orders.jsonl --baseline
-node simulators/tools/check_dataset.js output/dataset/indoor2
-node simulators/tools/quality_report.js output/dataset/indoor2   # quality gates, below, overall and per floor family; exit code 1 if a hard gate fails
+voice/.venv/bin/python voice/sampler.py --sim indoor --episodes 1200 --seed 0 --out output/dataset/indoor3
+node simulators/tools/generate.js --sim indoor --orders output/dataset/indoor3/orders.jsonl --baseline
+node simulators/tools/check_dataset.js output/dataset/indoor3
+node simulators/tools/quality_report.js output/dataset/indoor3   # quality gates, below, overall, per floor family and by who the subject is; exit code 1 if a hard gate fails
 node simulators/tests/indoor.test.js      # floors, line of sight, belief, no leak, records, bands, safety, determinism, every floor family
 ```
 
@@ -309,15 +451,18 @@ Every plan record carries `sft`, whether to train on it. It is false when its se
 |---|---|---|
 | Vectors | hard | every vector is slot − position at plan time |
 | Standoff | hard | every slot keeps the band's distance from the person's estimate (3 m in comfort with two or more slots within 4 m), unless the validator flagged a wall |
-| Separation | hard | slots at least 1 m apart (0.95 m allowed for rounding) |
+| Separation | hard | slots at least 1 m apart (0.95 m allowed for rounding); in a cramped corner the validator moves one slot to the nearest point that keeps every rule and flags it `cramped` |
 | Bounds | hard | slots inside the site and the altitude band |
-| References | hard | timed reference points start at the drone and move at most 0.75 m per 0.5 s (plus 0.45 m slack) |
-| Flight safety | hard | no episode inside the 1.2 m floor, no drone closing in on a person, no separation, wall or altitude violation |
-| Training ticks | hard | no `sft` tick has a stuck drone or a drone inside 1.2 m of the person |
+| References | hard | timed reference points a drone can fly from its position and velocity: speed changes of at most 2 m/s² between steps, at most 2.5 m/s, climbs of at most 0.8 m/s (13 November; was "at most 0.75 m per 0.5 s") |
+| Flight safety | hard | no drone brings itself inside the 1.2 m floor of anyone (moving toward them, or both still while it could back away), no drone closing in on a person, no separation, wall or altitude violation |
+| A person closing in | soft | episodes where a person walked or ran within 1.2 m of a drone that was not moving toward them (a sprinter can outrun a retreating drone, and anyone can walk up to a drone pinned by walls and people): at most 1% of episodes; their segments are not training data |
+| Training ticks | hard | no `sft` tick has a stuck drone or a drone inside 1.2 m of anyone (decided on the unrounded distance) |
 | Flicker | soft | a template that flips for one tick and back: under 0.5% of ticks |
 | Swaps | soft | follower slots swapping: under 0.2% of ticks |
 | Jitter | soft | slot movement while nothing changed: 95th percentile under 0.5 m |
-| Stuck | soft | a drone that does not move for 5 s while its slot stays over 1 m away, not counting doorway queues: under 5% of drone-ticks |
+| Stuck | soft | a drone that does not move for 5 s while its slot stays over 1 m away, not counting doorway queues or yielding: under 5% of drone-ticks |
+| Yielding | soft | the same, with someone within 3.3 m: held back by the safety layer, under 10% of drone-ticks (counted apart since 13 November) |
+| Pose error | soft | odometry drift, estimate against true pose: 95th percentile under 1.5 m |
 | Doorway queues | soft | under 5% of drone-ticks; each drone's record now has `wait_door` |
 | Hold | soft | automatic hold under 15% of ticks; hold of any kind under 25% |
 | Usable | soft | over 80% of ticks fit for training |
@@ -428,6 +573,118 @@ The orders:
   - Search found 24 of 27 hiders.
   - Guide out got 18 of 29 visitors out.
 
+**People and realism run (`indoor3`, 17 November 2026, M1 MacBook): several people, diverse bodies, perception realism and flyable labels, on the eight families:**
+
+Size and quality:
+- 1,200 episodes in 37 minutes on 5 worker threads, each paired with a grounded baseline. 198,207 plan records and 2,752 order events, 72.5 MB gzipped.
+- 374 test episodes: 293 on the held-out shop and irregular floors, 81 by the seed rule.
+- Scenarios: 606 intruders heading for a room, 230 hiding, 364 lost visitors; 181 on a family's fixed floor. Other people share the floor in 1,111 episodes: one or two in 495, three or more in 616.
+- Every record matches contract v0, and **every quality gate passes, hard and soft.**
+- **Fixes found by this run.** Getting there took several rounds. Each round, a hard gate failed on one to five of the 1,200 episodes, and we traced it to its cause (`docs/TACTICS.md`, "Everyone, not only the subject"):
+  - a drone that had climbed lost sight of a visitor's torso behind a door lintel (the drone now senses legs or torso);
+  - a bystander walking up to a drone parked in a corner counted against the drone (a pinned drone is now the person's doing);
+  - slots under 1 m apart in cramped corners (a last-resort placement, flag `cramped`);
+  - a training tick at 1.197 m passed after rounding;
+  - sight flickering at door jambs and shelf ends (drones remember hidden people for 10 s);
+  - a drone at a wall end could not take its first step;
+  - two drones closed to 0.59 m (escapes checked along the way, and one clamp for people and neighbours);
+  - a bystander and a wedged drone held each other for 92 s (bystanders now give up after 3 s).
+- **Determinism and the disk.** Episodes no longer depend on what ran before them in the same worker: the phase of the 0.05 s safety sampling used to carry over. The generator now survives a briefly full disk. App updates filled this Mac's disk to zero three times during these runs.
+
+| Measure | People and realism (`indoor3`) | Eight families (`indoor2`) |
+|---|---|---|
+| Ticks fit for training (`sft`) | 95.0% | 85.4% |
+| Stuck drones (share of drone-ticks) | 0.8% | 3.9% |
+| Held back by the safety layer near a person (yielding) | 4.3% | counted as stuck |
+| Queuing for a doorway | 1.6% | 2.0% |
+| Hold, all causes / automatic after an order | 18.5% / 2.8% | 18.1% / 2.6% |
+| Template flicker / follower swaps | 0.16% / 0.10% | 0.16% / 0.15% |
+| Slot jitter when nothing changed, 95th percentile | 0.003 m | 0.05 m |
+| Person in sight / estimate only / unknown | 23% / 18% / 59% | 36% / 13% / 51% |
+| Estimate error while in sight, median / 95th percentile | 0.26 / 0.71 m | 0.17 / 0.42 m |
+| Estimates from a false positive | 0.05% | 1.3% |
+| Drone pose error from odometry drift, 95th percentile | 0.52 m | none (no drift) |
+| Route labels against the flight at +2 s, median / 95th percentile | 0.09 / 1.36 m | 0.28 / 2.28 m (old labels) |
+| Comfort pass-bys | 540 episodes (45%) | 139 (11.6%) |
+
+- **Training ticks rose from 85% to 95%, and stuck drones fell from 3.9% to 0.8%.** A drone held back by the safety layer near a person now counts as yielding (4.3% of drone-ticks) and stays in training.
+- **The person is in sight less (23% of ticks, against 36%).** People now sit, crouch, lie and hide, other people block the view, and dim or dark rooms lower the hit rate.
+- **The estimate is less accurate (0.26 / 0.71 m, against 0.17 / 0.42 m).** Detections are placed from each drone's drifting pose estimate, and followers' detections reach the master late over the radio.
+- **Comfort pass-bys rose from 12% to 45% of episodes.** Almost all are other people walking past a drone that is giving way.
+- **Route labels now match the flight:** a median of 0.01 m off at +0.5 s and 0.09 / 1.36 m at +2 s (median / 95th percentile), against 0.28 / 2.28 m with the old labels. Most of what is left is the safety layer holding a drone back.
+- **The `cramped` placement fired at 796 of 198,207 ticks, in 88 episodes.**
+
+Per floor family (`quality_report.js`). No family had a label rule break, an episode with drone-caused floor time, a drone closing in, or a separation, wall or altitude violation. The closest approach now includes people who walked up to a drone; the drone's own closest approach stays at 1.2 m or more by the hard gate.
+
+| Family | Episodes (test) | Ticks | Training ticks | Stuck | Yielding | Person in sight | Comfort pass-bys | Closest, any cause: pressure / comfort |
+|---|---|---|---|---|---|---|---|---|
+| Office | 171 (16) | 30,729 | 94% | 0.8% | 3.3% | 19% | 94 | 1.31 / 1.20 m |
+| House | 141 (7) | 23,119 | 94% | 1.1% | 5.2% | 34% | 71 | 1.23 / 0.98 m |
+| Warehouse | 147 (20) | 25,565 | 97% | 0.3% | 2.9% | 30% | 70 | 1.37 / 1.09 m |
+| Open-plan office | 144 (17) | 26,003 | 93% | 1.3% | 5.1% | 14% | 56 | 1.47 / 1.20 m |
+| School or hospital | 164 (10) | 26,983 | 92% | 1.2% | 5.9% | 16% | 98 | 1.24 / 1.22 m |
+| Shop (held out) | 149 (149) | 28,464 | 98% | 0.3% | 1.8% | 17% | 71 | 1.32 / 1.17 m |
+| Single room | 140 (11) | 16,209 | 98% | 0.1% | 4.7% | 28% | 24 | 1.47 / 1.07 m |
+| Irregular (held out) | 144 (144) | 21,135 | 94% | 0.7% | 6.8% | 28% | 56 | 1.51 / 1.12 m |
+
+**By who the subject is** (the quality report's split):
+
+| Split | Group | Episodes | In view | Intruders who got in | Hiders found | Visitors guided out |
+|---|---|---|---|---|---|---|
+| Age | adult (18-64) | 1029 | 18.7% | 508/575 | 100/223 | 83/231 |
+|  | child (<13) | 36 | 21.7% | — | — | 16/36 |
+|  | older (65+) | 78 | 29.5% | — | — | 26/78 |
+|  | teen (13-17) | 57 | 23.5% | 25/31 | 4/7 | 9/19 |
+| Height | 1.50-1.70 m | 638 | 20% | 286/325 | 46/109 | 78/204 |
+|  | 1.70-1.85 m | 449 | 19.1% | 201/230 | 48/104 | 35/115 |
+|  | <1.50 m | 62 | 18.6% | 20/22 | 2/3 | 18/37 |
+|  | >=1.85 m | 51 | 23.8% | 26/29 | 8/14 | 3/8 |
+| Mobility aid | cane | 19 | 36.2% | — | — | 3/19 |
+|  | none | 1155 | 19.2% | 533/606 | 104/230 | 117/319 |
+|  | pushchair | 19 | 34.4% | — | — | 10/19 |
+|  | wheelchair | 7 | 27.1% | — | — | 4/7 |
+| Posture | mostly low (sitting, crouching, lying) | 198 | 8.5% | — | 77/191 | 4/7 |
+|  | mostly standing | 1002 | 22% | 533/606 | 27/39 | 130/357 |
+| Speed | never above 3 m/s | 646 | 19.8% | 64/89 | 80/193 | 134/364 |
+|  | ran at 3 m/s or more | 554 | 19.7% | 469/517 | 24/37 | — |
+| Skin tone (Monk scale) | 1-3 | 325 | 19.8% | 152/170 | 27/61 | 29/94 |
+|  | 4-7 | 493 | 19.7% | 209/244 | 42/90 | 61/159 |
+|  | 8-10 | 382 | 19.7% | 172/192 | 35/79 | 44/111 |
+| Other people | 1-2 others | 495 | 23.2% | 225/260 | 42/90 | 49/145 |
+|  | 3+ others | 616 | 15.7% | 273/303 | 52/125 | 67/188 |
+|  | alone | 89 | 28.6% | 35/43 | 10/15 | 18/31 |
+
+- **Skin tone is flat by construction:** the simulated detector ignores it. The split is a baseline for a real detector on rendered frames.
+- **Posture matters most.** People who mostly sat, crouched or lay were in view 8.5% of the time, against 22%. Hiders who did were found 77 of 191 times (40%), against 27 of 39 (69%).
+- **Crowds hide the subject:** in view 29% alone, 23% with one or two others, and 16% with three or more.
+- **Runners get in:** 469 of 517 (91%) of intruders who ran at 3 m/s or more got in, against 64 of 89 (72%) of those who never did.
+- **Visitors with a cane** were guided out 3 of 19 times, against 117 of 319 with no aid. At 0.65–1.1 m/s, many probably do not reach an exit within 180 s.
+
+**Floor time that was the person's doing** (the soft gate, at most 1% of episodes): 12 episodes, 112 s in all, none of it training data.
+- In three, the subject, a visitor being guided or tracked, walked into a drone: 99 s, almost all of it one visitor stuck for 84 s (weak point 2 below).
+- In eight, a bystander walked in on a drone, or up to one pinned by walls and people: 11 s.
+- In one, an intruder ran at a drone during a search: 1.7 s.
+
+**Perception.** The records' latest frames hold 76,735 detections of the subject, 80,244 of other people and 396 false positives, 53 of them confident enough to count. No search ended on a false positive. Estimates taken from a false positive fell from 1.3% of ticks with an estimate to 0.05%, because the team now fuses only its target's track.
+
+**Outcomes** (`summary.txt`) still mix tactics, because orders are replaced 10–35 s apart:
+- **Intruders:** 533 of 606 got in with the drones flying and 532 with them grounded. 30 of 170 deterrable intruders were kept out.
+- **Per family:** intruders who got in, against the grounded baseline: 87% (95%) in schools or hospitals, 78% (84%) in houses, 88% (76%) on irregular floors, 90% (91%) in offices, 92% (88%) on open-plan floors, 93% (87%) in shops, 91% (100%) in single rooms and 85% (83%) in warehouses.
+- **Hiders and visitors:** 104 of 230 hiders were found and 134 of 364 visitors guided out.
+- **Single-order episodes:** keep out let in 21 of 25 intruders (23 of 25 grounded), drive out 21 of 24 (23 of 24), search found 22 of 31 hiders, guide out got 31 of 40 visitors out, and track kept the intruder in view 25% of the time.
+
+**What is weak:**
+1. **The drones no longer stop intruders.** With the drones flying, 88% of intruders got in, the same as with them grounded (88%); in the families run it was 64–88% against 83–99%. Three things stack up:
+   - 85% of intruders now run at 3 m/s or more at some point, and the drones fly at 1.5 m/s (2.5 m/s to get clear of someone);
+   - the drones keep the comfort standoff from every bystander;
+   - the team sees the subject less.
+
+   In four families (irregular floors 88% against 76%, shops 93% against 87%, open-plan floors 92% against 88%, warehouses 85% against 83%), more intruders got in with the drones flying than grounded, probably because pressure from the drones makes the person model run. The controlled runs, with identical people at 2 m/s, still show the tactics working: keep out let in 9 of 12, against 12 of 12 grounded (`indoor.test.js`). Before keep-out and drive-out labels are used for training, the tactics need rework for runners, for example by pre-positioning at doors early, or a practitioner should check how many intruders really run.
+2. **A wandering visitor and a pinned drone can still hold each other.** In one episode a visitor pressed against a wall stood 1.08 m from a drone pinned above head height for 84 s. The drone is pinned, so the gate rightly counts this as the person's doing, and the segment is not training data. The subject has no give-up rule like the bystanders', and its recorded velocity is the step it tried rather than the step it made. That fix is queued.
+3. **Seeing and estimating are harder** (in view 23%, estimate error 0.71 m at the 95th percentile): that is the realism working, but NN1 will learn from noisier inputs.
+4. **Pass-bys in 45% of episodes** mean bystanders often come within 2 m of a drone that is giving way; the comfort band cannot hold in corridors and shops.
+5. **Not yet real:** movement patterns are not tuned to recorded tracks (THÖR waits for Dan's download approval), and appearance is not rendered.
+
 ## Open questions for Prat
 
 1. Is "slot + vector every 0.5 s" the right output for NN1, or should NN1 emit time-stamped reference points, as the 10 November briefs recommend? `swarm-indoor` logs both.
@@ -437,3 +694,5 @@ The orders:
 5. For the outcome labels, should episodes keep one order long enough to finish (gaps of 30–90 s), or are frequent re-orders more useful for NN1? Today's 10–35 s gaps give many transitions but blur outcomes.
 6. **NN1's inputs:** we assume NN1 consumes perception outputs, not raw frames: person detections with confidence, the scanned map, search coverage and camera views, plus the order and team state. Rendering and detector training would be a separate perception and sim-to-real workstream. Is that the split you want, and should the floor plan be an input, or should NN1 work map-free?
 7. **Held-out floor families:** shop and irregular floors are test only, a quarter of the indoor episodes. Are those the right families to hold out, or should a whole family be held out per release instead?
+8. **Cuts and resolution:** which cuts do you want (NN1 on perception outputs, the detector on frames and boxes, end-to-end), and at what frame resolution and rate for NN1 and for the detector?
+9. **Person attributes:** which person attributes should NN1 see (for example posture, mobility aid, apparent height, group membership), and which stay metric-only in `truth`?

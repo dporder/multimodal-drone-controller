@@ -10,6 +10,13 @@
 // --baseline also runs every seed with the drones on their pads and no orders, for paired comparisons.
 'use strict';
 const fs = require('fs');
+// a disk that another program fills for a moment (an app update unpacking) pauses a write instead of ending the run: retry every
+// 5 s for up to 10 minutes, rewriting the whole file each time
+function writeFileRetry(file, data) {
+  for (let k = 0; ; k++) {
+    try { fs.writeFileSync(file, data); return; } catch (e) { if (e.code !== 'ENOSPC' || k >= 120) throw e; Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5000); }
+  }
+}
 const path = require('path');
 const vm = require('vm');
 const zlib = require('zlib');
@@ -106,6 +113,7 @@ function indoorOutcome(S, t, ended) {
     in_view_pct: m.totT ? +(100 * m.seenT / m.totT).toFixed(1) : 0, min_standoff: Number.isFinite(m.minStandoff) ? +m.minStandoff.toFixed(2) : null,
     min_separation: Number.isFinite(m.minSep) ? +m.minSep.toFixed(2) : null, min_wall: Number.isFinite(m.minWall) ? +m.minWall.toFixed(2) : null,
     standoff_viol_s: +m.standoffViol.toFixed(2), standoff_approach_s: +m.standoffApproach.toFixed(2), floor_viol_s: +m.floorViol.toFixed(2),
+    floor_by_drone_s: +m.floorByDrone.toFixed(2), floor_by_person_s: +m.floorByPerson.toFixed(2),
     band_s: { pressure: +m.bandT.pressure.toFixed(1), comfort: +m.bandT.comfort.toFixed(1) }, band_viol_s: { pressure: +m.bandViol.pressure.toFixed(2), comfort: +m.bandViol.comfort.toFixed(2) },
     min_pressure: Number.isFinite(m.minPressure) ? +m.minPressure.toFixed(2) : null, min_comfort: Number.isFinite(m.minComfort) ? +m.minComfort.toFixed(2) : null, sep_viol_s: +m.sepViol.toFixed(2),
     wall_viol_s: +m.wallViol.toFixed(2), alt_viol_s: +m.altViol.toFixed(2), radio_drops: m.radioDrops, link_holds: m.linkHolds, orders: m.orders,
@@ -128,11 +136,18 @@ function runIndoorEpisode(S, sha, ep, baseline) {
         furniture: P.furn.map(f => ({ x0: r2(f.x0), z0: r2(f.z0), x1: r2(f.x1), z1: r2(f.z1), h: f.h, kind: f.kind })), pads: P.pads.map(p => [r2(p.x), 0, r2(p.z)]), operator: [r2(P.operator.x), 0, r2(P.operator.z)] },
       doors: P.doors.map(d => ({ id: d.id, name: d.name, x: d.x, z: d.z, w: d.w, axis: d.axis, rooms: d.rooms.map(r => r < P.rooms.length ? r : 'outside') })),
       protected_room: S.world.scenario.protectedRoom, scenario: sc, person: S.world.scenario.person, orders: ep.orders,
+      // everyone in the building (the subject first): bodies, clothes, groups and the track id the detector reports; metric-only
+      cast: S.world.scenario.cast,
       // the floor plan above is a prior map: an optional model input (switch it off to train map-free); obs.map is what the drones scanned
       floor_role: 'prior_map_optional',
       map: Object.assign(S.coarseDims(), { legend: "'#' known blocked, '.' known free, '?' unknown; row-major, x then z, from (0,0)" }),
       perception: { detector_hz: S.settings.percHz, cam_fov_deg: S.settings.camFov, cam_range_m: S.settings.camRange, p_detect_near: S.settings.pNear, p_detect_at_range: S.settings.pFar,
-        p_edge_factor: S.settings.pEdge, false_positive_per_frame: S.settings.fpRate, accept_conf: S.settings.acceptConf, noise_m: `${S.settings.noise0} + ${S.settings.noiseK} x distance`, depth_range_m: S.settings.depthRange } });
+        p_edge_factor: S.settings.pEdge, false_positive_per_frame: S.settings.fpRate, accept_conf: S.settings.acceptConf, noise_m: `${S.settings.noise0} + ${S.settings.noiseK} x distance`, depth_range_m: S.settings.depthRange,
+        // this episode's realism: odometry drift (team positions are the drones' estimates; truth.drones the true poses), depth noise and gaps,
+        // light per room (scales the hit rate), motion blur, and the followers' detections, map and coverage reaching the master over the radio
+        realism: S.settings.realism, pose_drift_of_distance: S.settings.poseDrift, heading_drift_deg_per_min: S.settings.yawDriftDegMin, relocalize_within_m_of_pads: S.settings.relocM,
+        depth_noise_m: `(0.01 + 0.006 x range^2) x ${S.settings.depthNoiseK}`, depth_mode: S.settings.depthMode, depth_missing_share: S.settings.depthMiss, unreliable_wall_share: S.settings.unreliableWalls,
+        light_by_room: S.settings.lightLevels, blur_above_deg_per_s: S.settings.blurDegS, shared_over_radio: S.settings.shareVia === 'radio' } });
     S.mission.onPlan = r => out.push(r);
   }
   const queue = baseline ? [] : ep.orders.slice();
@@ -161,6 +176,9 @@ function runIndoorEpisode(S, sha, ep, baseline) {
   return { out, outcome };
 }
 
+// a drone held back by the safety layer while someone stands within 3.3 m (the comfort standoff + 0.8 m) is yielding to them, not stuck
+function yielding(p, b) { const folk = (p.truth.person.alive ? [p.truth.person.pos] : []).concat((p.truth.people || []).filter(h => h.alive).map(h => h.pos));
+  return folk.some(f => Math.hypot(f[0] - b[0], f[2] - b[2]) < 3.3); }
 // one segment per order version: how it ended, how close any drone came to the person, how long a drone was stuck,
 // and a default training flag (false for an unsafe or a stuck segment; failed orders stay, since the person may have
 // been impossible to stop: the trainer can filter on `end` and `deterrable` as well)
@@ -170,16 +188,20 @@ function segmentsOf(out, S) {
     const p = plans[k]; let g = segs[segs.length - 1];
     if (!g || g.version !== p.order.version) { g = { version: p.order.version, goal: p.order.goal, src: p.order.src, t0: p.t, t1: p.t, ticks: 0, min_dist: null, stuck_ticks: 0, band_ticks: { pressure: 0, comfort: 0 } }; segs.push(g); }
     g.t1 = p.t; g.ticks++; g.band_ticks[p.label.band]++;
-    if (p.truth.person.alive) for (const d of p.team) if (d.pos[1] > 0.5) { const dd = Math.hypot(d.pos[0] - p.truth.person.pos[0], d.pos[2] - p.truth.person.pos[2]); if (g.min_dist === null || dd < g.min_dist) g.min_dist = +dd.toFixed(2); }
+    const tp = k => (p.truth.drones ? p.truth.drones[k] : p.team[k].pos); // true drone positions (team holds the drones' estimates)
+    const folk = (p.truth.person.alive ? [p.truth.person.pos] : []).concat((p.truth.people || []).filter(h => h.alive).map(h => h.pos)); // everyone in the building
+    for (let k = 0; k < 3; k++) { const d = tp(k); if (d[1] > 0.5) for (const f of folk) { const dd = Math.hypot(d[0] - f[0], d[2] - f[2]); if (g.min_raw == null || dd < g.min_raw) g.min_raw = dd; } }
     if (k >= 10 && plans[k - 10].order.version === p.order.version) for (let i = 0; i < 3; i++) {
       let far = true; for (let j = k - 10; j <= k && far; j++) { const v = plans[j].label.vectors[i]; if (Math.hypot(v[0], v[2]) <= 1.0) far = false; }
-      const a = plans[k - 10].team[i].pos, b = p.team[i].pos; if (far && p.team[i].wait_door == null && Math.hypot(a[0] - b[0], a[2] - b[2]) < 0.1 && p.team[i].link_age < 1 && b[1] > 0.5) { g.stuck_ticks++; break; } }
+      const a = plans[k - 10].truth.drones ? plans[k - 10].truth.drones[i] : plans[k - 10].team[i].pos, b = p.truth.drones ? p.truth.drones[i] : p.team[i].pos; if (far && !yielding(p, b) && p.team[i].wait_door == null && Math.hypot(a[0] - b[0], a[2] - b[2]) < 0.1 && p.team[i].link_age < 1 && b[1] > 0.5) { g.stuck_ticks++; break; } }
   }
   for (let k = 0; k < segs.length; k++) {
     const g = segs[k], e = ends.find(x => x.version === g.version);
     g.end = e ? e.status : k < segs.length - 1 ? 'replaced' : 'episode_end'; g.reason = e ? e.reason : null;
     g.success = e ? e.status !== 'failed' : null;
-    g.sft = !(g.min_dist !== null && g.min_dist < 1.2) && g.stuck_ticks <= 0.2 * g.ticks && !(g.src === 'auto' && g.t1 - g.t0 > 6);
+    // decided on the unrounded distance (1.196 m would round to 1.20 and pass)
+    g.sft = !(g.min_raw != null && g.min_raw < 1.2) && g.stuck_ticks <= 0.2 * g.ticks && !(g.src === 'auto' && g.t1 - g.t0 > 6);
+    g.min_dist = g.min_raw == null ? null : +g.min_raw.toFixed(2); delete g.min_raw;
   }
   // each plan record says whether to train on it: its segment is fit for training, no drone is stuck at that tick,
   // and it is not more than 5 s into an automatic hold after an order finished
@@ -187,7 +209,7 @@ function segmentsOf(out, S) {
     const p = plans[k], g = segs.find(x => x.version === p.order.version); let stuck = false;
     if (k >= 10 && plans[k - 10].order.version === p.order.version) for (let i = 0; i < 3 && !stuck; i++) {
       let far = true; for (let j = k - 10; j <= k && far; j++) { const v = plans[j].label.vectors[i]; if (Math.hypot(v[0], v[2]) <= 1.0) far = false; }
-      const a = plans[k - 10].team[i].pos, b = p.team[i].pos; if (far && p.team[i].wait_door == null && Math.hypot(a[0] - b[0], a[2] - b[2]) < 0.1 && p.team[i].link_age < 1 && b[1] > 0.5) stuck = true; }
+      const a = plans[k - 10].truth.drones ? plans[k - 10].truth.drones[i] : plans[k - 10].team[i].pos, b = p.truth.drones ? p.truth.drones[i] : p.team[i].pos; if (far && !yielding(p, b) && p.team[i].wait_door == null && Math.hypot(a[0] - b[0], a[2] - b[2]) < 0.1 && p.team[i].link_age < 1 && b[1] > 0.5) stuck = true; }
     p.sft = !!(g && g.sft) && !stuck && !(p.order.src === 'auto' && p.t - g.t0 > 5);
   }
   return segs;
@@ -207,7 +229,7 @@ if (!isMainThread) {
     const { out, outcome } = run(S, sha, ep, false);
     const body = out.map(r => JSON.stringify(r)).join('\n') + '\n';
     const name = path.join('episodes', ep.episode + '.jsonl.gz');
-    fs.writeFileSync(path.join(outDir, name), zlib.gzipSync(body, { level: 6 }));
+    writeFileRetry(path.join(outDir, name), zlib.gzipSync(body, { level: 6 }));
     const row = { episode: ep.episode, seed: ep.seed, split: ep.split, file: name, sha256: crypto.createHash('sha256').update(body).digest('hex'),
       plan_records: out.filter(r => r.type === 'plan').length, orders: out.filter(r => r.type === 'order').length,
       family: ep.scenario && ep.scenario.family || 'office', layout: ep.scenario && ep.scenario.layout, split_by: ep.split_by,
@@ -243,7 +265,7 @@ if (!isMainThread) {
   function finish() {
     rows.sort((a, b) => a.episode.localeCompare(b.episode));
     if (sim === 'indoor') return finishIndoor(rows);
-    fs.writeFileSync(path.join(outDir, 'manifest.jsonl'), rows.map(r => JSON.stringify(r)).join('\n') + '\n');
+    writeFileRetry(path.join(outDir, 'manifest.jsonl'), rows.map(r => JSON.stringify(r)).join('\n') + '\n');
     const by = {};
     for (const r of rows) {
       const g = by[r.goal] || (by[r.goal] = { n: 0, breach: 0, clean: 0, view: 0, bBreach: 0, bN: 0 });
@@ -256,13 +278,13 @@ if (!isMainThread) {
     for (const [g, s] of Object.entries(by).sort()) lines.push(`${g.padEnd(22)} ${String(s.n).padStart(8)}  ${(100 * s.breach / s.n).toFixed(0).padStart(7)}%  ${(100 * s.clean / s.n).toFixed(0).padStart(18)}%  ${(s.view / s.n).toFixed(0).padStart(6)}%` +
       (baseline ? `  | ${(100 * s.bBreach / s.bN).toFixed(0)}%` : ''));
     const mis = rows.length ? null : 0;
-    fs.writeFileSync(path.join(outDir, 'summary.txt'), lines.join('\n') + '\n');
+    writeFileRetry(path.join(outDir, 'summary.txt'), lines.join('\n') + '\n');
     console.log(lines.join('\n'));
     console.log(`wrote ${outDir}/episodes/*.jsonl.gz, manifest.jsonl, summary.txt`);
     void mis;
   }
   function finishIndoor(rows) {
-    fs.writeFileSync(path.join(outDir, 'manifest.jsonl'), rows.map(r => JSON.stringify(r)).join('\n') + '\n');
+    writeFileRetry(path.join(outDir, 'manifest.jsonl'), rows.map(r => JSON.stringify(r)).join('\n') + '\n');
     const pct = (a, b) => b ? (100 * a / b).toFixed(0) + '%' : '—';
     const aggregate = keyOf => { const by = {};
       for (const r of rows) {
@@ -292,7 +314,7 @@ if (!isMainThread) {
       if (o.role === 'visitor') { g.vis++; g.guided += o.guided > 0; } else if (r.intent === 'hide') { g.hid++; g.found += o.found > 0; } else { g.intr++; g.br += o.breaches > 0; g.bBr += (b.breaches || 0) > 0; } }
     lines.push('', `Episodes scheduled with a single order (${one.length}): the first order stays in force`, 'order        eps | intruders breached (baseline) | hiders found | visitors guided out | in view');
     for (const [g, s] of Object.entries(by1).sort()) lines.push(`${g.padEnd(12)} ${String(s.n).padStart(3)} | ${s.intr ? s.br + '/' + s.intr + ' (' + s.bBr + '/' + s.intr + ')' : '—'} | ${s.hid ? s.found + '/' + s.hid : '—'} | ${s.vis ? s.guided + '/' + s.vis : '—'} | ${(s.view / s.n).toFixed(0)}%`);
-    fs.writeFileSync(path.join(outDir, 'summary.txt'), lines.join('\n') + '\n');
+    writeFileRetry(path.join(outDir, 'summary.txt'), lines.join('\n') + '\n');
     console.log(lines.join('\n'));
     console.log(`wrote ${outDir}/episodes/*.jsonl.gz, manifest.jsonl, summary.txt`);
   }

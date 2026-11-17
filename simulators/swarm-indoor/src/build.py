@@ -202,6 +202,9 @@ function render(){ fit(); const dpr=window.devicePixelRatio||1; ctx.setTransform
   // cameras: what each drone can see at its height (walls, shelves and door lintels block it)
   for(const d of team.drones){ if(d.y<0.4)continue; const poly=visPoly(d); ctx.beginPath(); ctx.moveTo(poly[0][0],poly[0][1]); for(const p of poly)ctx.lineTo(p[0],p[1]); ctx.closePath(); ctx.fillStyle=COL[d.id]+(d.sees?'26':'14'); ctx.fill(); }
   // person (truth) and what the team believes
+  // the other people (staff, visitors): grey dots with their clothes, seated or lying ones smaller
+  for(const w of crowd.list){ if(!w.alive)continue; ctx.fillStyle=w.role==='staff'?'rgba(148,163,184,0.85)':'rgba(203,213,225,0.75)'; ctx.beginPath(); ctx.arc(X(w.x),Y(w.z),(w.posture==='standing'?0.24:0.18)*ui.scale,0,2*Math.PI); ctx.fill();
+    text(w.look.colour+' '+w.look.top+(w.body.aid?' · '+w.body.aid:''),X(w.x),Y(w.z)-0.42*ui.scale,9,'rgba(203,213,225,0.7)'); }
   if(person.alive){ const seen=team.seen, press=mission.band==='pressure'; ctx.globalAlpha=seen?1:0.45; ctx.setLineDash([4*dpr,4*dpr]); ctx.strokeStyle=press?'rgba(251,191,36,0.7)':'rgba(251,113,133,0.45)'; ctx.lineWidth=1*dpr; ctx.beginPath(); ctx.arc(X(person.x),Y(person.z),(press?settings.dPress:settings.dS)*ui.scale,0,2*Math.PI); ctx.stroke(); ctx.setLineDash([]);
     ctx.strokeStyle='rgba(251,113,133,0.35)'; ctx.beginPath(); ctx.arc(X(person.x),Y(person.z),settings.floorPress*ui.scale,0,2*Math.PI); ctx.stroke();
     ctx.fillStyle=COL.P; ctx.beginPath(); ctx.arc(X(person.x),Y(person.z),0.28*ui.scale,0,2*Math.PI); ctx.fill(); const h=person.heading; ctx.strokeStyle='#fff'; ctx.lineWidth=2*dpr; ctx.beginPath(); ctx.moveTo(X(person.x),Y(person.z)); ctx.lineTo(X(person.x+Math.sin(h)*0.45),Y(person.z+Math.cos(h)*0.45)); ctx.stroke();
@@ -247,6 +250,7 @@ const TAP='class Tap extends AudioWorkletProcessor{process(i){const c=i[0]&&i[0]
 function speechContext(){ const lr=team.lkpRoom; return {sim:'swarm-indoor',goal:mission.goal,version:mission.version,queued:mission.queued?mission.queued.goal:null,
     person:{role:person.role,seen:!!team.seen,known:team.lkpT>=0,room:lr>=0&&lr<plan.rooms.length?plan.rooms[lr].name:(lr===plan.OUT?'outside':null),inside:lr>=0&&lr<plan.rooms.length},
     rooms:plan.rooms.map(q=>q.name),doors:plan.doors.map(d=>({name:d.name,rooms:d.rooms.map(r=>r<plan.rooms.length?plan.rooms[r].name:'outside')})),
+    people:(world.scenario.cast||[]).map(c=>({id:c.tid,role:c.role,sex:c.body.sex,age:c.body.age,aid:c.body.aid,colour:c.look.colour,top:c.look.top,hat:c.look.hat,bag:c.look.bag,mask:c.look.mask,glasses:c.look.glasses})),
     protected:plan.rooms[world.scenario.protectedRoom].name,sim_t:+simT.toFixed(2)}; }
 function speechUI(){ const s=speech.state; $('#speechstat').textContent=s==='ready'?'· ready · offline '+speech.model:s==='listening'?'· listening…':s==='thinking'?'· recognizing…':s==='connecting'?'· connecting…':'· speech server off (run python main.py indoor --voice)'; $('#talkbtn').classList.toggle('rec',s==='listening'); }
 function speechConnect(){ if(speech.ws&&speech.ws.readyState<=1)return; let ws; try{ ws=new WebSocket(speech.url); }catch(err){ speech.state='offline'; speechUI(); return; }

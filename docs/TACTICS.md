@@ -175,13 +175,43 @@ No public study shows how an *unwilling* person reacts to drones; all the eviden
   - k_fear: log-uniform 0.5–3.
   - k_flank: 0–1.
   - T_resolve: 10–60 s (patience before giving up).
-- **Leaving:** he heads for the nearest exit on foot, avoiding one with drones hovering at it (each counts as 12 m more walking), and chooses again after 3 s blocked (added 13 November).
+- **Leaving:**
+  - An intruder heads for the nearest exit on foot, avoiding one with drones hovering at it (each counts as 12 m more walking), and chooses again after 3 s blocked.
+  - A lost visitor being guided goes where the drones are. When the guide hovers at an exit close to her, she takes it as the way out and leaves by it.
+  - Before this, she waited 3 m from a guide that could not pass her to reach the door: guide out got 3 of 12 controlled visitors out instead of 8; now 10 (added 13 November).
+- **Bodies, speeds and movement (13 November):** each person has an age, sex, height, width and possibly a mobility aid. Speeds come from gait data (walking) or our assumption (running and sprinting, up to 6.4 m/s). Movement includes stop-and-go pauses, hesitation at doors, doubling back, dodging, sprint bursts, wall-hugging and crawling hiders. Sources are in `docs/DATASET_PLAN.md`, "Diverse people".
+- **What the teacher assumes:**
+  - The person may run at 4.5 m/s.
+  - The estimate may be up to 1 m off: detector noise, odometry drift and radio delay. Every room within 1 m of the estimate stays in the belief.
+  - A drone cannot outrun a sprinter, so episodes where a person runs past a retreating drone are counted apart from the drone's own floor breaches.
+- **Other people:** they walk between rooms, pause and sit, keep about 2.5 m from drones, and wait while one hovers ahead of them. After 3 s of waiting, or of getting nowhere, they pick somewhere else to go. Before that rule, a visitor pressed against a wall and a drone wedged in by four people stood 1.19 m apart for 92 s. A walker's recorded velocity is the motion it makes, so one pressed against a wall counts as standing. Their movement draws from its own stream, so it cannot carry information about the hidden subject.
 - **Margin:** a metric-only field records whether a formation could stop him at all, so impossible cases are not counted as teacher errors.
 - **Review:** these tactics are grounded but not validated by a practitioner. A review by a search-and-rescue, police or security professional is planned.
 
 ## As built in `simulators/swarm-indoor`, and how well it works (12 November 2026)
 
 **Floor families (13 November).** Every template runs on eight single-level floor families: office, house or apartment, warehouse, open-plan office, school or hospital, shop, single room, and irregular floors with L-shaped rooms (`docs/DATASET_PLAN.md`, "Layout families"). The outcome numbers below are for the fixed office floor. `indoor.test.js` runs every order on every family and checks safety on true positions.
+
+**Everyone, not only the subject (13 November).** Episodes now hold several people (`docs/DATASET_PLAN.md`, "Diverse people"):
+- The safety layer below keeps clear of every person in sight. The pressure band applies only to the subject; everyone else gets the comfort band.
+- The validator keeps every slot at the comfort standoff from every other person the team has placed. Each round runs, in order:
+  1. clearance from other people;
+  2. separation;
+  3. the rotation around the subject;
+  4. the subject's standoff, last.
+
+  In a cramped corner where five rounds still leave two slots under 1 m apart, one of them moves to the nearest point that keeps every rule (1 m from the others, the subject's standoff, and if possible the comfort standoff from everyone else). The label flags it `cramped`. In the 1,200-episode run it fired at 796 of 198,207 ticks (0.4%), in 88 episodes.
+- A drone counts a person as in sight if a line reaches their torso or their legs. With the torso alone, a drone that had climbed lost sight of a visitor behind a door lintel and closed to 1.18 m (one episode in 1,200).
+- The no-approach rule also holds anyone the drone saw in the last 10 s who is still within 4.5 m but out of sight, as an onboard tracker keeps a person who stepped behind a shelf or a door jamb. Without it:
+  - a drone drifted toward someone standing 1.5 m away in the ticks they flickered out of sight;
+  - a drone boxed in above head height fled over a shelf onto a visitor it had lost 2 s earlier.
+
+  Backing away still uses sight alone: holding hidden people there as well cut track's time in view from 42% to 34%.
+- Removing the motion toward one person can add motion toward another, so the no-approach clamp repeats until no motion points at anyone inside their limit. It treats a neighbour within 0.9 m the same way: the people pass once undid the neighbour pass, and two drones holding near people closed to 0.59 m.
+- Sliding along a wall never turns into an approach to a person or a neighbour: the drone stops instead.
+- An escape direction must be open along the way (at 0.1, 0.2 and 0.35 m), not only at its end. It must also not close on anyone else inside their limit, whether people in sight or remembered, or a neighbour within 0.9 m; the clamp would cancel that motion. With no such direction, the drone is pinned. A drone beside the end of a wall once chose a direction whose end point lay past a blocked cell, could not take its first step, and hovered 1.15 m from a bystander for 98 s.
+- A drone someone is closing in on, that cannot back away (between two people, or pinned), climbs above head height.
+- **Whose doing floor time is:** the drone's when it moves toward the person, or when both are still while it could have backed away. It is the person's when they walk or run in while the drone is not moving toward them, or when they walk up to a drone pinned by walls and people on every side (it cannot get there itself, since it never moves toward anyone inside their limit). Example: a member of staff heading for a doorway walked up to a drone parked in the corner beside it.
 
 **On-board safety layer.** The teacher only places slots. Each drone's flight layer also enforces the envelope:
 - **Person in sight:** it backs away whenever the person is within its band's standoff + 0.3 m (1.8 m pressure, 2.8 m comfort), plus 0.6 s × his closing speed, and sidesteps out of his path. Near a person it may fly at up to 2.5 m/s to get clear. If a wall or corner is behind it, it takes the free direction that best opens the distance; if it is boxed in, it climbs to 2.5 m, above reach, until clear. The band travels with each radio vector; a follower whose link is older than 1 s falls back to comfort.

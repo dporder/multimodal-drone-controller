@@ -23,7 +23,7 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from orders import interpret, _slots, ROOM_SYNONYMS, DOOR_SYNONYMS, spoken_variants  # noqa: E402
+from orders import interpret, _slots, ROOM_SYNONYMS, DOOR_SYNONYMS, spoken_variants, person_desc, person_fits, PERSON_GOALS  # noqa: E402
 
 HIM = ["him", "him", "him", "her", "them", "the intruder", "that guy", "the person"]
 SLOTS = {
@@ -156,10 +156,11 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 def floor_names(specs):
     """[(family, seed, layout)] -> each floor's room, door and exit names, from the simulator (simulators/tools/floors.js)."""
     tool = os.path.join(ROOT, "simulators", "tools", "floors.js")
-    out = subprocess.run(["node", tool], input=json.dumps([{"family": f, "seed": sd, "layout": lay} for f, sd, lay in specs]),
+    out = subprocess.run(["node", tool], input=json.dumps([{"family": f, "seed": sd, "layout": lay, "role": role} for f, sd, lay, role, _ in specs]),
                          capture_output=True, text=True, check=True).stdout
     floors = json.loads(out)
-    for fl in floors:
+    for fl, sp in zip(floors, specs):
+        fl["role"], fl["kind"] = sp[3], sp[4]
         ctx = {"rooms": fl["rooms"], "doors": fl["doors"]}
         # ways to say each room and exit here: the name, a number as a word, and synonyms the parser reads back as that place
         fl["room_words"] = {n: [w for w in spoken_variants(n) + [k for k in ROOM_SYNONYMS if k not in fl["rooms"]]
@@ -203,16 +204,16 @@ I_REFUSE = {"no-harm": ["hit {him}", "attack {him}", "ram {him}", "knock {him} d
             "no-cornering": ["corner {him}", "trap {him} in the {R}", "box {him} in", "pin {him} against the wall"]}
 I_QUERY = ["what now", "status", "do something", "where is he", "handle it", "the door", "is he inside", "rotate left"]
 def indoor_context(fl, role, protect):
-    # what the parser may know when the order is sampled: the floor, who it is, not where he will be
-    return {"sim": "swarm-indoor", "goal": "hold", "version": 1, "protected": protect, "rooms": fl["rooms"], "doors": fl["doors"],
+    # what the parser may know when the order is sampled: the floor, who is in the building and how they look, not where they will be
+    return {"sim": "swarm-indoor", "goal": "hold", "version": 1, "protected": protect, "rooms": fl["rooms"], "doors": fl["doors"], "people": fl["cast"],
             "person": {"role": role, "seen": True, "known": True, "room": None, "inside": True}}
 
 
-def render_indoor(tpl, rng, role, protect, fl):
+def render_indoor(tpl, rng, role, protect, fl, desc=None):
     exit_ = rng.choice(fl["exits"])
     room = rng.choice(fl["rooms"])
     who = THEM if role == "visitor" else HIM
-    vals = {"him": rng.choice(who), "them": rng.choice(THEM), "P": rng.choice(fl["room_words"][protect]),
+    vals = {"him": desc or rng.choice(who), "them": desc or rng.choice(THEM), "P": rng.choice(fl["room_words"][protect]),
             "X": rng.choice(fl["exit_words"][exit_]), "R": rng.choice(fl["room_words"][room])}
     text = tpl.format(**vals)
     if "{P} door" in tpl:  # door names use the plain room name ("storage door", not "storeroom door")
@@ -223,7 +224,7 @@ def render_indoor(tpl, rng, role, protect, fl):
     return text, name, {"exit": exit_, "room": room}
 
 
-def make_indoor_order(rng, t, kind, value, test, role, protect, fl, prev_goal=None, then=None, pool_override=None):
+def make_indoor_order(rng, t, kind, value, test, role, protect, fl, prev_goal=None, then=None, pool_override=None, desc_mode=None):
     ctx = indoor_context(fl, role, protect)
     if kind == "goal":
         pool = pool_override or I_TEMPLATES[value]
@@ -241,7 +242,10 @@ def make_indoor_order(rng, t, kind, value, test, role, protect, fl, prev_goal=No
     else:
         tpl, slot = pick(rng, I_QUERY, test), ""
         intended = {"action": "query"}
-    text, style, chosen = render_indoor(tpl, rng, role, protect, fl)
+    # with other people in the building, the order may describe its subject: uniquely (the order names that person) or ambiguously
+    # (the right answer is a question); only templates that mention the person ({him}, {them}) can
+    desc = describe_subject(fl, rng, desc_mode) if desc_mode and len(fl["cast"]) > 1 and ("{him}" in tpl or "{them}" in tpl) else None
+    text, style, chosen = render_indoor(tpl, rng, role, protect, fl, desc)
     params = {}
     if slot == "P":
         params["room"] = protect
@@ -253,9 +257,14 @@ def make_indoor_order(rng, t, kind, value, test, role, protect, fl, prev_goal=No
         params["room"] = chosen["room"]
     elif slot.startswith("L"):
         params["level"] = int(slot[1:])
+    clarify = None
+    if desc and desc_mode == "ambiguous":
+        clarify, intended = intended.get("goal"), {"action": "query"}
+    elif desc and intended["action"] == "accept" and intended.get("goal") in PERSON_GOALS:
+        params["person"] = fl["cast"][0]["id"]
     if intended["action"] == "accept":
         intended["params"] = params
-    if then is not None and kind in ("goal", "context"):
+    if then is not None and kind in ("goal", "context") and intended["action"] == "accept":
         ttpl, tslot = pick_pair(rng, I_TEMPLATES[then], test)
         ttext, _, tch = render_indoor(ttpl, rng, role, protect, fl)
         tparams = {"P": {"room": protect}, "X": {"exit": tch["exit"]}, "XD": {"door": tch["exit"]}, "R": {"room": tch["room"]}}.get(tslot, {})
@@ -272,8 +281,11 @@ def make_indoor_order(rng, t, kind, value, test, role, protect, fl, prev_goal=No
     mismatch = got.get("action") != intended["action"] or got.get("goal") != intended.get("goal") or got.get("rule") != intended.get("rule") \
         or (intended["action"] == "accept" and any(got.get("params", {}).get(k) != v for k, v in intended.get("params", {}).items())) \
         or got.get("queued") != intended.get("queued")
-    return {"t": round(t, 2), "text": text, "template": tpl, "style": style, "held_out": held_out(tpl),
-            "context_dependent": kind == "context", "intended": intended, "parser": got, "mismatch": bool(mismatch)}
+    out = {"t": round(t, 2), "text": text, "template": tpl, "style": style, "held_out": held_out(tpl),
+           "context_dependent": kind == "context", "intended": intended, "parser": got, "mismatch": bool(mismatch)}
+    if clarify:
+        out["clarify_goal"] = clarify
+    return out
 
 
 def pick_pair(rng, pool, test):
@@ -296,11 +308,46 @@ def wchoice(rng, table, exclude=None):
 
 
 def indoor_floor_spec(i, base_seed, families, weights):
-    """Which floor episode i plays on: (family, seed, layout). The seed also drives the simulator's random floor."""
+    """Which floor and scenario kind episode i plays on: (family, seed, layout, subject role, kind). The seed also drives the
+    simulator's random floor and its cast, which depends on the subject's role."""
     seed = base_seed * 100003 + i + 1
     rng = random.Random(seed * 7 + 3)
     family = rng.choices(families, weights=weights)[0]
-    return family, seed, "fixed" if rng.random() < FIXED_SHARE else "random"
+    layout = "fixed" if rng.random() < FIXED_SHARE else "random"
+    kind = rng.choices(["enter", "hide", "visitor"], weights=[5, 2, 3])[0]
+    return family, seed, layout, "visitor" if kind == "visitor" else "intruder", kind
+
+
+def subject_words(p):
+    """Nouns for the subject: by sex and age group, or neutral."""
+    young, older = p["age"] < 18, p["age"] >= 65
+    noun = ("boy" if p["sex"] == "m" else "girl") if young else ("man" if p["sex"] == "m" else "woman")
+    return [("older " if older else "") + noun, "person"]
+
+
+def describe_subject(fl, rng, mode):
+    """A description of the subject (cast[0]) that fits only them ("unique") or also someone else ("ambiguous"); None if none fits."""
+    cast, s = fl["cast"], fl["cast"][0]
+    cands = []
+    for noun in subject_words(s):
+        cands.append("the " + noun)
+        cands.append(f"the {noun} in the {s['colour']} {s['top']}")
+        if s["aid"]:
+            cands.append(f"the {noun} in the wheelchair" if s["aid"] == "wheelchair" else f"the {noun} with the {s['aid']}")
+        for acc, word in (("hat", "hat"), ("bag", "backpack"), ("mask", "mask"), ("glasses", "glasses")):
+            if s[acc]:
+                cands.append(f"the {noun} with the {word}")
+    out = []
+    for c in cands:
+        span, a = person_desc(c)
+        if not span:
+            continue
+        fits = [p for p in cast if person_fits(a, p)]
+        if s not in fits:
+            continue
+        if (mode == "unique") == (len(fits) == 1):
+            out.append(c)
+    return rng.choice(out[:4]) if out else None
 
 
 def indoor_episode(i, fl, held_out_families):
@@ -308,8 +355,7 @@ def indoor_episode(i, fl, held_out_families):
     rng = random.Random(seed)
     by_family = fl["family"] in held_out_families
     test = by_family or seed % 10 == 0
-    kind = rng.choices(["enter", "hide", "visitor"], weights=[5, 2, 3])[0]
-    role = "visitor" if kind == "visitor" else "intruder"
+    kind, role = fl["kind"], fl["role"]
     # the floor's default protected room is likelier; any other room worth protecting can be named
     protect = rng.choices(fl["protectable"], weights=[4 if r == fl["protect"] else 1 for r in fl["protectable"]])[0]
     person = {"role": role, "intent": {"enter": "enter", "hide": "hide", "visitor": "wander"}[kind]}
@@ -322,9 +368,15 @@ def indoor_episode(i, fl, held_out_families):
     then_pool = [g for g in I_TEMPLATES if g not in (first, "hold") and not (role == "visitor" and g in ("driveout", "contain", "keepout"))
                  and not (role == "intruder" and g == "guideout")]
     then = rng.choice(then_pool) if rng.random() < 0.12 and first != "context" else None
-    orders = [make_indoor_order(rng, round(rng.uniform(0, 3), 2), "context" if first == "context" else "goal", first, test, role, protect, fl, then=then)]
-    goal = orders[0]["intended"].get("goal")
-    t = orders[0]["t"]
+    u = rng.random()
+    desc_mode = "unique" if u < 0.7 else "ambiguous" if u < 0.8 else None
+    orders = [make_indoor_order(rng, round(rng.uniform(0, 3), 2), "context" if first == "context" else "goal", first, test, role, protect, fl, then=then,
+                                desc_mode=desc_mode)]
+    # an ambiguous description gets a question back; the operator then says who, a few seconds later
+    if orders[0].get("clarify_goal"):
+        orders.append(make_indoor_order(rng, orders[0]["t"] + rng.uniform(3, 6), "goal", orders[0]["clarify_goal"], test, role, protect, fl, desc_mode="unique"))
+    goal = orders[-1]["intended"].get("goal")
+    t = orders[-1]["t"]
     for _ in range(rng.choice([0, 1, 1, 2, 2, 3])):
         t += rng.uniform(10, 35)
         r = rng.random()
@@ -382,7 +434,7 @@ def main():
     # held-out sweep: every held-out template, rendered 12 ways, independent of episode sampling
     sweep_rng, sweep = random.Random(12345), []
     if a.sim == "indoor":
-        office = floor_names([("office", 1, "fixed")])[0]
+        office = floor_names([("office", 1, "fixed", "intruder", "enter")])[0]
         for g, ts in I_TEMPLATES.items():
             for tpl, slot in ts:
                 if not held_out(tpl):
