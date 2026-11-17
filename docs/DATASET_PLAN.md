@@ -310,6 +310,7 @@ Every person attribute is logged as metric-only: the cast in the header, and pos
       - The subject needs the bystanders' give-up rule, and its recorded velocity should be the step it made. A wandering visitor and a pinned drone held each other for 84 s. Done with doors on (17 November); doors off keeps the old behaviour, so its records stay identical.
       - Drones should slow near open leaves and doorways, where someone may be hidden (surprises at doors, found by the door pilot).
       - Bystanders creeping up on a drone (found by the door pilot): fixed with doors on; doors off still has it, kept for identical records.
+      - Doors off also keeps the old wall-slide tolerance and the old floor split; the doors-on versions should replace them once doors-off records no longer need to match indoor3.
       - Odometry drift in narrow doorways (found by the door pilot): a drone whose estimate has drifted about 0.85 m plans as if it were elsewhere, and can stay stuck at a 0.9 m doorway for several seconds; an open leaf beside the doorway makes the passage longer. Drones re-localize only near their pads today; doorways are good visual landmarks to re-localize at.
    6. Done (17 November): doors in the POC, closed, half-open, open and locked, opened and closed by people (see "Things that move besides people and drones"). Next: regenerate the 1,200-episode set with doors.
 2. **The full dataset, after the layout work:**
@@ -354,10 +355,11 @@ Only people, drones and doors move. Dan's direction (17 November): the POC can k
   - Staff: 40%. Visitors: 30%.
   - Nobody closes a door that would cut the airborne drones apart, or with no room to stand clear of it.
 - **Drones never touch doors.**
-  - A moving leaf stops while it would come within 0.45 m of a drone; its mover gives up after 4 s.
+  - A moving leaf stops while it would come within 0.45 m of a drone; its mover gives up after 4 s. If a drone blocked it, the mover steps back up to 3 m for 6 s, so a drone boxed in against the wall can leave (a visitor and a guide once held each other at a shut exit for 130 s).
   - The drones plan from the door states they have seen. A door they have not seen counts as open.
   - A drone sees a door with its camera, or within 1.5 m.
   - A half-open door never leaves a drone a way through. Drones pass a door at 75° or more.
+  - A doorway they believe they cannot fly through is blocked in their planning grid, not only its leaf.
 - **The teacher's rules** are in `docs/TACTICS.md` under "Doors":
   - wait beside a shut door, or take another way;
   - a drone cut off by shut doors holds;
@@ -372,6 +374,9 @@ Only people, drones and doors move. Dan's direction (17 November): the POC can k
   - A drone passing an open door can see someone standing behind its leaf for the first time already inside 1.2 m. The pilot had one: a bystander behind the lobby door, first seen at 1.20 m, and the drone turned away within a frame.
   - With doors on, such a first sight is counted apart (`floor_surprise_s` in the outcome; a soft gate in the quality report), not as the drone's doing. From that sight on the drone's reaction counts as usual, so the hard 1.2 m gate still catches a drone that keeps closing in.
   - With doors off there were none in 1,200 episodes: doors bring this risk. Slowing near open leaves and doorways is queued below.
+- **Safety layer and metrics with doors on** (doors off keeps the old behaviour, so its records stay identical; both are queued for doors off):
+  - A wall slide may close on someone at up to 0.05 m/s, the floor gate's own threshold for moving toward a person. At 0.02 m/s a drone holding a doorway froze 1.1 m from an intruder standing 4° off straight ahead.
+  - The 1.2 m floor is split by the gate's own words. The drone's doing is moving toward the person, or both standing still while it could back away. A drone escaping sideways or away from someone who walked up to it is not.
 - **Simplifications:**
   - Doors open to 90° at most.
   - A person walks round an open leaf in their way instead of pushing it shut.

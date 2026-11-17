@@ -142,23 +142,31 @@ Doors are leaves on hinges that only people move (`docs/DATASET_PLAN.md`, "Thing
 - **What the teacher knows:**
   - The door states the drones have seen, through a camera or within 1.5 m. A door not yet seen counts as open.
   - The drones' planning grid and the teacher's sight lines are built from those states, never from the true ones.
+  - A doorway they believe they cannot fly through is blocked in the planning grid, not only its leaf. Beside a half-open leaf a 1 m doorway once kept a free strip, and a drone flew through a door at 54°.
   - A test checks that a door no drone has seen changes no label.
 - **A slot behind a door the drone cannot fly through:**
   - The drone waits beside the first such door on its way, on its own side.
-  - It hovers 1 m out from the wall, past the latch-side jamb, so it stays clear of the leaf when someone opens it. At a double door that swings toward it, it hovers in front, beyond the leaves' reach.
+  - It hovers 1 m out from the wall and 1.2 m past a jamb: the latch side of a single leaf, clear of its sweep, or either side of a double door. People using the door pass it with room to spare; closer, they walked within 1.2 m of it.
+  - It faces the door, so it sees the door open from there.
   - The master tells the operator ("The lab door is shut: follower 1 waits beside it.").
   - If another way is open, the path planner takes it instead.
 - **No slot inside the swing of a door the drones believe is not open:** whoever opens it would swing it into the drone.
+- **The validator places a slot behind a shut door once,** before the separation and standoff passes, which then move it only within the drone's own area. Placed after them, the wait could undo the standoff: 114 slots of the first 1,200-episode run ended inside it.
+- **When the door step moves a slot back into the drone's own area,** it takes the nearest point there that keeps the person's standoff. With no such point within 6 m, walls and shut doors box the slot in, and it is flagged like a slot pushed against a wall. Taking the plain nearest point left 77 slots of the second 1,200-episode run inside the standoff.
 - **A drone cut off from the team by shut doors** holds where it is, within its own area, and is reported ("Follower 1 is shut in the store room and holds there."). The outside in front of each exit counts as its own area: a drone does not fly round the building to another exit.
 - **Search:**
   - Rooms the person could be in, but which lie behind doors the drones cannot fly through, are reported ("The lab is behind a shut door: the drones cannot search it.").
   - The drones search the other rooms first. With nothing else left, each drone watches one of those shut doors (template `watch-shut`), facing it. If a door opens, the room becomes searchable.
 - **Explore** only takes frontiers the team can reach. The mapped share counts what was behind shut doors as unmapped.
-- **Guide out:** a visitor whose guide hovers beside a shut door on her way to the guide's exit goes that way, opening the doors, and the drones follow her ("through here, then on to the exit").
+- **Guide out:**
+  - A visitor whose guide hovers beside a shut door on her way to the guide's exit goes that way, opening the doors, and the drones follow her ("through here, then on to the exit").
+  - At an exit the drones believe shut, the guides stand aside inside instead of outside, where they cannot get. They hover 1 m out from the wall and half the door's width plus 3.1 m along it: two on the hinge side, one on the latch side. That keeps the comfort band from both spots where the visitor may stand to open a door that swings toward her. At 2.2 m, a visitor walked up to a guide boxed in against the wall.
+  - A visitor takes a guide within 3.5 m of a shut exit as "this way out" and opens it.
 - **An open leaf hides people.** A drone passing one can first see someone already inside 1.2 m; the safety layer turns it away within a frame. These surprises are counted apart from the drone's own approaches. Not built yet: slowing near open leaves and doorways.
 - **People's side, which the tactics rely on:**
   - People open doors on their way and sometimes close them behind them.
   - Nobody closes a door that would cut the airborne drones apart. This is a simplification: a determined intruder might shut a drone in.
+  - Someone whose door a drone blocks for 4 s steps back up to 3 m for 6 s before trying again, so a drone boxed in against the wall can leave the leaf's way. Without it, a visitor and a guide held each other at a shut exit for 130 s.
 
 ## Safety envelope (indoor)
 

@@ -523,6 +523,16 @@ test('doors: off is the doorless world: no leaves, no door fields in the records
   assert.ok(on.every(r => Array.isArray(r.obs.doors) && Array.isArray(r.truth.doors)), 'records lack door fields with doors on');
 });
 
+test('doors: a person\'s door state never carries into the next episode', () => {
+  const h = () => crypto.createHash('sha256').update(JSON.stringify(episode(5, 'guideout', 'visitor', { secs: 30, reset: { settings: {} } }).recs)).digest('hex');
+  const a = h();
+  // an episode can end while its subject steps back from a door a drone blocks, prepares to open one, or waits to try again; the
+  // step-back once carried into the next episode in a generator worker (a person walked toward a point on the previous floor)
+  episode(3, 'track', 'intruder', { secs: 10, reset: { settings: {} } });
+  Object.assign(S.person, { doorBack: { x: 1, z: 1, until: 999 }, doorPrep: { k: 0, to: 90, x: 1, z: 1, t0: 0 }, doorAct: { k: 0 }, doorCool: { 0: 999 }, nowhereT: 2.9 });
+  assert.strictEqual(h(), a);
+});
+
 let failed = 0;
 const only = process.argv[2], run = tests.filter(x => !only || x.name.includes(only));
 for (const t of run) {
