@@ -177,3 +177,43 @@ def test_swarm_mind_unchanged():
     # without sim=swarm-indoor the outdoor grammar answers, as before
     d = interpret("keep him out", {"goal": "keepout", "version": 1, "intruder": {"alive": True, "seen": True, "inside": False, "state": "approach"}})
     assert d["action"] == "accept" and d["goal"] == "keepout" and "params" not in d
+
+
+# ---- several people: a described person is resolved against the people on the floor, or the order becomes a question ----
+PEOPLE = [
+    {"id": 15, "sex": "m", "age": 40, "aid": None, "colour": "red", "top": "coat", "hat": False, "bag": False, "mask": False, "glasses": False},
+    {"id": 19, "sex": "f", "age": 16, "aid": None, "colour": "blue", "top": "coat", "hat": True, "bag": False, "mask": False, "glasses": True},
+    {"id": 31, "sex": "f", "age": 72, "aid": "cane", "colour": "brown", "top": "sweater", "hat": False, "bag": False, "mask": False, "glasses": False},
+    {"id": 34, "sex": "m", "age": 21, "aid": None, "colour": "red", "top": "jacket", "hat": False, "bag": True, "mask": False, "glasses": False},
+    {"id": 40, "sex": "f", "age": 35, "aid": "wheelchair", "colour": "grey", "top": "hoodie", "hat": False, "bag": False, "mask": False, "glasses": False},
+]
+CROWD = dict(INTRUDER, people=PEOPLE)
+ALONE = dict(INTRUDER, people=PEOPLE[:1])
+PERSON_CASES = [
+    ("keep the man in the red coat out of the lab", CROWD, "accept", "keepout", {"room": "lab", "person": 15}),
+    ("track the woman with the cane", CROWD, "accept", "track", {"person": 31}),
+    ("follow the girl", CROWD, "accept", "track", {"person": 19}),
+    ("drive the man with the backpack out", CROWD, "accept", "driveout", {"person": 34}),
+    ("guide the person in the wheelchair out", CROWD, "accept", "guideout", {"person": 40}),
+    ("find the older woman", CROWD, "accept", "search", {"person": 31}),
+    ("quick, look for the man in the red jacket", CROWD, "accept", "search", {"person": 34, "level": 3}),
+    ("keep the man out of the lab", CROWD, "query", None, {}),               # two men
+    ("track the person in the green hoodie", CROWD, "query", None, {}),      # nobody fits
+    ("keep him out of the lab", CROWD, "accept", "keepout", {"room": "lab"}),  # a pronoun: the person already in question
+    ("follow that guy", CROWD, "accept", "track", {}),
+    ("keep the woman out of the lab", ALONE, "accept", "keepout", {"room": "lab"}),  # alone in the building: any description is him
+]
+
+
+@pytest.mark.parametrize("text,ctx,action,goal,params", PERSON_CASES)
+def test_person_reference(text, ctx, action, goal, params):
+    r = interpret(text, ctx)
+    assert r["action"] == action, (text, r)
+    if goal:
+        assert r["goal"] == goal, (text, r)
+    for k, v in params.items():
+        assert r["params"].get(k) == v, (text, k, r)
+    if action == "accept" and "person" not in params:
+        assert "person" not in r["params"], (text, r)
+    if action == "query":
+        assert r.get("why") in ("which person", "no such person") and "?" in r["reply"], (text, r)

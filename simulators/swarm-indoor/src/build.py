@@ -37,6 +37,7 @@ HEAD = r'''<!DOCTYPE html>
   .seg button:hover{background:rgba(255,255,255,.05)}
   .seg button.on{background:rgba(34,211,238,.16);color:#bff6ff;box-shadow:inset 0 0 0 1px rgba(34,211,238,.35)}
   .seg.goal button.on{background:rgba(251,191,36,.16);color:#ffe9a8;box-shadow:inset 0 0 0 1px rgba(251,191,36,.4)}
+  select.sel{border:1px solid var(--line2);background:#121722;color:var(--text);padding:5px 7px;border-radius:9px;font:inherit;font-size:11.5px;cursor:pointer}
   .btn{border:1px solid var(--line2);background:rgba(255,255,255,.02);color:var(--text);padding:6px 9px;border-radius:9px;font:inherit;font-size:11.5px;cursor:pointer;white-space:nowrap}
   .btn:hover{background:rgba(255,255,255,.05)}
   .btn.on{background:rgba(52,211,153,.16);color:#bbf7d0;box-shadow:inset 0 0 0 1px rgba(52,211,153,.4)}
@@ -118,7 +119,8 @@ HEAD = r'''<!DOCTYPE html>
       <button class="btn" id="talkbtn" title="Hold Space, or hold this button, and say an order">Talk · hold Space</button>
       <div class="spacer"></div>
       <div class="seg" id="whoseg"><button data-who="intruder" class="on">Intruder</button><button data-who="visitor">Lost visitor</button><button data-who="hider">Hiding</button></div>
-      <div class="seg" id="layseg"><button data-lay="fixed" class="on">Office</button><button data-lay="random">Random floor</button></div>
+      <select class="sel" id="famsel" title="Floor family"><option value="office">Office</option><option value="house">House</option><option value="warehouse">Warehouse</option><option value="openplan">Open-plan office</option><option value="corridor">School or hospital</option><option value="retail">Shop</option><option value="single">Single room</option><option value="irregular">Irregular</option></select>
+      <div class="seg" id="layseg"><button data-lay="fixed" class="on">Fixed floor</button><button data-lay="random">Random floor</button></div>
       <button class="btn" id="play">Pause</button>
       <button class="btn" id="reset">Reset</button>
       <div class="seg" id="speed"><button data-s="1" class="on">1×</button><button data-s="2">2×</button><button data-s="4">4×</button></div>
@@ -132,13 +134,14 @@ HEAD = r'''<!DOCTYPE html>
     <section><h3>Orders by voice <span id="speechstat" class="small" style="font-weight:400;margin-left:6px;text-transform:none;letter-spacing:0"></span></h3>
       <div class="src"><input type="text" id="ordertxt" placeholder="…or type one: keep him out of the lab" style="flex:1"><button class="btn" id="ordersend">Send</button></div>
       <div id="speechlast" class="small"></div>
-      <p class="small">Try: “keep him out of the lab” · “drive him out the east exit” · “guide her out” · “track him” · “keep him in the kitchen” · “search the building thoroughly” · “map the floor” · “watch the main entrance” · “come back and land” · “search the building, then come back”.</p></section>
+      <p class="small" id="tryline">Try: “keep him out of the lab” · “drive him out the east exit” · “guide her out” · “track him” · “keep him in the kitchen” · “search the building thoroughly” · “map the floor” · “watch the main entrance” · “come back and land” · “search the building, then come back”.</p></section>
     <section><h3>Conversation</h3><div id="talk"></div></section>
     <section><h3>Drones</h3><div id="drones"></div></section>
     <section><h3>Rooms (search record)</h3><div id="rooms" class="log"></div></section>
     <section><h3>About</h3>
       <details><summary>What you are looking at</summary>
         <p>A floor seen from above. Rooms, 0.2 m walls, doors under a 2.0 m lintel, tables (0.8 m) and shelves (2.2 m). The coloured cones show what each drone camera can see at its height: walls, shelves and door lintels block it.</p>
+        <p>The drones do not know where the person is: each camera runs a detector (10 Hz) that misses more with distance, toward the edge of the view and when he is partly hidden, adds position noise and confidence, and now and then reports something that is not there. Amber dots are detections (filled ones count); the faint cyan wash is the map the drones have scanned so far.</p>
         <p>Every 0.5 s the master (M) picks a tactic template for the current order and sends each follower a vector over a lossy radio. Yellow dashed lines are those vectors; squares are the slots. Amber rooms are where the person could be, green rooms were cleared since he was last seen.</p>
         <p>Safety rules run on board: never closer than 1.2 m to a person; 1.5 m in pressure tactics (drive out, keep out at the door) and 2.5 m otherwise (the dashed ring); 1 m between drones, 0.4 m from walls, one drone per doorway, slow in doors. The person model and the tactics are explained in docs/TACTICS.md; the training records in docs/DATASET_PLAN.md.</p></details></section>
   </aside>
@@ -152,12 +155,16 @@ UI = r'''<script>
 const $=s=>document.querySelector(s);
 const COL={M:'#22d3ee',S1:'#a3e635',S2:'#f472b6',P:'#fb7185',vec:'#fbbf24',site:'#34d399'};
 const GOAL_KEYS=['hold','keepout','driveout','guideout','track','contain','search','explore','overwatch','return'];
-const ui={running:true,speed:1,who:'intruder',layout:'fixed',seed:1,floor:null,exploreImg:null,exploreT:-9,talkVer:-1,scale:30,ox:0,oy:0,fitKey:''};
+const ui={running:true,speed:1,who:'intruder',family:'office',layout:'fixed',seed:1,floor:null,exploreImg:null,exploreT:-9,talkVer:-1,scale:30,ox:0,oy:0,fitKey:''};
 const cv=$('#cv'), ctx=cv.getContext('2d'), view=$('#view');
 
 // ---------- scenario ----------
 function personOpts(){ return ui.who==='visitor'?{role:'visitor',intent:'wander'}:ui.who==='hider'?{role:'intruder',intent:'hide'}:{role:'intruder',delay:6}; }
-function resetWorld(){ seed(ui.seed); world.reset({layout:ui.layout,person:personOpts(),goal:'hold'}); ui.floor=null; ui.exploreImg=null; ui.talkVer=-1; ui.fitKey=''; highlightGoal('hold');
+// example orders that name this floor's rooms and exits
+function updateTry(){ const P=plan.rooms[world.scenario.protectedRoom].name, ex=exitDoors(), E=ex[ex.length>1?1:0].name, M=ex[0].name, R=(plan.rooms.find(q=>q.id!==world.scenario.protectedRoom&&q.id!==plan.home)||plan.rooms[0]).name;
+  $('#tryline').textContent='Try: “keep him out of the '+P+'” · “drive him out the '+E+'” · “guide her out” · “track him” · “keep him in the '+R+'” · “search the building thoroughly” · “map the floor” · “watch the '+M+'” · “come back and land” · “search the building, then come back”.';
+  $('#ordertxt').placeholder='…or type one: keep him out of the '+P; }
+function resetWorld(){ seed(ui.seed); world.reset({family:ui.family,layout:ui.layout,person:personOpts(),goal:'hold'}); updateTry(); ui.floor=null; ui.exploreImg=null; ui.talkVer=-1; ui.fitKey=''; highlightGoal('hold');
   $('#hint').textContent='hold Space: say an order · 1–0 goals · click the floor: send the person there · p pause · r reset · n new floor (seed '+ui.seed+')'; }
 
 // ---------- drawing ----------
@@ -176,18 +183,18 @@ function visPoly(d){ const pts=[[X(d.x),Y(d.z)]], half=settings.camFov/2*Math.PI
   for(let k=0;k<=30;k++){ const a=d.yaw-half+2*half*k/30, sx=Math.sin(a), sz=Math.cos(a); let s=0.1;
     for(;s<settings.camRange;s+=0.1){ const c=cellIdx(d.x+sx*s,d.z+sz*s); if(Hg[c]>=d.y-0.05||(DOORC[c]&&d.y>settings.lintel))break; }
     pts.push([X(d.x+sx*s),Y(d.z+sz*s)]); } return pts; }
-function drawExplore(){ const ex=mission.explore; if(!ex)return; if(!ui.exploreImg||simT-ui.exploreT>0.5){ ui.exploreT=simT; const c=ui.exploreImg||document.createElement('canvas'); c.width=NX; c.height=NZ;
-    const g=c.getContext('2d'), im=g.createImageData(NX,NZ), a=im.data; for(let k=0;k<NX*NZ;k++){ const o=4*k; if(ex.bel[k]===1){ a[o]=34; a[o+1]=211; a[o+2]=238; a[o+3]=46; } else if(ex.bel[k]===2){ a[o]=251; a[o+1]=191; a[o+2]=36; a[o+3]=120; } }
+function drawExplore(){ const ex={bel:team.map}; if(!ex.bel)return; if(!ui.exploreImg||simT-ui.exploreT>0.5){ ui.exploreT=simT; const c=ui.exploreImg||document.createElement('canvas'); c.width=NX; c.height=NZ;
+    const g=c.getContext('2d'), im=g.createImageData(NX,NZ), a=im.data, strong=mission.goal==='explore'; for(let k=0;k<NX*NZ;k++){ const o=4*k; if(ex.bel[k]===1){ a[o]=34; a[o+1]=211; a[o+2]=238; a[o+3]=strong?46:18; } else if(ex.bel[k]===2){ a[o]=251; a[o+1]=191; a[o+2]=36; a[o+3]=strong?120:60; } }
     g.putImageData(im,0,0); ui.exploreImg=c; }
   ctx.imageSmoothingEnabled=false; ctx.drawImage(ui.exploreImg,X(0),Y(0),NX*NAV*ui.scale,NZ*NAV*ui.scale); }
 function text(t,x,y,size,color,align){ ctx.font=(size*(window.devicePixelRatio||1))+'px Inter, system-ui, sans-serif'; ctx.fillStyle=color; ctx.textAlign=align||'center'; ctx.textBaseline='middle'; ctx.fillText(t,x,y); }
 function render(){ fit(); const dpr=window.devicePixelRatio||1; ctx.setTransform(1,0,0,1,0,0); ctx.fillStyle='#05080e'; ctx.fillRect(0,0,cv.width,cv.height);
   if(!ui.floor)ui.floor=buildFloor(); ctx.imageSmoothingEnabled=false; ctx.drawImage(ui.floor,X(0),Y(0),GX*CELL*ui.scale,GZ*CELL*ui.scale);
   // room state: amber = he could be here, green = cleared since he was last seen
-  for(const q of plan.rooms){ const inB=team.beliefRooms.has(q.id), cl=team.cleared.has(q.id); if(!inB&&!cl)continue; ctx.fillStyle=cl?'rgba(52,211,153,0.10)':'rgba(251,191,36,0.10)'; ctx.fillRect(X(q.x0),Y(q.z0),(q.x1-q.x0)*ui.scale,(q.z1-q.z0)*ui.scale); }
-  if(mission.goal==='explore')drawExplore();
-  const P=world.scenario.protectedRoom, pq=plan.rooms[P]; if(pq&&person.role==='intruder'){ ctx.strokeStyle='rgba(251,191,36,0.55)'; ctx.setLineDash([6*dpr,5*dpr]); ctx.lineWidth=1.5*dpr; ctx.strokeRect(X(pq.x0)+3,Y(pq.z0)+3,(pq.x1-pq.x0)*ui.scale-6,(pq.z1-pq.z0)*ui.scale-6); ctx.setLineDash([]); }
-  for(const q of plan.rooms)text(q.name+(q.id===P&&person.role==='intruder'?' · protected':''),X(q.cx),Y(q.z0)+12*dpr,10.5,'rgba(200,210,225,0.55)');
+  for(const q of plan.rooms){ const inB=team.beliefRooms.has(q.id), cl=team.cleared.has(q.id); if(!inB&&!cl)continue; ctx.fillStyle=cl?'rgba(52,211,153,0.10)':'rgba(251,191,36,0.10)'; for(const r of q.rects)ctx.fillRect(X(r.x0),Y(r.z0),(r.x1-r.x0)*ui.scale,(r.z1-r.z0)*ui.scale); }
+  drawExplore(); // what the drones have scanned so far (stronger while mapping the floor)
+  const P=world.scenario.protectedRoom, pq=plan.rooms[P]; if(pq&&person.role==='intruder'){ ctx.strokeStyle='rgba(251,191,36,0.55)'; ctx.setLineDash([6*dpr,5*dpr]); ctx.lineWidth=1.5*dpr; for(const r of pq.rects)ctx.strokeRect(X(r.x0)+3,Y(r.z0)+3,(r.x1-r.x0)*ui.scale-6,(r.z1-r.z0)*ui.scale-6); ctx.setLineDash([]); }
+  for(const q of plan.rooms){ const br=q.rects.find(r=>q.cx>=r.x0&&q.cx<=r.x1&&q.cz>=r.z0&&q.cz<=r.z1)||q.rects[0]; text(q.name+(q.id===P&&person.role==='intruder'?' · protected':''),X(q.cx),Y(br.z0)+12*dpr,10.5,'rgba(200,210,225,0.55)'); }
   for(const d of plan.doors){ const owner=doorLock[d.id]; if(owner!=null){ const c=COL[team.drones[owner].id]; ctx.fillStyle=c+'33'; const w=d.w+0.4; if(d.axis==='h')ctx.fillRect(X(d.x-w/2),Y(d.z-0.5),w*ui.scale,1.0*ui.scale); else ctx.fillRect(X(d.x-0.5),Y(d.z-w/2),1.0*ui.scale,w*ui.scale); }
     if(d.rooms[1]===plan.OUT)text(d.name,X(d.x)+(d.axis==='v'?0:0),Y(d.z)+(d.axis==='h'?(d.z>plan.D/2?14:-14):0)*dpr,9.5,'rgba(52,211,153,0.75)'); }
   for(const p of plan.pads){ ctx.strokeStyle='rgba(255,255,255,0.25)'; ctx.lineWidth=1*dpr; ctx.strokeRect(X(p.x-0.3),Y(p.z-0.3),0.6*ui.scale,0.6*ui.scale); }
@@ -195,17 +202,23 @@ function render(){ fit(); const dpr=window.devicePixelRatio||1; ctx.setTransform
   // cameras: what each drone can see at its height (walls, shelves and door lintels block it)
   for(const d of team.drones){ if(d.y<0.4)continue; const poly=visPoly(d); ctx.beginPath(); ctx.moveTo(poly[0][0],poly[0][1]); for(const p of poly)ctx.lineTo(p[0],p[1]); ctx.closePath(); ctx.fillStyle=COL[d.id]+(d.sees?'26':'14'); ctx.fill(); }
   // person (truth) and what the team believes
+  // the other people (staff, visitors): grey dots with their clothes, seated or lying ones smaller
+  for(const w of crowd.list){ if(!w.alive)continue; ctx.fillStyle=w.role==='staff'?'rgba(148,163,184,0.85)':'rgba(203,213,225,0.75)'; ctx.beginPath(); ctx.arc(X(w.x),Y(w.z),(w.posture==='standing'?0.24:0.18)*ui.scale,0,2*Math.PI); ctx.fill();
+    text(w.look.colour+' '+w.look.top+(w.body.aid?' · '+w.body.aid:''),X(w.x),Y(w.z)-0.42*ui.scale,9,'rgba(203,213,225,0.7)'); }
   if(person.alive){ const seen=team.seen, press=mission.band==='pressure'; ctx.globalAlpha=seen?1:0.45; ctx.setLineDash([4*dpr,4*dpr]); ctx.strokeStyle=press?'rgba(251,191,36,0.7)':'rgba(251,113,133,0.45)'; ctx.lineWidth=1*dpr; ctx.beginPath(); ctx.arc(X(person.x),Y(person.z),(press?settings.dPress:settings.dS)*ui.scale,0,2*Math.PI); ctx.stroke(); ctx.setLineDash([]);
     ctx.strokeStyle='rgba(251,113,133,0.35)'; ctx.beginPath(); ctx.arc(X(person.x),Y(person.z),settings.floorPress*ui.scale,0,2*Math.PI); ctx.stroke();
     ctx.fillStyle=COL.P; ctx.beginPath(); ctx.arc(X(person.x),Y(person.z),0.28*ui.scale,0,2*Math.PI); ctx.fill(); const h=person.heading; ctx.strokeStyle='#fff'; ctx.lineWidth=2*dpr; ctx.beginPath(); ctx.moveTo(X(person.x),Y(person.z)); ctx.lineTo(X(person.x+Math.sin(h)*0.45),Y(person.z+Math.cos(h)*0.45)); ctx.stroke();
     text((person.role==='visitor'?'visitor':'intruder')+' · '+person.state+(seen?'':' · not seen'),X(person.x),Y(person.z)-0.55*ui.scale,10.5,'#fecdd3'); ctx.globalAlpha=1; }
   const I=team.est(); if(I&&!team.seen){ ctx.strokeStyle='rgba(251,113,133,0.8)'; ctx.lineWidth=1.5*dpr; ctx.beginPath(); ctx.arc(X(I.x),Y(I.z),0.4*ui.scale,0,2*Math.PI); ctx.stroke(); text('last seen '+(simT-team.lkpT).toFixed(1)+' s',X(I.x),Y(I.z)+0.7*ui.scale,9.5,'rgba(251,113,133,0.9)'); }
+  // detections from the last camera frame: filled when confident enough to count, hollow otherwise
+  for(const x of team.dets||[]){ ctx.globalAlpha=0.35+0.6*x.conf; ctx.fillStyle=x.conf>=settings.acceptConf?'#fbbf24':'transparent'; ctx.strokeStyle='#fbbf24'; ctx.lineWidth=1.2*dpr; ctx.beginPath(); ctx.arc(X(x.x),Y(x.z),0.16*ui.scale,0,2*Math.PI); if(x.conf>=settings.acceptConf)ctx.fill(); ctx.stroke(); }
+  ctx.globalAlpha=1;
   // drones: path, vector to slot, sight line, body
   for(const d of team.drones){ const c=COL[d.id];
     if(d.path&&d.path.length&&d.y>0.3){ ctx.strokeStyle=c+'55'; ctx.lineWidth=1*dpr; ctx.beginPath(); ctx.moveTo(X(d.x),Y(d.z)); for(const p of d.path)ctx.lineTo(X(p.x),Y(p.z)); ctx.stroke(); }
     if(d.slot&&hyp(d.slot.x-d.x,d.slot.z-d.z)>0.15){ ctx.strokeStyle='rgba(251,191,36,0.75)'; ctx.setLineDash([3*dpr,3*dpr]); ctx.lineWidth=1.2*dpr; ctx.beginPath(); ctx.moveTo(X(d.x),Y(d.z)); ctx.lineTo(X(d.slot.x),Y(d.slot.z)); ctx.stroke(); ctx.setLineDash([]);
       ctx.strokeStyle=c; ctx.strokeRect(X(d.slot.x)-4*dpr,Y(d.slot.z)-4*dpr,8*dpr,8*dpr); }
-    if(d.sees&&person.alive){ ctx.strokeStyle=c+'aa'; ctx.lineWidth=1*dpr; ctx.beginPath(); ctx.moveTo(X(d.x),Y(d.z)); ctx.lineTo(X(person.x),Y(person.z)); ctx.stroke(); }
+    for(const x of team.dets||[])if(x.drone===d.id&&x.conf>=settings.acceptConf){ ctx.strokeStyle=c+'aa'; ctx.lineWidth=1*dpr; ctx.beginPath(); ctx.moveTo(X(d.x),Y(d.z)); ctx.lineTo(X(x.x),Y(x.z)); ctx.stroke(); }
     ctx.fillStyle=d.y<0.3?c+'66':c; ctx.beginPath(); ctx.arc(X(d.x),Y(d.z),0.22*ui.scale,0,2*Math.PI); ctx.fill(); ctx.strokeStyle='#05080e'; ctx.lineWidth=1.5*dpr; ctx.beginPath(); ctx.moveTo(X(d.x),Y(d.z)); ctx.lineTo(X(d.x+Math.sin(d.yaw)*0.3),Y(d.z+Math.cos(d.yaw)*0.3)); ctx.stroke();
     text(d.id+' '+d.y.toFixed(1)+' m',X(d.x),Y(d.z)+0.48*ui.scale,9.5,c); } }
 
@@ -237,6 +250,7 @@ const TAP='class Tap extends AudioWorkletProcessor{process(i){const c=i[0]&&i[0]
 function speechContext(){ const lr=team.lkpRoom; return {sim:'swarm-indoor',goal:mission.goal,version:mission.version,queued:mission.queued?mission.queued.goal:null,
     person:{role:person.role,seen:!!team.seen,known:team.lkpT>=0,room:lr>=0&&lr<plan.rooms.length?plan.rooms[lr].name:(lr===plan.OUT?'outside':null),inside:lr>=0&&lr<plan.rooms.length},
     rooms:plan.rooms.map(q=>q.name),doors:plan.doors.map(d=>({name:d.name,rooms:d.rooms.map(r=>r<plan.rooms.length?plan.rooms[r].name:'outside')})),
+    people:(world.scenario.cast||[]).map(c=>({id:c.tid,role:c.role,sex:c.body.sex,age:c.body.age,aid:c.body.aid,colour:c.look.colour,top:c.look.top,hat:c.look.hat,bag:c.look.bag,mask:c.look.mask,glasses:c.look.glasses})),
     protected:plan.rooms[world.scenario.protectedRoom].name,sim_t:+simT.toFixed(2)}; }
 function speechUI(){ const s=speech.state; $('#speechstat').textContent=s==='ready'?'· ready · offline '+speech.model:s==='listening'?'· listening…':s==='thinking'?'· recognizing…':s==='connecting'?'· connecting…':'· speech server off (run python main.py indoor --voice)'; $('#talkbtn').classList.toggle('rec',s==='listening'); }
 function speechConnect(){ if(speech.ws&&speech.ws.readyState<=1)return; let ws; try{ ws=new WebSocket(speech.url); }catch(err){ speech.state='offline'; speechUI(); return; }
@@ -285,7 +299,7 @@ $('#ordersend').addEventListener('click',sendTyped); $('#ordertxt').addEventList
 // ---------- buttons and clicks ----------
 for(const b of $('#goalseg').children)b.addEventListener('click',()=>{ world.setGoal(b.dataset.goal,{}); highlightGoal(b.dataset.goal); });
 const seg=(id,key,fn)=>{ for(const b of $(id).children)b.addEventListener('click',()=>{ for(const o of $(id).children)o.classList.toggle('on',o===b); fn(b.dataset[key]); }); };
-seg('#whoseg','who',v=>{ ui.who=v; resetWorld(); }); seg('#layseg','lay',v=>{ ui.layout=v; resetWorld(); }); seg('#speed','s',v=>{ ui.speed=+v; });
+seg('#whoseg','who',v=>{ ui.who=v; resetWorld(); }); seg('#layseg','lay',v=>{ ui.layout=v; resetWorld(); }); $('#famsel').addEventListener('change',e=>{ ui.family=e.target.value; resetWorld(); }); seg('#speed','s',v=>{ ui.speed=+v; });
 function togglePlay(){ ui.running=!ui.running; $('#play').textContent=ui.running?'Pause':'Play'; $('#play').classList.toggle('on',!ui.running); }
 $('#play').addEventListener('click',togglePlay); $('#reset').addEventListener('click',resetWorld);
 cv.addEventListener('click',e=>{ if(!person.alive)return; const r=cv.getBoundingClientRect(), dpr=window.devicePixelRatio||1; const x=((e.clientX-r.left)*dpr-ui.ox)/ui.scale, z=((e.clientY-r.top)*dpr-ui.oy)/ui.scale;

@@ -40,6 +40,7 @@ The scripted "teacher" turns a goal plus what the drones currently see into a ta
   - Drones never advance on the person.
   - Two doors: one drone each; M doubles up wherever he comes within 4 m.
   - **As built:** once he is in sight within 9 m (walking) of D*, all three drones *block*: they mass across his approach 1.6 m before the door, 1.1 m apart. One drone alone is easy to walk past, and every drone must give way at the standoff, so only massing can deter him.
+  - **As built (13 November):** in a small protected room (under 40 m², such as a bedroom or a site office), block slots that would retreat inside the room ahead of him flank the door outside instead. A drone that backs into a small room ahead of an intruder is shut in with him once he is through. In one warehouse episode such a drone was cornered: it climbed to 4.4 m, but he stood 1.19 m from it (horizontally) for 3 s.
   - **As built:** once he is in sight and within 4 m (walking) of a door of the protected room, keep out uses the pressure band (1.5 m); before that, the comfort band.
   - **As built:** while he is unseen, the cameras watch his last known position (a door sensor counts), not straight out of the door. Before this fix, an intruder walking down the corridor was often never seen.
 - **Done when:**
@@ -59,6 +60,7 @@ The scripted "teacher" turns a goal plus what the drones currently see into a ta
   - **Ethics flag:** approaches from behind are the least comfortable for people [17], and the pressure band brings drones to 1.5 m. This is deliberate (Dan, 12 November 2026) and stays flagged for review.
 - **Done when:** he is at least 1 m past the exit door, then hold. Failed after 90 s.
 - **As built:** the exit choice sticks unless another exit is at least 5 m closer for him, so the push does not flip between exits.
+- **As built (13 November):** the exit is the nearest for him on foot, but one where our drones stand between him and the door (within 3 m of it, nearer to it than he is) counts as 12 m further per drone. He would have to pass them, and in a corridor they cannot get behind him. Without this, two drones at a house's front door left an intruder who wanted to leave stuck 1.15 m from them for two minutes. Over 40 controlled office runs, drive out let in 19 intruders, against 21 before.
 - **Swarm Mind fix:** its current `driveout` reuses the keep-out formula. Our branch replaces it with this push.
 
 ### Guide out (civil default: evacuation, a lost visitor)
@@ -90,8 +92,8 @@ The scripted "teacher" turns a goal plus what the drones currently see into a ta
 - **Doctrine:** *contain* (stop, hold or surround) [2].
 - **Grounding:** cyclic-pursuit encirclement, which leaves the drones at equal angles [12][13].
 - **Geometry:**
-  - Rooms at least 7 m across: a ring of radius 3 m at 120° spacing, rotated to fit the walls.
-  - Smaller rooms: one drone just outside each door of his room, with M at the busiest door.
+  - Where he stands in a room at least 7 m across: a ring of radius 3 m at 120° spacing, rotated to fit the walls. In an L-shaped room the part he stands in must be 7 m across.
+  - Smaller rooms: one drone just outside each door of his room, with M at the busiest door. Spare drones flank the busiest door 1 m out and 1.5 m to either side, along the corridor or hallway rather than across it.
 - **Done when:** every drone has held its slot for 3 s. If he is lost: search. **As built:** a standing goal; the 3 s check is not implemented yet.
 
 ### Search
@@ -104,7 +106,7 @@ The scripted "teacher" turns a goal plus what the drones currently see into a ta
   - Search depth follows INSARAG levels: "quick look" = level 2, "search the building" = level 3, "search thoroughly" = level 5.
   - Each room keeps an X-mark record with status unsearched / entered / cleared.
   - M guards the hub vantage that sees the most doors between cleared and uncleared rooms.
-  - S1 and S2 each take the nearest uncleared room in the belief set, visit 1–2 viewpoints and spin 360°.
+  - S1 and S2 each take the nearest uncleared room in the belief set, visit its viewpoints and spin 360° at each. Viewpoints are one per ~6 m: along the long axis of a narrow room, or a grid walked as a snake over a wide one (a warehouse hall, an open-plan floor). Each rectangle of an L-shaped room gets its own.
   - A room reopens if an unwatched door links it to uncleared space.
 - **Done when:** he is found, or every room is cleared to the level's coverage (95% at level 5).
 
@@ -173,14 +175,48 @@ No public study shows how an *unwilling* person reacts to drones; all the eviden
   - k_fear: log-uniform 0.5–3.
   - k_flank: 0–1.
   - T_resolve: 10–60 s (patience before giving up).
+- **Leaving:**
+  - An intruder heads for the nearest exit on foot, avoiding one with drones hovering at it (each counts as 12 m more walking), and chooses again after 3 s blocked.
+  - A lost visitor being guided goes where the drones are. When the guide hovers at an exit close to her, she takes it as the way out and leaves by it.
+  - Before this, she waited 3 m from a guide that could not pass her to reach the door: guide out got 3 of 12 controlled visitors out instead of 8; now 10 (added 13 November).
+- **Bodies, speeds and movement (13 November):** each person has an age, sex, height, width and possibly a mobility aid. Speeds come from gait data (walking) or our assumption (running and sprinting, up to 6.4 m/s). Movement includes stop-and-go pauses, hesitation at doors, doubling back, dodging, sprint bursts, wall-hugging and crawling hiders. Sources are in `docs/DATASET_PLAN.md`, "Diverse people".
+- **What the teacher assumes:**
+  - The person may run at 4.5 m/s.
+  - The estimate may be up to 1 m off: detector noise, odometry drift and radio delay. Every room within 1 m of the estimate stays in the belief.
+  - A drone cannot outrun a sprinter, so episodes where a person runs past a retreating drone are counted apart from the drone's own floor breaches.
+- **Other people:** they walk between rooms, pause and sit, keep about 2.5 m from drones, and wait while one hovers ahead of them. After 3 s of waiting, or of getting nowhere, they pick somewhere else to go. Before that rule, a visitor pressed against a wall and a drone wedged in by four people stood 1.19 m apart for 92 s. A walker's recorded velocity is the motion it makes, so one pressed against a wall counts as standing. Their movement draws from its own stream, so it cannot carry information about the hidden subject.
 - **Margin:** a metric-only field records whether a formation could stop him at all, so impossible cases are not counted as teacher errors.
 - **Review:** these tactics are grounded but not validated by a practitioner. A review by a search-and-rescue, police or security professional is planned.
 
 ## As built in `simulators/swarm-indoor`, and how well it works (12 November 2026)
 
+**Floor families (13 November).** Every template runs on eight single-level floor families: office, house or apartment, warehouse, open-plan office, school or hospital, shop, single room, and irregular floors with L-shaped rooms (`docs/DATASET_PLAN.md`, "Layout families"). The outcome numbers below are for the fixed office floor. `indoor.test.js` runs every order on every family and checks safety on true positions.
+
+**Everyone, not only the subject (13 November).** Episodes now hold several people (`docs/DATASET_PLAN.md`, "Diverse people"):
+- The safety layer below keeps clear of every person in sight. The pressure band applies only to the subject; everyone else gets the comfort band.
+- The validator keeps every slot at the comfort standoff from every other person the team has placed. Each round runs, in order:
+  1. clearance from other people;
+  2. separation;
+  3. the rotation around the subject;
+  4. the subject's standoff, last.
+
+  In a cramped corner where five rounds still leave two slots under 1 m apart, one of them moves to the nearest point that keeps every rule (1 m from the others, the subject's standoff, and if possible the comfort standoff from everyone else). The label flags it `cramped`. In the 1,200-episode run it fired at 796 of 198,207 ticks (0.4%), in 88 episodes.
+- A drone counts a person as in sight if a line reaches their torso or their legs. With the torso alone, a drone that had climbed lost sight of a visitor behind a door lintel and closed to 1.18 m (one episode in 1,200).
+- The no-approach rule also holds anyone the drone saw in the last 10 s who is still within 4.5 m but out of sight, as an onboard tracker keeps a person who stepped behind a shelf or a door jamb. Without it:
+  - a drone drifted toward someone standing 1.5 m away in the ticks they flickered out of sight;
+  - a drone boxed in above head height fled over a shelf onto a visitor it had lost 2 s earlier.
+
+  Backing away still uses sight alone: holding hidden people there as well cut track's time in view from 42% to 34%.
+- Removing the motion toward one person can add motion toward another, so the no-approach clamp repeats until no motion points at anyone inside their limit. It treats a neighbour within 0.9 m the same way: the people pass once undid the neighbour pass, and two drones holding near people closed to 0.59 m.
+- Sliding along a wall never turns into an approach to a person or a neighbour: the drone stops instead.
+- An escape direction must be open along the way (at 0.1, 0.2 and 0.35 m), not only at its end. It must also not close on anyone else inside their limit, whether people in sight or remembered, or a neighbour within 0.9 m; the clamp would cancel that motion. With no such direction, the drone is pinned. A drone beside the end of a wall once chose a direction whose end point lay past a blocked cell, could not take its first step, and hovered 1.15 m from a bystander for 98 s.
+- A drone someone is closing in on, that cannot back away (between two people, or pinned), climbs above head height.
+- **Whose doing floor time is:** the drone's when it moves toward the person, or when both are still while it could have backed away. It is the person's when they walk or run in while the drone is not moving toward them, or when they walk up to a drone pinned by walls and people on every side (it cannot get there itself, since it never moves toward anyone inside their limit). Example: a member of staff heading for a doorway walked up to a drone parked in the corner beside it.
+
 **On-board safety layer.** The teacher only places slots. Each drone's flight layer also enforces the envelope:
 - **Person in sight:** it backs away whenever the person is within its band's standoff + 0.3 m (1.8 m pressure, 2.8 m comfort), plus 0.6 s × his closing speed, and sidesteps out of his path. Near a person it may fly at up to 2.5 m/s to get clear. If a wall or corner is behind it, it takes the free direction that best opens the distance; if it is boxed in, it climbs to 2.5 m, above reach, until clear. The band travels with each radio vector; a follower whose link is older than 1 s falls back to comfort.
 - **Walls and neighbours:** wall repulsion; separation has priority, so a drone never closes on a neighbour within 0.9 m.
+- **Never toward a person inside the band's limit:** whatever else pushes a drone (a wall it is pinned against, a neighbour), its velocity toward a person in sight is capped at 0.5 m/s, and at zero within the band's limit + 0.3 m (1.5 m pressure, 2.3 m comfort). Before this, wall repulsion carried a pinned drone toward a person running past for 0.55 s in one episode.
 - **Doorways:** one drone per doorway at a time; a drone reroutes after 2 s if a doorway is occupied by a parked drone. A doorway also stays closed to a drone while a person stands within its band's standoff + 0.3 m on the far side, where the door frame can hide him from the camera.
 - **Paths:** in the comfort band, while a drone sees the person, paths keep out of a disc of the standoff − 0.3 m around him. Not around a stale estimate, which would block the corner a tracker must pass to find him again.
 - **Take-off:** no take-off while a person is within 2.5 m.
@@ -202,6 +238,19 @@ No public study shows how an *unwilling* person reacts to drones; all the eviden
 | Drive out, 40 intruders | 23 breached; 12 of 20 deterrable kept out | 39 breached |
 | Keep out on random floors, 16 intruders for each of 5 protected rooms | 47 of 80 breached (storage 4 of 16, kitchen and meeting room 12 of 16) | 74 of 80 breached |
 | Safety (all of the above) | never within the 1.2 m floor (closest in the pressure band: 1.34 m); no separation, wall or altitude violations; no drone moved toward a person inside its band's limit for more than 0.5 s | — |
+
+**With simulated perception (13 November 2026).** The teacher now acts only on simulated detections: misses, position noise, confidence and rare false positives (`docs/DATASET_PLAN.md`, "Inputs"). Same seeds and the same order kept from 1 s, on the office floor:
+
+| Goal | Before | With perception |
+|---|---|---|
+| Keep out, 40 intruders | 27 breached | 22 breached |
+| Drive out, 40 intruders | 22 breached | 22 breached |
+| Search, 12 hiders | 10 found | 11 found |
+| Track, 12 intruders | in view 47% | in view 49% |
+| Guide out, 12 visitors | 6 outside | 8 outside |
+
+- **Controlled runs:** none got worse beyond run-to-run noise. Short misses barely matter, because the estimate is held for 4 s and the tactics already work from estimates.
+- **The mixed dataset:** perception does cost something there. Searches that started the episode found 59% of hiders, down from 68%. 4 of the 600 episodes had a search end on a false positive. The person was in sight 33% of the time, down from 37%. "In view" now counts only confident true detections, so it is not directly comparable to the old geometric number.
 
 **What this does and does not show:**
 - **Keep out and drive out mostly measure our person model.** A drone that must give way cannot physically stop anyone, so success depends on whether he is put off. The pressure band helps drive out most: 23 of 40 breached, down from 25 with a single 2.5 m standoff. With the parameter ranges above, most people are not put off even by all three drones at 3 m. The plan's target was keep-out breaches 30 points below the baseline. On 40 seeds keep out now reaches 32 points (26 against 39 breached), but it stops 11 of 20 deterrable intruders and only 3 of the other 20, so results are reported split by "deterrable". If practitioners say real intruders are more easily deterred, the ranges should change, not the tactic.

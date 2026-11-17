@@ -234,16 +234,27 @@ INDOOR_GOALS = {
 }
 INDOOR_OPTIONS = ("keep him out of a room, drive him out, guide them out, track him, contain him, search the building, "
                   "map the floor, watch a door, hold, or come back and land")
+# spoken words -> the floor names they can mean, in order; the first that exists on this floor wins ("hall" is the corridor
+# in the office, the hallway in a house, and itself on a floor with a room called "hall", since exact names are tried first)
 ROOM_SYNONYMS = {
-    "laboratory": "lab", "storeroom": "storage", "store room": "storage", "storage room": "storage", "stock room": "storage",
-    "hallway": "corridor", "hall": "corridor", "passage": "corridor", "conference room": "meeting room",
-    "boardroom": "meeting room", "reception": "lobby", "foyer": "lobby", "entrance hall": "lobby", "break room": "kitchen",
-    "canteen": "kitchen",
+    "laboratory": ("lab",), "storeroom": ("storage", "storeroom"), "store room": ("storage", "storeroom", "store"),
+    "storage room": ("storage", "storeroom"), "stock room": ("storage", "storeroom"), "stockroom": ("storage", "storeroom"),
+    "hallway": ("corridor", "hallway"), "hall": ("corridor", "hallway"), "passage": ("corridor", "hallway"),
+    "conference room": ("meeting room",), "boardroom": ("meeting room",), "reception": ("lobby", "reception"),
+    "foyer": ("lobby", "reception"), "entrance hall": ("lobby", "reception"), "break room": ("kitchen", "break room"),
+    "canteen": ("kitchen", "break room"), "lounge": ("living room",), "sitting room": ("living room",),
+    "open plan area": ("open office",), "open plan office": ("open office",), "shop floor": ("sales floor",),
+    "staffroom": ("staff room",), "nurse station": ("nurses station",), "warehouse floor": ("warehouse",),
 }
 DOOR_SYNONYMS = {
-    "front door": "main entrance", "main door": "main entrance", "front entrance": "main entrance", "entrance": "main entrance",
-    "emergency exit": "fire exit", "east door": "east exit", "back door": "fire exit",
+    "front door": ("main entrance", "front door", "front entrance", "main door"), "main door": ("main entrance", "main door", "front door", "front entrance"),
+    "front entrance": ("main entrance", "front entrance", "front door", "main door"), "entrance": ("main entrance", "front entrance", "front door", "main door"),
+    "emergency exit": ("fire exit",), "east door": ("east exit",), "west door": ("west exit",), "back door": ("fire exit", "back door", "back exit"),
+    "loading dock": ("loading dock door",), "dock door": ("loading dock door",), "side door": ("side exit", "side door"),
 }
+# numbered rooms ("classroom 3", "bedroom 2") may be said with the number as a word
+NUM_WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve", "thirteen",
+             "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen", "twenty"]
 PERSON_IN = r"(?:him|her|them|it|the intruder|the person|the guy|that guy|the man|the woman|the visitor|the guest)"
 I_KEEP_OUT = [
     re.compile(r"\bkeep\b.*\b(out|away)\b"), re.compile(r"\bblock\b"), re.compile(r"\b(guard|protect|defend|secure)\b"),
@@ -289,16 +300,28 @@ def _names(ctx):
     return rooms, doors
 
 
-def _find_name(c, names, synonyms):
-    """Longest floor name (or synonym) mentioned in the clause."""
-    best = None
+def spoken_variants(name):
+    """A floor name as it may be said: "classroom 3" is also "classroom three"."""
+    m = re.match(r"^(.*\D) (\d+)$", name)
+    if m and int(m.group(2)) < len(NUM_WORDS):
+        return [name, m.group(1) + " " + NUM_WORDS[int(m.group(2))]]
+    return [name]
+
+
+def find_name(c, names, synonyms):
+    """Longest floor name (or a spoken variant, or a synonym) mentioned in the clause -> (name, the words that matched)."""
     for n in sorted(names, key=len, reverse=True):
-        if re.search(r"\b" + re.escape(n) + r"(?: room)?\b", c):
-            return n
-    for syn, n in sorted(synonyms.items(), key=lambda kv: -len(kv[0])):
-        if n in names and re.search(r"\b" + re.escape(syn) + r"\b", c):
-            best = best or n
-    return best
+        for v in spoken_variants(n):
+            m = re.search(r"\b" + re.escape(v) + r"(?: room)?\b", c)
+            if m:
+                return n, m.group(0)
+    for syn, targets in sorted(synonyms.items(), key=lambda kv: -len(kv[0])):
+        m = re.search(r"\b" + re.escape(syn) + r"\b", c)
+        if m:
+            for t in targets:
+                if t in names:
+                    return t, m.group(0)
+    return None, None
 
 
 def _door_rooms(ctx, door):
@@ -310,14 +333,12 @@ def _door_rooms(ctx, door):
 
 def _slots(c, ctx):
     rooms, doors = _names(ctx)
-    door = _find_name(c, doors, DOOR_SYNONYMS)
-    if door and re.search(r"\b" + re.escape(door) + r"\b", c) is None and door not in DOOR_SYNONYMS.values():
-        door = None
+    door, said = find_name(c, doors, DOOR_SYNONYMS)
     # a room name inside a door name ("lab door") is the door, not the room
-    c_wo_door = re.sub(r"\b" + re.escape(door) + r"\b", " ", c) if door else c
-    for syn, n in DOOR_SYNONYMS.items():
+    c_wo_door = re.sub(r"\b" + re.escape(said) + r"\b", " ", c) if door else c
+    for syn in DOOR_SYNONYMS:
         c_wo_door = re.sub(r"\b" + re.escape(syn) + r"\b", " ", c_wo_door)
-    room = _find_name(c_wo_door, rooms, ROOM_SYNONYMS)
+    room, _ = find_name(c_wo_door, rooms, ROOM_SYNONYMS)
     if re.search(r"\b(this room|in here|this one)\b", c):
         room = room or "this room"
     exits = [d["name"] for d in ctx.get("doors") or [] if isinstance(d, dict) and "outside" in (d.get("rooms") or [])]
@@ -325,7 +346,99 @@ def _slots(c, ctx):
     return room, door, exit_
 
 
+# People on the floor (ctx["people"]: id, sex, age, aid, colour, top, hat, bag, mask, glasses) can be described in an order:
+# "the man in the red coat", "the person in the wheelchair", "the older woman with the cane". A description that fits exactly one
+# person adds params["person"] (that person's track); one that fits several, or nobody, makes the order a question. A pronoun
+# ("him", "that guy", "the intruder") means the person already in question.
+PERSON_NOUNS = {"man": ("m", "adult"), "gentleman": ("m", "adult"), "guy": ("m", None), "woman": ("f", "adult"), "lady": ("f", "adult"),
+                "boy": ("m", "young"), "girl": ("f", "young"), "kid": (None, "young"), "child": (None, "young"), "person": (None, None), "one": (None, None)}
+AGE_ADJ = {"older": "older", "old": "older", "elderly": "older", "young": "young"}
+PERSON_COLOURS = ("red", "blue", "green", "black", "white", "grey", "gray", "yellow", "brown")
+PERSON_TOPS = {"hi-vis vest": "hi-vis vest", "staff shirt": "staff shirt", "t-shirt": "shirt", "jacket": "jacket", "hoodie": "hoodie", "shirt": "shirt",
+               "coat": "coat", "sweater": "sweater", "jumper": "sweater", "vest": "hi-vis vest", "uniform": "uniform", "scrubs": "uniform"}
+PERSON_AIDS = {"walking stick": "cane", "wheelchair": "wheelchair", "cane": "cane", "stick": "cane", "pushchair": "pushchair", "stroller": "pushchair",
+               "buggy": "pushchair", "pram": "pushchair"}
+PERSON_ACCS = {"hat": "hat", "cap": "hat", "backpack": "bag", "rucksack": "bag", "bag": "bag", "mask": "mask", "glasses": "glasses"}
+_PERSON_ITEM = "|".join(sorted((re.escape(k) for k in list(PERSON_TOPS) + list(PERSON_AIDS) + list(PERSON_ACCS)), key=len, reverse=True))
+PERSON_DESC = re.compile(r"\b(?:the|that|this|a)\s+(?:(older|old|elderly|young)\s+)?(man|gentleman|guy|woman|lady|boy|girl|kid|child|person|one)\b"
+                         r"((?:\s+(?:in|wearing|with|carrying|pushing|using)\s+(?:the\s+|a\s+|an\s+)?(?:(?:" + "|".join(PERSON_COLOURS) + r")\s+)?(?:" + _PERSON_ITEM + r")\b)*)")
+
+
+def person_desc(c):
+    """The first described person in a clause -> ((start, end), attributes), or (None, None) for no description or a plain pronoun."""
+    m = PERSON_DESC.search(c)
+    if not m:
+        return None, None
+    adj, noun, tail = m.group(1), m.group(2), m.group(3) or ""
+    sex, age = PERSON_NOUNS[noun]
+    a = {}
+    if sex:
+        a["sex"] = sex
+    if adj:
+        age = AGE_ADJ[adj]
+    if age:
+        a["age"] = age
+    for col in PERSON_COLOURS:
+        if re.search(r"\b" + col + r"\b", tail):
+            a["colour"] = "grey" if col == "gray" else col
+    for table, key in ((PERSON_TOPS, "top"), (PERSON_AIDS, "aid"), (PERSON_ACCS, "acc")):
+        for k in sorted(table, key=len, reverse=True):
+            if re.search(r"\b" + re.escape(k) + r"\b", tail):
+                a[key] = table[k]
+                break
+    if noun in ("guy", "person", "one") and not any(k in a for k in ("colour", "top", "aid", "acc", "age")):
+        return None, None  # "that guy", "the person": a pronoun
+    return m.span(), a
+
+
+def person_fits(a, p):
+    """Does person p (ctx["people"] entry) fit description a?"""
+    group = "young" if p.get("age", 30) < 18 else "older" if p.get("age", 30) >= 65 else "adult"
+    if "sex" in a and p.get("sex") != a["sex"]:
+        return False
+    if "age" in a and (group != a["age"] if a["age"] != "adult" else group == "young"):
+        return False
+    if "colour" in a and p.get("colour") != a["colour"]:
+        return False
+    if "top" in a and p.get("top") != a["top"]:
+        return False
+    if "aid" in a and p.get("aid") != a["aid"]:
+        return False
+    if "acc" in a and not p.get(a["acc"]):
+        return False
+    return True
+
+
+def resolve_person(c, ctx):
+    """A clause -> (clause with the description read as "him", person id or None, question or None)."""
+    span, a = person_desc(c)
+    if not span:
+        return c, None, None
+    c2 = c[:span[0]] + "him" + c[span[1]:]
+    people = ctx.get("people") or []
+    if len(people) < 2:
+        return c2, None, None  # alone in the building: any description is him
+    fits = [p for p in people if person_fits(a, p)]
+    if len(fits) == 1:
+        return c2, fits[0]["id"], None
+    return c2, None, "which person" if fits else "no such person"
+
+
+PERSON_GOALS = ("keepout", "driveout", "guideout", "track", "contain", "search")
+
+
 def _indoor_clause(clause, ctx):
+    """One clause -> (kind, goal, params, extra), with any described person resolved first."""
+    c2, who, why = resolve_person(clause.lower(), ctx)  # on the raw clause: its commas still tell urgency from depth ("quick, look")
+    if why:
+        return ("query", None, {}, {"why": why})
+    kind, goal, params, extra = _indoor_clause_core(c2, ctx)
+    if who is not None and kind == "goal" and goal in PERSON_GOALS:
+        params = dict(params, person=who)
+    return (kind, goal, params, extra)
+
+
+def _indoor_clause_core(clause, ctx):
     """One clause -> (kind, goal, params, extra). kind: goal | query | ignore | next | refuse-turn."""
     c = _strip(clause)
     if not c:
@@ -425,9 +538,11 @@ def interpret_indoor(text, ctx):
     if first[0] == "query":
         why = first[3].get("why")
         reply = {"negation": "Say what to do instead: " + INDOOR_OPTIONS + "?",
-                 "turn": "Indoors the drones take goals, not formation turns: " + INDOOR_OPTIONS + "."}.get(
+                 "turn": "Indoors the drones take goals, not formation turns: " + INDOOR_OPTIONS + ".",
+                 "which person": "Which person? Several people fit that. Say what they are wearing, or where they are.",
+                 "no such person": "I don't see anyone who fits that. Who do you mean?"}.get(
             why, "Say again? I can " + INDOOR_OPTIONS + ".")
-        return dict(base, action="query", reply=reply)
+        return dict(base, action="query", reply=reply, why=why)
     goal, params, extra = first[1], {k: v for k, v in first[2].items() if v is not None}, first[3]
     person = ctx.get("person") or {}
     where = person.get("room")
