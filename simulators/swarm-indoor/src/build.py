@@ -140,7 +140,8 @@ HEAD = r'''<!DOCTYPE html>
     <section><h3>Rooms (search record)</h3><div id="rooms" class="log"></div></section>
     <section><h3>About</h3>
       <details><summary>What you are looking at</summary>
-        <p>A floor seen from above. Rooms, 0.2 m walls, doors under a 2.0 m lintel, tables (0.8 m) and shelves (2.2 m). The coloured cones show what each drone camera can see at its height: walls, shelves and door lintels block it.</p>
+        <p>A floor seen from above. Rooms, 0.2 m walls, doors under a 2.0 m lintel, tables (0.8 m) and shelves (2.2 m). The coloured cones show what each drone camera can see at its height: walls, shelves, door lintels and door leaves block it.</p>
+        <p>Doors swing on hinges. A white leaf is shut or half open, which no drone can fly through; grey is open; red is locked. People open doors on their way and sometimes close them behind them; drones never touch a door. A dashed cyan leaf is where the drones last saw it, when that differs. A drone whose way is shut waits beside the door, clear of its swing, and the master tells the operator.</p>
         <p>The drones do not know where the person is: each camera runs a detector (10 Hz) that misses more with distance, toward the edge of the view and when he is partly hidden, adds position noise and confidence, and now and then reports something that is not there. Amber dots are detections (filled ones count); the faint cyan wash is the map the drones have scanned so far.</p>
         <p>Every 0.5 s the master (M) picks a tactic template for the current order and sends each follower a vector over a lossy radio. Yellow dashed lines are those vectors; squares are the slots. Amber rooms are where the person could be, green rooms were cleared since he was last seen.</p>
         <p>Safety rules run on board: never closer than 1.2 m to a person; 1.5 m in pressure tactics (drive out, keep out at the door) and 2.5 m otherwise (the dashed ring); 1 m between drones, 0.4 m from walls, one drone per doorway, slow in doors. The person model and the tactics are explained in docs/TACTICS.md; the training records in docs/DATASET_PLAN.md.</p></details></section>
@@ -169,7 +170,8 @@ function resetWorld(){ seed(ui.seed); world.reset({family:ui.family,layout:ui.la
 
 // ---------- drawing ----------
 function buildFloor(){ const c=document.createElement('canvas'); c.width=GX; c.height=GZ; const g=c.getContext('2d'), im=g.createImageData(GX,GZ), a=im.data;
-  for(let j=0;j<GZ;j++)for(let i=0;i<GX;i++){ const k=j*GX+i, h=Hg[k], r=ROOMC[k], o=4*k; let col;
+  const H0=DOORS.length?HgBase:Hg; // the floor plan without door leaves: those are drawn every frame
+  for(let j=0;j<GZ;j++)for(let i=0;i<GX;i++){ const k=j*GX+i, h=H0[k], r=ROOMC[k], o=4*k; let col;
     if(DOORC[k])col=[30,44,60]; else if(r===plan.OUT)col=[7,11,18]; else if(r<0)col=[70,82,100]; else if(h>=1.0)col=[78,90,110]; else if(h>0.3)col=[44,54,72]; else col=[15,22,33];
     a[o]=col[0]; a[o+1]=col[1]; a[o+2]=col[2]; a[o+3]=255; }
   g.putImageData(im,0,0); return c; }
@@ -197,6 +199,12 @@ function render(){ fit(); const dpr=window.devicePixelRatio||1; ctx.setTransform
   for(const q of plan.rooms){ const br=q.rects.find(r=>q.cx>=r.x0&&q.cx<=r.x1&&q.cz>=r.z0&&q.cz<=r.z1)||q.rects[0]; text(q.name+(q.id===P&&person.role==='intruder'?' · protected':''),X(q.cx),Y(br.z0)+12*dpr,10.5,'rgba(200,210,225,0.55)'); }
   for(const d of plan.doors){ const owner=doorLock[d.id]; if(owner!=null){ const c=COL[team.drones[owner].id]; ctx.fillStyle=c+'33'; const w=d.w+0.4; if(d.axis==='h')ctx.fillRect(X(d.x-w/2),Y(d.z-0.5),w*ui.scale,1.0*ui.scale); else ctx.fillRect(X(d.x-0.5),Y(d.z-w/2),1.0*ui.scale,w*ui.scale); }
     if(d.rooms[1]===plan.OUT)text(d.name,X(d.x)+(d.axis==='v'?0:0),Y(d.z)+(d.axis==='h'?(d.z>plan.D/2?14:-14):0)*dpr,9.5,'rgba(52,211,153,0.75)'); }
+  // door leaves as they are: red locked, white shut or half open (no drone gets through), grey open; dashed cyan where the drones
+  // last saw a leaf, when that is 10 deg or more off
+  ctx.lineCap='round'; for(const D of DOORS){ ctx.strokeStyle=D.locked?'rgba(251,113,133,0.95)':D.a<settings.doorPassDeg?'rgba(226,232,240,0.95)':'rgba(148,163,184,0.65)'; ctx.lineWidth=3*dpr;
+    for(const s of leafSegs(D,D.a)){ ctx.beginPath(); ctx.moveTo(X(s.ax),Y(s.az)); ctx.lineTo(X(s.bx),Y(s.bz)); ctx.stroke(); }
+    const b=doorBelief(D); if(Math.abs(b-D.a)>=10){ ctx.setLineDash([3*dpr,3*dpr]); ctx.strokeStyle='rgba(103,232,249,0.75)'; ctx.lineWidth=1.5*dpr; for(const s of leafSegs(D,b)){ ctx.beginPath(); ctx.moveTo(X(s.ax),Y(s.az)); ctx.lineTo(X(s.bx),Y(s.bz)); ctx.stroke(); } ctx.setLineDash([]); } }
+  ctx.lineCap='butt';
   for(const p of plan.pads){ ctx.strokeStyle='rgba(255,255,255,0.25)'; ctx.lineWidth=1*dpr; ctx.strokeRect(X(p.x-0.3),Y(p.z-0.3),0.6*ui.scale,0.6*ui.scale); }
   text('operator',X(plan.operator.x),Y(plan.operator.z)+10*dpr,9,'rgba(103,232,249,0.6)');
   // cameras: what each drone can see at its height (walls, shelves and door lintels block it)

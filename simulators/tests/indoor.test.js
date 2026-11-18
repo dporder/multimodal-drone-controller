@@ -31,7 +31,8 @@ const SCEN = {
 // The outcome bands below are regression floors for the teacher's logic, set with exact perception and identical people
 // (CONTROLLED). Tests that pass their own reset settings ({} for the defaults) run with perception realism and diverse people.
 // identical people run at 2 m/s, so the teacher's belief assumes 2 m/s here (4.5 m/s with diverse people, who may sprint)
-const CONTROLLED = { realism: false, people: 'uniform', crowd: 0, beliefSpeed: 2.0 };
+// doors off as well: the bands measure the teacher on the doorless floor they were set on (doors have their own tests below)
+const CONTROLLED = { realism: false, people: 'uniform', crowd: 0, beliefSpeed: 2.0, doors: 'none' };
 const REAL = {};
 // one episode: order `goal` at 1 s; returns plan records and metrics
 function episode(sd, goal, who, opts) {
@@ -56,7 +57,7 @@ const test = (name, fn) => tests.push({ name, fn });
 
 test('fixed and random floors: every room reachable on foot and by air', () => {
   for (const sd of [0, ...Array.from({ length: 25 }, (_, k) => k + 1)]) {
-    S.seed(sd); S.world.reset({ layout: sd === 0 ? 'fixed' : 'random' });
+    S.seed(sd); S.world.reset({ layout: sd === 0 ? 'fixed' : 'random', settings: { doors: 'none' } }); // the floor itself: locked doors are a door test
     const P = S.getPlan(), G = S.grids(), NAV = 0.2;
     const reach = (grid, x, z) => { const seen = new Uint8Array(grid.length), st = [S.navIdx(x, z)]; seen[st[0]] = 1; const rooms = new Set();
       while (st.length) { const k = st.pop(), i = k % G.NX, j = (k - i) / G.NX; rooms.add(S.roomAt((i + 0.5) * NAV, (j + 0.5) * NAV));
@@ -72,7 +73,7 @@ test('fixed and random floors: every room reachable on foot and by air', () => {
 });
 
 test('line of sight: walls and lintels block, doorways and tables do not, shelves block below their top', () => {
-  S.seed(1); S.world.reset({ layout: 'fixed' });
+  S.seed(1); S.world.reset({ layout: 'fixed', settings: { doors: 'none' } });
   const P = S.getPlan(), side = P.doors.find(d => d.name === 'lab side door');
   assert.ok(!S.los(side.x - 1.2, 1.6, side.z - 1.3, side.x + 1.2, 1.3, side.z - 1.3), 'the lab/office wall blocks');
   assert.ok(S.los(side.x - 1.2, 1.6, side.z, side.x + 1.2, 1.3, side.z), 'the open lab side door does not');
@@ -98,12 +99,12 @@ test('belief is sound: while he is unseen, his true room is among the rooms he c
       const { recs } = episode(sd, goal, who, { reset: { settings: REAL } });
       const P = S.getPlan();
       for (const r of recs) {
-        const room = r.truth.person.room;
-        if (r.obs.seen || !r.truth.person.alive || !(room >= 0 && room < P.rooms.length) || !r.obs.belief_rooms.length) continue;
-        if (r.truth.estimate_from_fp) continue; // the belief can only be as good as the sighting it starts from
+        const room = r.ground_truth.person.room;
+        if (r.world_beliefs.person.seen || !r.ground_truth.person.alive || !(room >= 0 && room < P.rooms.length) || !r.world_beliefs.person.possible_rooms.length) continue;
+        if (r.ground_truth.estimate_from_fp) continue; // the belief can only be as good as the sighting it starts from
         checked++;
-        if (!r.obs.belief_rooms.includes(room) && r.obs.cleared.includes(room)) { missedInCleared++; continue; }
-        assert.ok(r.obs.belief_rooms.includes(room), `${goal} seed ${sd} t ${r.t}: he is in the ${P.rooms[room].name}, belief ${r.obs.belief_rooms.map(i => P.rooms[i].name)}`);
+        if (!r.world_beliefs.person.possible_rooms.includes(room) && r.world_beliefs.cleared.includes(room)) { missedInCleared++; continue; }
+        assert.ok(r.world_beliefs.person.possible_rooms.includes(room), `${goal} seed ${sd} t ${r.t}: he is in the ${P.rooms[room].name}, belief ${r.world_beliefs.person.possible_rooms.map(i => P.rooms[i].name)}`);
       }
     }
   }
@@ -112,15 +113,16 @@ test('belief is sound: while he is unseen, his true room is among the rooms he c
 });
 
 test('no leak: where an unseen person hides does not change the labels', () => {
-  const run = start => episode(4, 'search', 'hider', { reset: { person: { role: 'intruder', intent: 'hide', start }, settings: REAL } }).recs;
+  // doors off: what the person does to doors is observable, and doors have their own no-leak test below
+  const run = start => episode(4, 'search', 'hider', { reset: { person: { role: 'intruder', intent: 'hide', start }, settings: { doors: 'none' } } }).recs;
   const a = run('storage'), b = run('meeting room');
   let same = 0;
   for (let k = 0; k < Math.min(a.length, b.length); k++) {
-    if (a[k].obs.seen || b[k].obs.seen || a[k].obs.last_seen_age !== null || b[k].obs.last_seen_age !== null) break;
-    const near = r => r.team.some(d => Math.hypot(d.pos[0] - r.truth.person.pos[0], d.pos[2] - r.truth.person.pos[2]) < 5);
+    if (a[k].world_beliefs.person.seen || b[k].world_beliefs.person.seen || a[k].world_beliefs.person.last_seen_age !== null || b[k].world_beliefs.person.last_seen_age !== null) break;
+    const near = r => r.drone_beliefs.some(d => Math.hypot(d.position[0] - r.ground_truth.person.position[0], d.position[2] - r.ground_truth.person.position[2]) < 5);
     if (near(a[k]) || near(b[k])) break; // close enough for the drones' own proximity sensing to react
-    assert.deepStrictEqual(a[k].label, b[k].label, `labels differ at t ${a[k].t} although the team knows nothing about him`);
-    assert.deepStrictEqual(a[k].obs, b[k].obs);
+    assert.deepStrictEqual(a[k].teacher_plan, b[k].teacher_plan, `labels differ at t ${a[k].t} although the team knows nothing about him`);
+    assert.deepStrictEqual(a[k].world_beliefs, b[k].world_beliefs);
     same++;
   }
   assert.ok(same >= 20, `only ${same} ticks compared`);
@@ -133,17 +135,17 @@ test('every plan record carries the indoor contract fields', () => {
     assert.ok(recs.length >= (goal === 'return' ? 5 : 40), `${goal}: ${recs.length} records in 40 s`); // landed drones get no more plan ticks
     for (const r of recs) {
       assert.ok(r.type === 'plan' && Number.isFinite(r.t) && r.order && Number.isInteger(r.order.version), `${goal}: header fields`);
-      assert.ok(r.team.length === 3 && r.team.every(d => isV(d.pos) && isV(d.vel) && Number.isFinite(d.yaw)), `${goal}: team`);
-      const L = r.label;
+      assert.ok(r.drone_beliefs.length === 3 && r.drone_beliefs.every(d => isV(d.position) && isV(d.velocity) && Number.isFinite(d.yaw)), `${goal}: drone_beliefs`);
+      const L = r.teacher_plan;
       assert.ok(typeof L.template === 'string' && L.slots.every(isV) && L.vectors.every(isV), `${goal}: slots and vectors`);
       assert.ok(L.refs.length === 3 && L.refs.every(d => d.length === 4 && d.every(isV)), `${goal}: timed reference points`);
       assert.ok(L.yaw.length === 3 && L.spin.length === 3 && L.flags.length === 3, `${goal}: yaw, spin, validator flags`);
-      assert.ok(r.obs.p === null || r.obs.seen || r.obs.last_seen_age <= 4.0001, `${goal}: an estimate needs a sighting in the last 4 s`);
-      assert.ok(Array.isArray(r.obs.belief_rooms) && r.truth && isV(r.truth.person.pos) && Number.isFinite(r.truth.margin), `${goal}: belief and truth`);
-      assert.ok(Array.isArray(r.obs.detections) && r.obs.detections.length === r.truth.detections_tp.length, `${goal}: detections and their truth`);
-      const dims = S.coarseDims(); assert.ok(typeof r.obs.map === 'string' && r.obs.map.length === dims.w * dims.h, `${goal}: scanned map`);
-      assert.ok(r.obs.coverage.length === S.getPlan().rooms.length && r.team.every(d => d.cam === null || d.cam.length === 31), `${goal}: coverage and camera rays`);
-      if (r.obs.seen) assert.ok(r.obs.detections.some(x => x.conf >= S.settings.acceptConf) || r.t < 1, `${goal}: "seen" without a confident detection at ${r.t}`);
+      assert.ok(r.world_beliefs.person.position === null || r.world_beliefs.person.seen || r.world_beliefs.person.last_seen_age <= 4.0001, `${goal}: an estimate needs a sighting in the last 4 s`);
+      assert.ok(Array.isArray(r.world_beliefs.person.possible_rooms) && r.ground_truth && isV(r.ground_truth.person.position) && Number.isFinite(r.ground_truth.margin), `${goal}: belief and truth`);
+      assert.ok(Array.isArray(r.world_beliefs.detections) && r.world_beliefs.detections.length === r.ground_truth.detections_tp.length, `${goal}: detections and their truth`);
+      const dims = S.coarseDims(); assert.ok(typeof r.world_beliefs.map === 'string' && r.world_beliefs.map.length === dims.w * dims.h, `${goal}: scanned map`);
+      assert.ok(r.world_beliefs.coverage.length === S.getPlan().rooms.length && r.drone_beliefs.every(d => d.depth_readings === null || d.depth_readings.length === 31), `${goal}: coverage and depth readings`);
+      if (r.world_beliefs.person.seen) assert.ok(r.world_beliefs.detections.some(x => x.conf >= S.settings.acceptConf) || r.t < 1, `${goal}: "seen" without a confident detection at ${r.t}`);
     }
     if (recs.length && r0(recs).order.goal !== 'hold') assert.ok(recs.some(r => r.order.goal === goal), `${goal}: the order was applied`);
   }
@@ -235,11 +237,11 @@ test('safety on true positions: 1.2 m floor always, pressure band >= 1.2 m, comf
 
 test('records name the band; drive out uses pressure and visitors always comfort', () => {
   const d = episode(2, 'driveout', 'intruder', { secs: 60 }).recs, v = episode(2, 'guideout', 'visitor', { secs: 60 }).recs;
-  assert.ok(d.length && d.every(r => r.label.band === 'pressure' || r.order.goal !== 'driveout'), 'drive out ticks are pressure');
-  assert.ok(v.length && v.every(r => r.label.band === 'comfort'), 'a visitor is always comfort');
-  const both = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map(sd => episode(sd, 'keepout', 'intruder').recs).filter(k => k.some(r => r.label.band === 'comfort') && k.some(r => r.label.band === 'pressure' && r.order.goal === 'keepout'));
+  assert.ok(d.length && d.every(r => r.teacher_plan.band === 'pressure' || r.order.goal !== 'driveout'), 'drive out ticks are pressure');
+  assert.ok(v.length && v.every(r => r.teacher_plan.band === 'comfort'), 'a visitor is always comfort');
+  const both = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map(sd => episode(sd, 'keepout', 'intruder').recs).filter(k => k.some(r => r.teacher_plan.band === 'comfort') && k.some(r => r.teacher_plan.band === 'pressure' && r.order.goal === 'keepout'));
   assert.ok(both.length >= 2, `keep out switched from comfort to pressure in ${both.length} of 12 episodes`);
-  for (const k of both) for (const r of k) if (r.label.band === 'pressure') assert.ok(r.obs.seen, 'pressure only while he is in sight');
+  for (const k of both) for (const r of k) if (r.teacher_plan.band === 'pressure') assert.ok(r.world_beliefs.person.seen, 'pressure only while he is in sight');
 });
 
 test('same seed gives identical records, also after other episodes', () => {
@@ -273,7 +275,7 @@ const axes = d => d.axis === 'h' ? { n: { x: 0, z: 1 }, t: { x: 1, z: 0 } } : { 
 test('every family: rooms reachable by air from the pads and on foot from every exit, every door passable both ways, pads free, search points in every room', () => {
   const sizes = {};
   for (const fam of S.FAMILIES) for (const sd of FAM_SEEDS) {
-    const P = famReset(fam, sd), G = S.grids(), tag = `${fam} seed ${sd}`;
+    const P = famReset(fam, sd, { settings: { doors: 'none' } }), G = S.grids(), tag = `${fam} seed ${sd}`; // the floor itself; doors are tested below
     assert.strictEqual(P.family, fam);
     assert.ok(P.rooms.length >= 1 && P.doors.some(d => d.rooms[1] === P.OUT), `${tag}: no rooms or no exit`);
     assert.ok(P.protectable.includes(P.protect) && P.rooms[P.home], `${tag}: protected or home room missing`);
@@ -303,7 +305,7 @@ test('every family: rooms reachable by air from the pads and on foot from every 
 
 test('every family: walls block sight between rooms, doorways do not, lintels block above 2 m', () => {
   for (const fam of S.FAMILIES) for (const sd of [0, 1, 2, 3]) {
-    const P = famReset(fam, sd), tag = `${fam} seed ${sd}`; let walls = 0;
+    const P = famReset(fam, sd, { settings: { doors: 'none' } }), tag = `${fam} seed ${sd}`; let walls = 0;
     for (const d of P.doors) {
       const { n, t } = axes(d);
       assert.ok(S.los(d.x - 0.6 * n.x, 1.5, d.z - 0.6 * n.z, d.x + 0.6 * n.x, 1.5, d.z + 0.6 * n.z), `${tag}: no sight through the open ${d.name}`);
@@ -334,12 +336,12 @@ test('every family: every tactic runs with no safety violation on true positions
     // an intruder driven out ends the episode early; drones still on their pads land at once on return
     assert.ok(recs.length >= (goal === 'return' ? 1 : 20), `${tag}: only ${recs.length} plan records`);
     for (const r of recs) {
-      for (const v of r.label.vectors) assert.ok(v.every(Number.isFinite), `${tag}: a non-finite vector at t ${r.t}`);
-      const room = r.truth.person.room;
-      if (r.obs.seen || !r.truth.person.alive || !(room >= 0 && room < P.rooms.length) || !r.obs.belief_rooms.length || r.truth.estimate_from_fp) continue;
+      for (const v of r.teacher_plan.vectors) assert.ok(v.every(Number.isFinite), `${tag}: a non-finite vector at t ${r.t}`);
+      const room = r.ground_truth.person.room;
+      if (r.world_beliefs.person.seen || !r.ground_truth.person.alive || !(room >= 0 && room < P.rooms.length) || !r.world_beliefs.person.possible_rooms.length || r.ground_truth.estimate_from_fp) continue;
       unseen++;
-      if (!r.obs.belief_rooms.includes(room) && r.obs.cleared.includes(room)) continue; // a partial search can miss a hidden person
-      assert.ok(r.obs.belief_rooms.includes(room), `${tag} t ${r.t}: he is in the ${P.rooms[room].name}, belief ${r.obs.belief_rooms.map(i => P.rooms[i].name)}`);
+      if (!r.world_beliefs.person.possible_rooms.includes(room) && r.world_beliefs.cleared.includes(room)) continue; // a partial search can miss a hidden person
+      assert.ok(r.world_beliefs.person.possible_rooms.includes(room), `${tag} t ${r.t}: he is in the ${P.rooms[room].name}, belief ${r.world_beliefs.person.possible_rooms.map(i => P.rooms[i].name)}`);
     }
   }
   assert.ok(personFloor <= 3, `${personFloor} episodes where a person closed within 1.2 m of a retreating drone`);
@@ -351,7 +353,7 @@ test('route labels are flyable: refs start from the drone\'s state and never imp
   for (const [goal, who, fam] of [['keepout', 'intruder', 'office'], ['search', 'hider', 'warehouse'], ['guideout', 'visitor', 'house'], ['driveout', 'intruder', 'corridor']]) {
     const { recs } = episode(7, goal, who, { secs: 60, reset: { family: fam, layout: 'random', settings: REAL } });
     for (const r of recs) for (let i = 0; i < 3; i++) {
-      const R = r.label.refs[i], x = r.team[i].pos, v = r.team[i].vel; checked++;
+      const R = r.teacher_plan.refs[i], x = r.drone_beliefs[i].position, v = r.drone_beliefs[i].velocity; checked++;
       if (Math.hypot(v[0], v[2]) < 0.02 && x[1] > 0.5) { rest++; assert.ok(Math.hypot(R[0][0] - x[0], R[0][2] - x[2]) <= 0.5 * aMax * 0.25 + 0.05, `${fam} ${goal} t ${r.t}: a drone at rest is labelled ${Math.hypot(R[0][0] - x[0], R[0][2] - x[2]).toFixed(2)} m away after 0.5 s`); }
       let u = [(R[0][0] - x[0]) / 0.5, (R[0][2] - x[2]) / 0.5];
       const first = Math.hypot(R[0][0] - x[0] - v[0] * 0.5, R[0][2] - x[2] - v[2] * 0.5); worst = Math.max(worst, first / (0.25 * 0.5));
@@ -372,22 +374,22 @@ test('perception realism: drift grows with distance flown, followers\' detection
   assert.ok(st.poseDrift >= 0.005 && st.poseDrift <= 0.02 && st.lightLevels.length === S.getPlan().rooms.length + 1 && st.depthMiss > 0, 'the episode draws its realism');
   const flown = [0, 0, 0]; let worstRatio = 0, maxErr = 0, nulls = 0, rays = 0, mAge = 0, fAge = Infinity, fN = 0;
   for (let k = 0; k < recs.length; k++) { const r = recs[k];
-    for (let i = 0; i < 3; i++) { if (k) { const a = recs[k - 1].truth.drones[i], b = r.truth.drones[i]; flown[i] += Math.hypot(b[0] - a[0], b[2] - a[2]); }
-      const e = Math.hypot(r.team[i].pos[0] - r.truth.drones[i][0], r.team[i].pos[2] - r.truth.drones[i][2]); maxErr = Math.max(maxErr, e);
+    for (let i = 0; i < 3; i++) { if (k) { const a = recs[k - 1].ground_truth.drones[i], b = r.ground_truth.drones[i]; flown[i] += Math.hypot(b[0] - a[0], b[2] - a[2]); }
+      const e = Math.hypot(r.drone_beliefs[i].position[0] - r.ground_truth.drones[i][0], r.drone_beliefs[i].position[2] - r.ground_truth.drones[i][2]); maxErr = Math.max(maxErr, e);
       if (flown[i] > 5) worstRatio = Math.max(worstRatio, (e - 0.05) / flown[i]);
-      if (r.team[i].cam) for (const v of r.team[i].cam) { rays++; nulls += v === null; } }
-    for (const x of r.obs.detections) { if (x.drone === 'M') mAge = Math.max(mAge, x.age); else { fAge = Math.min(fAge, x.age); fN++; } } }
+      if (r.drone_beliefs[i].depth_readings) for (const v of r.drone_beliefs[i].depth_readings) { rays++; nulls += v === null; } }
+    for (const x of r.world_beliefs.detections) { if (x.drone === 'M') mAge = Math.max(mAge, x.age); else { fAge = Math.min(fAge, x.age); fN++; } } }
   assert.ok(maxErr > 0.02, `odometry drift never showed (largest pose error ${maxErr.toFixed(3)} m)`);
   assert.ok(worstRatio <= st.poseDrift + 0.005, `pose error grew faster than ${(100 * st.poseDrift).toFixed(2)}% of distance flown (${(100 * worstRatio).toFixed(2)}%)`);
   // the followers' detections reach the master over the radio: an intruder heading in, in sight of the followers
   for (const sd of [1, 2, 3, 4]) { const k = episode(sd, 'keepout', 'intruder', { secs: 60, reset: { settings: { rloss: 0, rlat: 0.3 } } }).recs;
-    for (const r of k) for (const x of r.obs.detections) { if (x.drone === 'M') mAge = Math.max(mAge, x.age); else { fAge = Math.min(fAge, x.age); fN++; } } }
+    for (const r of k) for (const x of r.world_beliefs.detections) { if (x.drone === 'M') mAge = Math.max(mAge, x.age); else { fAge = Math.min(fAge, x.age); fN++; } } }
   assert.ok(fN > 20, `only ${fN} follower detections reached the master`);
   assert.ok(mAge <= 0.11, `the master's own detections are ${mAge} s old`);
   assert.ok(fAge >= 0.6 * 0.3 - 0.11, `a follower's detection reached the master ${fAge} s after it was made (radio latency 0.18-0.42 s)`);
   assert.ok(nulls > 0 && nulls < 0.2 * rays, `${nulls} of ${rays} camera ray returns missing`);
   const off = run({ realism: false, rloss: 0, rlat: 0.3 }).recs;
-  for (const r of off) for (let i = 0; i < 3; i++) { assert.strictEqual(Math.hypot(r.team[i].pos[0] - r.truth.drones[i][0], r.team[i].pos[2] - r.truth.drones[i][2]), 0, 'realism off still drifts'); if (r.team[i].cam) assert.ok(r.team[i].cam.every(v => v !== null), 'realism off still drops depth returns'); }
+  for (const r of off) for (let i = 0; i < 3; i++) { assert.strictEqual(Math.hypot(r.drone_beliefs[i].position[0] - r.ground_truth.drones[i][0], r.drone_beliefs[i].position[2] - r.ground_truth.drones[i][2]), 0, 'realism off still drifts'); if (r.drone_beliefs[i].depth_readings) assert.ok(r.drone_beliefs[i].depth_readings.every(v => v !== null), 'realism off still drops depth returns'); }
   console.log(`      drift ${(100 * st.poseDrift).toFixed(2)}% of distance: largest pose error ${maxErr.toFixed(2)} m after up to ${Math.max(...flown).toFixed(0)} m; follower detections ${fN} (youngest ${fAge === Infinity ? '-' : fAge.toFixed(2)} s); missing returns ${(100 * nulls / rays).toFixed(1)}%`);
 });
 
@@ -417,10 +419,10 @@ test('several people: each has a track, the team fuses only its target\'s, and e
     assert.strictEqual(+M.floorByDrone.toFixed(2), 0, `${fam} ${goal}: a drone came within 1.2 m of someone`);
     assert.ok(M.standoffApproach <= 0.5, `${fam} ${goal}: a drone moved toward someone inside its band's limit`);
     for (const r of recs) {
-      const tgt = r.obs.target_track; assert.strictEqual(tgt, r.truth.person.tid, 'the target track is the subject\'s');
-      crowdDets += r.truth.detections_who.filter(w => w > 0).length; othersPlaced += r.obs.people.length;
-      if (r.obs.detections.length && r.obs.detections.every(x => x.track !== tgt) && r.obs.last_seen_age > 0.5) { onlyOthers++; assert.ok(!r.obs.seen, `${fam} t ${r.t}: seen on other people's detections alone`); }
-      assert.ok(r.truth.people.length === 4 && r.truth.people.every(h => h.pos.length === 3), 'truth logs everyone');
+      const tgt = r.world_beliefs.target_track; assert.strictEqual(tgt, r.ground_truth.person.tid, 'the target track is the subject\'s');
+      crowdDets += r.ground_truth.detections_who.filter(w => w > 0).length; othersPlaced += r.world_beliefs.people.length;
+      if (r.world_beliefs.detections.length && r.world_beliefs.detections.every(x => x.track !== tgt) && r.world_beliefs.person.last_seen_age > 0.5) { onlyOthers++; assert.ok(!r.world_beliefs.person.seen, `${fam} t ${r.t}: seen on other people's detections alone`); }
+      assert.ok(r.ground_truth.people.length === 4 && r.ground_truth.people.every(h => h.position.length === 3), 'ground_truth logs everyone');
     }
   }
   assert.ok(crowdDets > 50 && othersPlaced > 50, `other people were detected ${crowdDets} times and placed ${othersPlaced} times`);
@@ -433,6 +435,102 @@ test('every family: a random floor depends only on its seed', () => {
     assert.strictEqual(JSON.stringify(famReset(fam, 5)), a, `${fam}: the floor changed with the history`);
     assert.notStrictEqual(JSON.stringify(famReset(fam, 6)), a, `${fam}: seeds 5 and 6 gave the same floor`);
   }
+});
+
+// ---------- doors (docs/DATASET_PLAN.md, "Things that move besides people and drones") ----------
+const leafOf = (D) => S.leafSegs(D, D.a);
+test('doors: a shut leaf blocks sight and flight, an open one lets both through; with every door open every room is reachable by air', () => {
+  S.seed(1); S.world.reset({ layout: 'fixed', settings: { doors: 'closed' } });
+  let P = S.getPlan(), side = P.doors.find(d => d.name === 'lab side door'), D = S.doors()[side.id], { n } = axes(side);
+  assert.ok(!S.los(side.x - 1.2 * n.x, 1.5, side.z - 1.2 * n.z, side.x + 1.2 * n.x, 1.3, side.z + 1.2 * n.z), 'a shut lab side door blocks sight');
+  assert.ok(S.heightAt(side.x + n.x * 0.1 * D.swing, side.z + n.z * 0.1 * D.swing) >= 2.0, 'its leaf is 2 m tall in the doorway');
+  S.seed(1); S.world.reset({ layout: 'fixed', settings: { doors: 'open' } });
+  P = S.getPlan(); side = P.doors.find(d => d.name === 'lab side door');
+  assert.ok(S.los(side.x - 1.2 * n.x, 1.5, side.z - 1.2 * n.z, side.x + 1.2 * n.x, 1.3, side.z + 1.2 * n.z), 'an open lab side door does not block sight');
+  const path = S.planPath(S.grids().FLY, { x: side.x - 1.2 * n.x, z: side.z - 1.2 * n.z }, { x: side.x + 1.2 * n.x, z: side.z + 1.2 * n.z });
+  assert.ok(path && S.pathLength(path, { x: side.x - 1.2 * n.x, z: side.z - 1.2 * n.z }) < 4, 'the drones can plan through the open door');
+  let openings = 0, doors = 0;
+  for (const fam of S.FAMILIES) for (const sd of FAM_SEEDS) {
+    const Q = famReset(fam, sd, { settings: { doors: 'open' } }), G = S.grids(), tag = `${fam} seed ${sd}`;
+    for (const p of Q.pads) assert.ok(!G.FLY[S.navIdx(p.x, p.z)], `${tag}: a leaf covers a pad`);
+    const fly = roomsIn(G, flood(G, G.FLY, Q.pads[1].x, Q.pads[1].z));
+    for (const q of Q.rooms) assert.ok(fly.has(q.id), `${tag}: with every door open the ${q.name} cannot be reached by air`);
+    for (const E of S.doors()) { doors++; if (E.kind === 'opening') openings++; }
+  }
+  console.log(`      ${doors} doorways, ${openings} of them openings with no door (archways, loading docks, and doors whose leaf would cut the floor)`);
+});
+
+test('doors: no drone passes a shut door; people open the doors on their way and stand clear of a leaf swinging toward them', () => {
+  let changes = 0, inLeaf = 0, through = 0, eps = 0, breaches = 0;
+  for (const [fam, goal, who] of [['office', 'grounded', 'intruder'], ['office', 'keepout', 'intruder'], ['house', 'search', 'hider'], ['corridor', 'guideout', 'visitor'], ['warehouse', 'track', 'intruder'], ['openplan', 'search', 'hider'], ['irregular', 'driveout', 'intruder'], ['retail', 'explore', 'visitor']]) {
+    const sd = 300 + eps, side = [[], [], []]; let last = -1;
+    const { M } = episode(sd, goal, who, { secs: 120, reset: { family: fam, layout: 'random', settings: { doors: 'closed' } }, until: () => {
+      const t = S.simT(); if (t - last < 0.1) return false; last = t; const P = S.getPlan(), DS = S.doors();
+      for (const h of S.everyone()) for (const E of DS) if (E.by !== h && S.leafDist(h, E) < 0.12) inLeaf++;
+      S.team.drones.forEach((d, i) => { if (d.y < 0.3) return; DS.forEach((E, j) => { const dd = P.doors[E.k], c = { n: dd.axis === 'h' ? d.z - dd.z : d.x - dd.x, t: dd.axis === 'h' ? d.x - dd.x : d.z - dd.z }; let st = side[i][j];
+        if (Math.abs(c.n) > 3 || Math.abs(c.t) > dd.w / 2 + 1.5) { side[i][j] = null; return; } if (st) st.amax = Math.max(st.amax, E.a);
+        if (Math.abs(c.n) >= 0.6 && Math.abs(c.t) <= dd.w / 2 + 0.6) { const sg = c.n > 0 ? 1 : -1; if (st && st.side !== sg && st.amax < 60) through++; side[i][j] = { side: sg, amax: E.a }; } }); });
+      return false; } });
+    eps++; changes += S.doors().reduce((a, E) => a + E.changes, 0); breaches += M.breaches > 0;
+    for (const key of ['floorByDrone', 'sepViol', 'wallViol', 'altViol']) assert.strictEqual(+M[key].toFixed(2), 0, `${fam} ${goal}: ${key} ${M[key].toFixed(2)} s`);
+  }
+  assert.strictEqual(through, 0, `${through} times a drone got through a door that stayed under 60 deg`);
+  assert.ok(changes >= 10, `people moved doors only ${changes} times in ${eps} episodes with every door shut`);
+  assert.ok(inLeaf <= 2, `people inside a leaf in ${inLeaf} checks`);
+  console.log(`      ${eps} episodes with every door shut: ${changes} door moves by people, ${breaches} breaches, ${inLeaf} checks with someone inside a leaf`);
+});
+
+test('doors: no leak: a door the drones have not seen changes no label', () => {
+  // the farthest door from the pads starts shut in one run and open in the other: while what the team observes is the same, so are
+  // the labels (the teacher plans from the door states it has seen)
+  S.seed(7); S.world.reset({ layout: 'fixed' }); const P = S.getPlan(), pad = P.pads[0];
+  const far = S.doors().filter(E => E.kind === 'hinged' && P.doors[E.k].rooms[1] !== P.OUT).sort((a, b) => Math.hypot(P.doors[b.k].x - pad.x, P.doors[b.k].z - pad.z) - Math.hypot(P.doors[a.k].x - pad.x, P.doors[a.k].z - pad.z))[0];
+  const run = ang => episode(7, 'search', 'hider', { secs: 90, reset: { settings: { doorInit: { [far.k]: ang } } } }).recs;
+  const a = run(0), b = run(90); let same = 0, reason = 'end';
+  for (let k = 0; k < Math.min(a.length, b.length); k++) {
+    if (JSON.stringify(a[k].world_beliefs) !== JSON.stringify(b[k].world_beliefs) || JSON.stringify(a[k].drone_beliefs) !== JSON.stringify(b[k].drone_beliefs)) { reason = `observations differ at t ${a[k].t}`; break; }
+    assert.deepStrictEqual(a[k].teacher_plan, b[k].teacher_plan, `labels differ at t ${a[k].t} while the team observes the same`);
+    same++;
+  }
+  assert.ok(same >= 20, `only ${same} ticks compared (${reason})`);
+  console.log(`      ${same} ticks with the same observations and labels while the ${P.doors[far.k].name} was shut in one run and open in the other (${reason})`);
+});
+
+test('doors: a drone whose way is shut waits beside the door, clear of its swing; search reports the rooms it cannot enter', () => {
+  let waits = 0, watch = 0, said = 0, inSwing = 0;
+  for (const sd of [11, 12, 13, 14]) {
+    const { recs } = episode(sd, 'search', 'hider', { secs: 120, reset: { settings: { doors: 'closed' } } });
+    const P = S.getPlan(), DS = S.doors();
+    for (const r of recs) {
+      r.teacher_plan.flags.forEach(f => { if (f.includes('door-wait')) waits++; }); if (r.teacher_plan.template === 'watch-shut') watch++;
+      // no slot inside the swing of a door the drones believe is not open
+      r.teacher_plan.slots.forEach(sl => { DS.forEach((E, j) => { const b = r.world_beliefs.doors[j]; if (E.kind !== 'hinged' || (b && b[0] >= 80) || !b) return; for (const sg of S.leafSegs(E, 0)) {
+        const dx = sl[0] - sg.ax, dz = sl[2] - sg.az, N = axes(P.doors[E.k]).n; if (Math.hypot(dx, dz) < E.wl + 0.2 && (dx * N.x + dz * N.z) * E.swing > 0.05) inSwing++; } }); });
+    }
+    said += S.talk.filter(x => /is shut|behind a shut door/.test(x.text)).length;
+  }
+  assert.ok(waits + watch > 0, 'no drone ever waited at a shut door or watched one');
+  assert.ok(said > 0, 'the master never told the operator about a shut door');
+  assert.strictEqual(inSwing, 0, `${inSwing} slots inside the swing of a door that is not open`);
+  console.log(`      4 searches with every door shut: ${waits} drone-ticks waiting beside a door, ${watch} ticks watching shut doors, ${said} reports to the operator`);
+});
+
+test('doors: off is the doorless world: no leaves, no door fields in the records', () => {
+  const { recs } = episode(2, 'search', 'hider', { secs: 20, reset: { settings: { doors: 'none' } } });
+  assert.strictEqual(S.doors().length, 0);
+  assert.ok(recs.length > 10 && recs.every(r => r.world_beliefs.doors === undefined && r.ground_truth.doors === undefined), 'records carry door fields with doors off');
+  const on = episode(2, 'search', 'hider', { secs: 20, reset: { settings: {} } }).recs;
+  assert.ok(on.every(r => Array.isArray(r.world_beliefs.doors) && Array.isArray(r.ground_truth.doors)), 'records lack door fields with doors on');
+});
+
+test('doors: a person\'s door state never carries into the next episode', () => {
+  const h = () => crypto.createHash('sha256').update(JSON.stringify(episode(5, 'guideout', 'visitor', { secs: 30, reset: { settings: {} } }).recs)).digest('hex');
+  const a = h();
+  // an episode can end while its subject steps back from a door a drone blocks, prepares to open one, or waits to try again; the
+  // step-back once carried into the next episode in a generator worker (a person walked toward a point on the previous floor)
+  episode(3, 'track', 'intruder', { secs: 10, reset: { settings: {} } });
+  Object.assign(S.person, { doorBack: { x: 1, z: 1, until: 999 }, doorPrep: { k: 0, to: 90, x: 1, z: 1, t0: 0 }, doorAct: { k: 0 }, doorCool: { 0: 999 }, nowhereT: 2.9 });
+  assert.strictEqual(h(), a);
 });
 
 let failed = 0;

@@ -28,12 +28,25 @@ The **context window** holds only what the team could know:
 
 In `swarm-indoor`, "seen" comes from simulated detections, not from geometry. See "Inputs: perception outputs, not truth" below.
 
-The simulator's ground truth is logged under `truth`. It is for metrics only and is never an input.
+The simulator's ground truth is logged under `ground_truth`. It is for metrics only and is never an input.
 
-## Record format (contract v0, gzipped JSON lines, one file per episode)
+## Record format (contract v1, gzipped JSON lines, one file per episode)
+
+**Contract v1 (Dan, 17 November 2026)** renamed the plan line's keys so they say what they hold. Values and everything else stayed the same:
+
+| v0 | v1 |
+|---|---|
+| `obs` | `world_beliefs`: the world outside the drones as the team believes it, the person's keys grouped under `person` (`p` → `position`, `v` → `velocity`, `belief_rooms` → `possible_rooms`; `detections[].p` and `people[].p` → `position`) |
+| `team` | `drone_beliefs`: each drone as it believes itself to be (`pos` → `position`, `vel` → `velocity`, `cam` → `depth_readings`) |
+| `label` | `teacher_plan` |
+| `truth` | `ground_truth` (`pos` → `position`) |
+| `sft` | `use_for_training`, also in the outcome's `segments` |
+
+`node simulators/tools/convert_v0_v1.js <run folder>` converts an older run in place (indoor3 was converted on 17 November). The check rejects a v0 run and names the converter. A check that runs the same episodes on the last v0 build and the first v1 build found every line identical after conversion (34 runs: doors on and off, baselines, Swarm Mind).
+
 
 ```jsonc
-{"type":"header","schema":"dmc.contract.v0","sim":"swarm-mind","core_sha":"…","seed":123,
+{"type":"header","schema":"dmc.contract.v1","sim":"swarm-mind","core_sha":"…","seed":123,
  "episode":"mind-000123","frame":"x east, z south, y up, metres",
  "doors":[{"id":0,"name":"Main door","x":24,"z":19}, …],
  "scenario":{…},                 // reset options: spawn side, intruder mode, radio loss/latency
@@ -41,12 +54,12 @@ The simulator's ground truth is logged under `truth`. It is for metrics only and
             "parser_goal":"keepout","mismatch":false}, …]}
 {"type":"plan","t":12.5,"tick":25,
  "order":{"goal":"keepout","version":1,"text":"keep him out of the building"},
- "obs":{"seen":true,"p":[19.8,0.0,27.3],"last_seen_age":0,"lambda":0.4,"orient":0},
- "team":[{"id":"M","pos":[…],"vel":[…]},{"id":"S1",…},{"id":"S2",…}],
- "label":{"template":"barrier","text":"barrier at the main door","door":0,
+ "world_beliefs":{"person":{"seen":true,"position":[19.8,0.0,27.3],"last_seen_age":0},"lambda":0.4,"orient":0},
+ "drone_beliefs":[{"id":"M","position":[…],"velocity":[…]},{"id":"S1",…},{"id":"S2",…}],
+ "teacher_plan":{"template":"barrier","text":"barrier at the main door","door":0,
           "slots":[[…],[…],[…]],"vectors":[[…],[…],[…]]},
  "radio":[{"to":"S1","dropped":false,"latency":0.18},{"to":"S2",…}],
- "truth":{"intruder":{"pos":[…],"state":"approach","inside":false}}}
+ "ground_truth":{"intruder":{"position":[…],"state":"approach","inside":false}}}
 {"type":"outcome","t_end":180,"end":"timeout","breaches":0,"deterred":2,"in_view_pct":41,
  "radio_drops":12,"pushes":3}
 ```
@@ -183,7 +196,7 @@ Dan's goal: "build a dataset that includes camera frames and really everything a
 1. **The master episode log is the canonical copy.** It holds everything the simulator knows, so any episode can be replayed exactly:
    - the seed, the core version (`core_sha`), the scenario and the orders;
    - the layout;
-   - labels, detections and the scanned map, as in contract v0;
+   - labels, detections and the scanned map, as in contract v1;
    - full 3-D poses at a high rate: each drone's position, velocity and attitude, with the camera's height, yaw and pitch; and every person's position, heading, posture and attributes.
 
    Contract v0 grows a pose track for this: one `poses` record per second holding 30 Hz samples. That adds an estimated 0.2–0.3 MB per episode gzipped, so 10,000 episodes come to about 3 GB.
@@ -195,7 +208,7 @@ Dan's goal: "build a dataset that includes camera frames and really everything a
 
    | Cut | Inputs | Use |
    |---|---|---|
-   | NN1 on perception outputs | detections, scanned map, coverage, camera rays, order, team state (contract v0 today) | the planner |
+   | NN1 on perception outputs | detections, scanned map, coverage, camera rays, order, team state (contract v1 today) | the planner |
    | Detector | frames with person boxes | train a real detector; compare its hit and false-positive rates with the simulated detector's |
    | End-to-end | frames, order, team state | later |
    | Held-out layouts | any of the above, split by floor family | generalization |
@@ -256,7 +269,7 @@ Before this, every episode had exactly one person: a point that followed a smoot
    - **The cast:** staff, and visitors alone or in groups of two or three, in numbers that depend on the floor family (0–6). Staff wear a uniform where the family has one (hi-vis vest, uniform, staff shirt). Everyone else has clothes drawn per person.
    - **Movement:** they walk between rooms, pause and sit, keep about 2.5 m from drones, and wait while one hovers ahead of them. After 3 s of waiting, or of getting nowhere, they pick somewhere else to go.
    - **Tracks:** the detector sees everyone and reports a track id per person, with occasional identity switches between people within 1.5 m. A false positive near the target is sometimes taken for the target's track.
-   - **Fusion:** the team builds its estimate from its target's track only. Other people the team has placed go into `obs.people`, and slots keep the comfort standoff from them too.
+   - **Fusion:** the team builds its estimate from its target's track only. Other people the team has placed go into `world_beliefs.people`, and slots keep the comfort standoff from them too.
    - **Safety for everyone:** the 1.2 m floor and the onboard safety layer apply to every person, measured on true positions. A drone senses a person if a line reaches their torso or their legs, so a door lintel cannot hide someone from a drone flying high. It never moves toward anyone it saw in the last 10 s who is still within 4.5 m but out of sight, as an onboard tracker keeps a person who stepped behind a shelf or a door jamb.
    - **Orders can describe the person:** "keep the man in the red coat out of the lab", "track the woman with the cane". The parser matches the description against the people on the floor and adds `params.person`, or asks which person when several fit or nobody does. The sampler writes unique descriptions (70% of first orders when others are present) and ambiguous ones (10%), answered with a question and then a clarifying order.
    - **Truth logs everyone.** Observations hold only detections.
@@ -268,13 +281,13 @@ Before this, every episode had exactly one person: a point that followed a smoot
      - **Habitat 3.0 humanoids:** CC BY-NC 4.0 and built on SMPL-X. Do not use them.
 6. **Results by group (built in the quality report).** Episodes are split by age, height, mobility aid, posture, whether the person ran, skin tone and the number of other people. The simulated detector does not model skin tone, so that split stays flat until a real detector runs on rendered frames.
 
-Every person attribute is logged as metric-only: the cast in the header, and posture and speed in `truth`.
+Every person attribute is logged as metric-only: the cast in the header, and posture and speed in `ground_truth`.
 
 ## Perception realism and flyable route labels (approved by Dan, 13 November 2026; built the same day)
 
 - **Sharing over the radio.**
   - The master's own detections count at once.
-  - A follower's detections, map updates and coverage marks reach the master with the episode's radio latency and loss (`obs.detections[].age` says how old each detection is).
+  - A follower's detections, map updates and coverage marks reach the master with the episode's radio latency and loss (`world_beliefs.detections[].age` says how old each detection is).
 - **Odometry drift.**
   - Each drone's position estimate wanders by 0.5–2% of the distance flown (drawn per episode), in a slowly turning direction, plus a heading drift of up to ±0.5°/min.
   - It re-localizes near the home pads.
@@ -282,7 +295,7 @@ Every person attribute is logged as metric-only: the cast in the header, and pos
     - Drones navigate and place their detections, depth rays and coverage from the estimate.
     - Flight, collisions and safety use the true pose.
     - The teacher plans from the estimates.
-  - **Records:** `team[].pos` is the estimate, and `truth.drones` the true pose.
+  - **Records:** `drone_beliefs[].position` is the estimate, and `ground_truth.drones` the true pose.
 - **Depth.**
   - Stereo-like noise of (0.01 + 0.006 r²) m × a per-episode factor (0.7–1.5; ×3 in single-camera mode).
   - 1–5% missing returns.
@@ -307,7 +320,12 @@ Every person attribute is logged as metric-only: the cast in the header, and pos
    4. Done: diverse people 1–4 (bodies, speeds, movement patterns, several people). Tuning movement against THÖR tracks is next, once Dan approves the download.
    5. Found by the 1,200-episode run (see "People and realism run"):
       - Keep out and drive out against runners: the drones no longer stop intruders who run, so rework the tactics (for example, pre-position at doors early), or have a practitioner check how many intruders really run.
-      - The subject needs the bystanders' give-up rule, and its recorded velocity should be the step it made. A wandering visitor and a pinned drone held each other for 84 s.
+      - The subject needs the bystanders' give-up rule, and its recorded velocity should be the step it made. A wandering visitor and a pinned drone held each other for 84 s. Done with doors on (17 November); doors off keeps the old behaviour, so its records stay identical.
+      - Drones should slow near open leaves and doorways, where someone may be hidden (surprises at doors, found by the door pilot).
+      - Bystanders creeping up on a drone (found by the door pilot): fixed with doors on; doors off still has it, kept for identical records.
+      - Doors off also keeps the old wall-slide tolerance and the old floor split; the doors-on versions should replace them once doors-off records no longer need to match indoor3.
+      - Odometry drift in narrow doorways (found by the door pilot): a drone whose estimate has drifted about 0.85 m plans as if it were elsewhere, and can stay stuck at a 0.9 m doorway for several seconds; an open leaf beside the doorway makes the passage longer. Drones re-localize only near their pads today; doorways are good visual landmarks to re-localize at.
+   6. Done (17 November): doors in the POC, closed, half-open, open and locked, opened and closed by people (see "Things that move besides people and drones"). Next: regenerate the 1,200-episode set with doors.
 2. **The full dataset, after the layout work:**
    1. Master-log replay with full 3-D poses, plus a determinism test (replay gives the same poses).
    2. A pilot on Dan's Mac: about 50 episodes rendered locally, with diverse appearance (people item 5).
@@ -315,6 +333,129 @@ Every person attribute is logged as metric-only: the cast in the header, and pos
       - Measure GB and render time per episode.
    3. The Azure scale-out proposal, for Dan's approval.
 3. Done: **results by group** (people item 6) in the quality report; the frames phase adds appearance to it.
+
+## Things that move besides people and drones (plan, 17 November 2026; doors built the same day)
+
+Only people, drones and doors move. Dan's direction (17 November): the POC can keep everything else still, but a plan for moving things should be ready.
+
+**Doors come first.** A closed door is a wall to a drone and to its camera, and people open and close doors all the time as they move through a building. Doors are also where the tactics act:
+- keep out guards the protected room's door, and an intruder opening it is the moment that counts;
+- search and mapping stop at a closed door;
+- someone who shuts a door behind them breaks a track;
+- drive-out and guide-out routes depend on which doors are open.
+
+**Built for the POC (Dan's decision, 17 November 2026): doors with a position but no physics, including half-open doors.** `settings.doors` is `'mixed'` by default; `'none'` gives the doorless world exactly as before (the same records, byte for byte); `'open'` and `'closed'` set every door.
+- **A door is a leaf on a hinge.**
+  - A doorway up to 1.25 m wide has one leaf; a wider one has two, one at each jamb.
+  - The leaf is hinged on the wall face of its swing side. 0° is shut and 90° stands square to the wall.
+  - The leaf is a 2 m tall panel in the height grid. Sight, depth, coverage, drone clearance and the wall gates all treat it as a wall, so a person can hide behind a half-open door.
+- **Swing side:**
+  - From a corridor or lobby, a door swings into the room. Exits swing outward. Otherwise it swings into the smaller room.
+  - An archway (the house's kitchen opening) has no door. A loading dock's roller shutter stays up for now. Both are recorded as openings.
+- **Swing check.** Each episode checks the doors with every leaf open. A door whose open leaf would cut off part of the floor (furniture just in front of it, a narrow hallway) or cover a drone pad swings the other way or on its other jamb, and failing that becomes an opening. The pilot found a reception double door that sealed the drones' take-off room. 16 of 492 doorways across the eight families end up as openings.
+- **Starting states (our assumption, to be checked):**
+  - 40% shut, 20% half open (15–70°), 40% open.
+  - Exits start shut. The drones' home room door starts open.
+  - 15% of shut doors to a room with one door, that no one is in or heading for, are locked.
+  - A locked door stays shut all episode: no one has a key yet.
+- **People open doors.** A person opens any door under 80° that their way goes through, swinging it at 120°/s (half that with a mobility aid). If the leaf swings toward them, they first step clear of it: past the latch-side jamb, past the hinge side, or straight back.
+- **People walk round open leaves.** They plan on a walking grid that adds 0.35 m round every leaf standing 30° or more open (0.5 m with a wheelchair or pushchair).
+- **Bystanders wait properly (with doors on):** a bystander waiting for a drone ahead within 1.7 m keeps the heading they mean to walk. Before, their velocity was zeroed by the wait, so they stepped on every other frame and crept up on the drone at half speed, which once put a drone at 1.19 m from one. Doors off keeps the old behaviour (queued, below).
+- **The subject's give-up rule (with doors on):** like the bystanders, the subject gives up a target after 3 s of getting nowhere while no drone is pressing them, and their recorded velocity is the step they made. Doors off keeps the old behaviour, so its records stay identical. The pilot found grounded intruders stuck for the whole episode beside an open leaf at a narrow doorway.
+- **People close doors behind them sometimes (assumed rates):**
+  - Someone hiding: 70% for the room they hide in.
+  - An intruder: 25%, or 15% when leaving.
+  - Staff: 40%. Visitors: 30%.
+  - Nobody closes a door that would cut the airborne drones apart, or with no room to stand clear of it.
+- **Drones never touch doors.**
+  - A moving leaf stops while it would come within 0.45 m of a drone; its mover gives up after 4 s. If a drone blocked it, the mover steps back up to 3 m for 6 s, so a drone boxed in against the wall can leave (a visitor and a guide once held each other at a shut exit for 130 s).
+  - The drones plan from the door states they have seen. A door they have not seen counts as open.
+  - A drone sees a door with its camera, or within 1.5 m.
+  - A half-open door never leaves a drone a way through. Drones pass a door at 75° or more.
+  - A doorway they believe they cannot fly through is blocked in their planning grid, not only its leaf.
+- **The teacher's rules** are in `docs/TACTICS.md` under "Doors":
+  - wait beside a shut door, or take another way;
+  - a drone cut off by shut doors holds;
+  - search reports rooms behind shut doors and then watches their doors;
+  - in guide out, the visitor goes through a shut door the guide waits beside.
+- **Records:**
+  - The header gives each door's kind, hinge, swing side, leaves and leaf length.
+  - `world_beliefs.doors` holds what the drones believe: the angle and its age, or null if unseen.
+  - `ground_truth.doors` holds the angle and whether the door is locked.
+  - The quality report adds a hard gate (no drone through a door that stayed shut) and soft gates: people inside a leaf, drones waiting beside a shut door, drones cut off, and surprises (below).
+- **Surprises: an open leaf hides people.**
+  - A drone passing an open door can see someone standing behind its leaf for the first time already inside 1.2 m. The pilot had one: a bystander behind the lobby door, first seen at 1.20 m, and the drone turned away within a frame.
+  - With doors on, such a first sight is counted apart (`floor_surprise_s` in the outcome; a soft gate in the quality report), not as the drone's doing. From that sight on the drone's reaction counts as usual, so the hard 1.2 m gate still catches a drone that keeps closing in.
+  - With doors off there were none in 1,200 episodes: doors bring this risk. Slowing near open leaves and doorways is queued below.
+- **Safety layer and metrics with doors on** (doors off keeps the old behaviour, so its records stay identical; both are queued for doors off):
+  - A wall slide may close on someone at up to 0.05 m/s, the floor gate's own threshold for moving toward a person. At 0.02 m/s a drone holding a doorway froze 1.1 m from an intruder standing 4° off straight ahead.
+  - The 1.2 m floor is split by the gate's own words. The drone's doing is moving toward the person, or both standing still while it could back away. A drone escaping sideways or away from someone who walked up to it is not.
+- **Simplifications:**
+  - Doors open to 90° at most.
+  - A person walks round an open leaf in their way instead of pushing it shut.
+  - Shutters, self-closing fire doors and staff keys come later.
+
+**Pilot, 17 November (60 episodes, the first 60 of indoor3's schedule), against the same 60 with doors off:**
+- **Every quality gate passes.** No drone got through a door that stayed shut. No one was inside a leaf. Drones waited beside shut doors 0.8% of drone-ticks and were cut off 0.01%. One surprise and one person-caused close call fell within the soft limits.
+- **Doors moved:** at the start 246 doorways were shut, 44 half open, 166 open, 5 locked and 19 openings. People opened doors 221 times and closed them 105 times.
+- **Stuck drones 0.78% of drone-ticks (0.71% with doors off); training-ready ticks 95.8% (95%).**
+- **Outcomes, doors on against doors off:**
+  - Intruders got in 22 of 27 times with the drones flying (26 of 27 without doors) and 25 of 27 with them grounded (25 of 27).
+  - Drive out stopped 3 of 6 (0 of 6). Keep out stopped 1 of 9 (0 of 9).
+  - Hiders found 4 of 8, and visitors guided out 5 of 13, the same as without doors.
+  - The subject was in view 21.8% of the time (23.9%).
+  - 60 episodes is a small sample; the 1,200-episode run will say more.
+- **Found and fixed on the way:**
+  - A reception double door whose open leaves sealed the drones' take-off room (the swing check).
+  - People swept behind a leaf they were opening (they now stand clear first).
+  - Intruders stuck all episode beside an open leaf at a narrow doorway (planning on the leaf grid, the give-up rule).
+  - A bystander creeping up on a drone.
+  - A leaf swung under a drone that had climbed out of reach.
+  - The person's door state carrying over to the next episode in a worker.
+
+**Full run `indoor4`, 17 November (1,200 episodes on indoor3's schedule, contract v1), against indoor3 without doors:**
+- **Every quality gate passes,** with the limit for person-caused close calls that Dan set for doors on 17 November.
+  - Every record matches contract v1, and all 25 indoor tests pass.
+  - No drone came within 1.2 m of anyone by its own doing, and none got through a door that stayed shut.
+  - Close calls caused by people: 16 episodes, within the doors limit of 18 (1.5%); 12 without doors, against 12 (1%). In those, someone ran at a drone or walked up to one that had no room to back away: in a doorway, holding a door, or at a shut exit. Their time inside 1.2 m came to 52 s in all (112 s without doors), 38 s of it one intruder pressing a drone that held a door. These ticks are already kept out of training.
+  - Seven episodes had a surprise, someone hidden behind a door or a corner first seen inside 1.2 m: 0.45 s in all.
+- **Doors moved:** at the start 4,870 doorways were shut, 850 half open, 3,198 open, 118 locked and 290 openings. People opened doors 4,566 times and closed them 2,363 times.
+- **The data:**
+  - Stuck drones 0.70% of drone-ticks (0.75% without doors).
+  - Ticks fit for training 94.7% (95.0%).
+  - Drones waited beside a shut door 1.4% of drone-ticks and were cut off 0.42%.
+  - 212,946 plan lines; episodes average 91.4 s (85.1 s without doors). The run took 48 minutes on the Mac.
+- **Outcomes, doors on against doors off.** "Deterrable" intruders are those whose randomly drawn reaction to drones lets drones at the standoff stop them: 170 of the 606 here.
+  - Intruders got in 500 of 606 times with the drones flying (533 without doors) and 526 times with them grounded (532). With doors, flying drones beat grounded ones by 4 points; without doors, by none.
+  - Deterrable intruders kept out: 44 of 170 (30 of 170). Keep out stopped 23 of 58 of them (15 of 58), drive out 9 of 33 (4 of 33).
+  - Hiders found: 93 of 230 (104 of 230). The drones cannot search rooms behind shut doors.
+  - Visitors guided out: 134 of 364, the same as without doors.
+  - The subject was in view 17.4% of the time (19.7%).
+- **Found and fixed between the full runs** (the rules are in `docs/TACTICS.md`, "Doors"):
+  1. **First run, four gates failed.** Fixes:
+     - doorways the drones believe they cannot fly through are blocked in their planning grid;
+     - the door wait is placed once, before the standoff pass;
+     - wait points are clear of people using the door;
+     - guides stand inside shut exits;
+     - the wall-slide and floor-split rules above.
+  2. **Second run, two hard gates failed.**
+     - The door step's fallback undid the standoff for 77 slots.
+     - A visitor and a guide held each other at a shut exit for up to 130 s.
+  3. **Third run, one hard gate failed.**
+     - A person's step-back from a door carried into the next episode in a generator worker, so one episode differed from its own replay, and a drone was counted through a shut door there.
+     - A test now checks that a person's door state never carries over.
+- **Decided (Dan, 17 November): the person-caused close-call gate allows 1.5% of episodes with doors** (1% without). These close calls are the person's doing and stay out of training. Keeping drones from hovering in doorways and recesses near people was the other option; it was not chosen.
+
+**Later, roughly in order of how much it changes what a drone can do or see:**
+1. **More door types:** automatic sliding doors, fire doors that swing shut on their own, roller shutters in warehouses, doors propped open.
+2. **Lights** switched on or off during an episode. Rooms are lit, dim or dark today, but fixed for the episode.
+3. **Furniture people move:** chairs pushed back, carts, a table dragged against a door as a barricade, things knocked over by someone running.
+4. **Machines:** forklifts and pallet jacks in warehouses, cleaning robots, lifts.
+5. **Pets,** which the person detector must not take for people.
+6. **Search-and-rescue conditions:** smoke, dust and debris.
+7. **The drones' own effects:** rotor wash moving paper and curtains, and hazards such as ceiling fans.
+
+**For rendered frames:** the master log records door states and object poses every tick. Moving things are rendered as separate objects over the static room. World Labs Atlas paints only static scenes, so it can supply the room but not the motion (tested 16 November; `output/atlas_pilot/RESULTS.md`).
 
 ## Volumes
 
@@ -340,7 +481,7 @@ Variety of layouts and phrasings matters more than tick count.
 ```
 voice/.venv/bin/python voice/sampler.py --episodes 200 --seed 0 --out output/dataset/run1   # order schedules + parser report
 node simulators/tools/generate.js --orders output/dataset/run1/orders.jsonl --baseline     # episodes, manifest, summary
-node simulators/tools/check_dataset.js output/dataset/run1                                   # every record against contract v0
+node simulators/tools/check_dataset.js output/dataset/run1                                   # every record against the contract (v1; convert older runs first)
 ```
 
 **First run (12 November 2026, M1 MacBook):**
@@ -399,34 +540,34 @@ node simulators/tests/indoor.test.js      # floors, line of sight, belief, no le
 ```jsonc
 {"type":"plan","t":12.5,"tick":25,
  "order":{"goal":"keepout","version":1,"text":"keep him out of the lab","src":"sampler","params":{"room":0},"status":"active"},
- "obs":{"seen":true,"p":[6.1,0,11.0],"v":[0.4,0,-1.1],"last_seen_age":0,"room":4,"belief_rooms":[4],"cleared":[],
-        "detections":[{"drone":"S1","p":[6.07,0,10.93],"conf":0.91}, …],"coverage":[0,0,0,0,0.42,0,0],"map":"??..##..??…"},
- "team":[{"id":"M","pos":[…],"vel":[…],"yaw":3.1,"room":3,"link_age":0,"wait_door":null,"cam":[4.5,4.4,…]}, …],
- "label":{"template":"block","text":"block his way to the lab door","band":"pressure","door":0,"room":0,"exit":null,
+ "world_beliefs":{"person":{"seen":true,"position":[6.1,0,11.0],"velocity":[0.4,0,-1.1],"last_seen_age":0,"room":4,"possible_rooms":[4]},"cleared":[],
+        "detections":[{"drone":"S1","position":[6.07,0,10.93],"conf":0.91}, …],"coverage":[0,0,0,0,0.42,0,0],"map":"??..##..??…"},
+ "drone_beliefs":[{"id":"M","position":[…],"velocity":[…],"yaw":3.1,"room":3,"link_age":0,"wait_door":null,"depth_readings":[4.5,4.4,…]}, …],
+ "teacher_plan":{"template":"block","text":"block his way to the lab door","band":"pressure","door":0,"room":0,"exit":null,
           "slots":[[…],[…],[…]],"vectors":[[…],[…],[…]],"yaw":[…],"spin":[false,false,false],
           "refs":[[[x,y,z] at +0.5 s, +1 s, +1.5 s, +2 s], …],"flags":[[],["standoff"],[]]},
  "radio":[{"to":"S1","dropped":false,"latency":0.18}, …],
- "truth":{"person":{"pos":[…],"room":4,"state":"approach","role":"intruder","alive":true},"margin":0.62,
+ "ground_truth":{"person":{"position":[…],"room":4,"state":"approach","role":"intruder","alive":true},"margin":0.62,
           "detections_tp":[true, …],"estimate_from_fp":false},
- "sft":true}
+ "use_for_training":true}
 ```
 
 - **Header:** the floor (rooms, doors, furniture, pads), the protected room, the scenario and the order schedule.
-- **Standoff band:** `label.band` names the band the teacher used: `pressure` (1.5 m; drive out, and keep out once he is at the door) or `comfort` (2.5 m). A student can learn it with the slots. Outcomes count true distances per band: never below 1.2 m in pressure, 2.0 m in comfort (`docs/TACTICS.md`, safety envelope).
-- **Metric-only:** `header.person` (the hidden parameters) and `truth`, never model inputs.
+- **Standoff band:** `teacher_plan.band` names the band the teacher used: `pressure` (1.5 m; drive out, and keep out once he is at the door) or `comfort` (2.5 m). A student can learn it with the slots. Outcomes count true distances per band: never below 1.2 m in pressure, 2.0 m in comfort (`docs/TACTICS.md`, safety envelope).
+- **Metric-only:** `header.person` (the hidden parameters) and `ground_truth`, never model inputs.
 - **No leak:** the person has his own random stream, so his hidden choices never shift the team's random draws. A test checks that where an unseen person hides does not change any label.
 
 **Inputs: perception outputs, not truth.** NN1 is meant to consume what an on-board perception stack outputs: person detections and a map. It does not take raw camera frames.
 - **Out of scope here:** rendering images and depth (Isaac Sim, AirSim, or Habitat with ProcTHOR scenes) and training the detector belong to a separate perception and sim-to-real workstream. That workstream produces these same outputs from pixels.
-- **Detections** (`obs.detections`): each drone's camera runs a simulated person detector at 10 Hz.
+- **Detections** (`world_beliefs.detections`): each drone's camera runs a simulated person detector at 10 Hz.
   - **Hit rate:** it falls with distance (97% within 3 m, 35% at the 8 m range), toward the edge of the 90° view (×0.6 at the edge), and with occlusion (the share of head, chest and hip the camera can see; lower when he is crouched hiding). Measured per frame: 96% at 2 m, 84% at 4 m, 54% at 6.5 m, 37% at 7.8 m, and 72% at 40° off axis.
   - **Errors:** position noise grows with distance (0.17 m mean error at 2 m, 0.40 m at 7.8 m). Each detection has a confidence. About 0.1% of frames add a false positive somewhere on open floor in the cone, mostly with low confidence.
-  - **Use:** the record keeps every detection from each camera's latest frame. `truth.detections_tp` says which were the person.
-- **Seen and the estimate:** a detection counts when its confidence is at least 0.5. The estimate is the most confident detection, averaged with others within 1.5 m. `obs.seen`, `obs.p` and `obs.v` come only from these; the estimate is held for 4 s after the last sighting. `truth.estimate_from_fp` marks estimates that came from a false positive.
-- **Scanned map** (`obs.map`): depth rays (90°, 5 m) build a map in every episode, not only while exploring.
+  - **Use:** the record keeps every detection from each camera's latest frame. `ground_truth.detections_tp` says which were the person.
+- **Seen and the estimate:** a detection counts when its confidence is at least 0.5. The estimate is the most confident detection, averaged with others within 1.5 m. `world_beliefs.person.seen`, `.position` and `.velocity` come only from these; the estimate is held for 4 s after the last sighting. `ground_truth.estimate_from_fp` marks estimates that came from a false positive.
+- **Scanned map** (`world_beliefs.map`): depth rays (90°, 5 m) build a map in every episode, not only while exploring.
   - **Format:** cells of 0.6 m, `#` known blocked, `.` known free, `?` unknown, row-major in x then z. Size and legend are in `header.map`.
-  - **Other fields:** `obs.coverage` gives each room's search coverage (it counts during searches only), and `team[i].cam` gives 31 ray lengths across each camera's view, which is what that camera can see.
-- **Floor plan:** the header's floor plan is a prior map (`header.floor_role = prior_map_optional`). Use it as an input only if real deployments will have floor plans; otherwise train map-free on `obs.map`.
+  - **Other fields:** `world_beliefs.coverage` gives each room's search coverage (it counts during searches only), and `drone_beliefs[i].depth_readings` gives 31 ray lengths across each camera's view, which is what that camera can see.
+- **Floor plan:** the header's floor plan is a prior map (`header.floor_role = prior_map_optional`). Use it as an input only if real deployments will have floor plans; otherwise train map-free on `world_beliefs.map`.
 - **Still idealized:**
   - **The teacher plans on the full floor plan.** It is a privileged teacher, so a map-free student sees less than its teacher did.
   - **The drones' close-range back-away reflex** uses the person's true position within 4.5 m in line of sight, standing in for a short-range proximity sensor.
@@ -443,7 +584,7 @@ node simulators/tests/indoor.test.js      # floors, line of sight, belief, no le
 - ticks with a stuck drone;
 - ticks per standoff band.
 
-Every plan record carries `sft`, whether to train on it. It is false when its segment came within the 1.2 m floor, when a drone is stuck at that tick, when the segment is more than 20% stuck, or when it is more than 5 s into an automatic hold. Failed orders keep `sft: true`, because the person may have been impossible to stop. Filter on the segment's `end` and the outcome's `deterrable` to drop them too.
+Every plan record carries `use_for_training`, whether to train on it. It is false when its segment came within the 1.2 m floor, when a drone is stuck at that tick, when the segment is more than 20% stuck, or when it is more than 5 s into an automatic hold. Failed orders keep `sft: true`, because the person may have been impossible to stop. Filter on the segment's `end` and the outcome's `deterrable` to drop them too.
 
 **Quality gates** (`simulators/tools/quality_report.js`). The report checks every label and writes `quality.json`. A hard gate fails the run.
 
@@ -455,8 +596,8 @@ Every plan record carries `sft`, whether to train on it. It is false when its se
 | Bounds | hard | slots inside the site and the altitude band |
 | References | hard | timed reference points a drone can fly from its position and velocity: speed changes of at most 2 m/s² between steps, at most 2.5 m/s, climbs of at most 0.8 m/s (13 November; was "at most 0.75 m per 0.5 s") |
 | Flight safety | hard | no drone brings itself inside the 1.2 m floor of anyone (moving toward them, or both still while it could back away), no drone closing in on a person, no separation, wall or altitude violation |
-| A person closing in | soft | episodes where a person walked or ran within 1.2 m of a drone that was not moving toward them (a sprinter can outrun a retreating drone, and anyone can walk up to a drone pinned by walls and people): at most 1% of episodes; their segments are not training data |
-| Training ticks | hard | no `sft` tick has a stuck drone or a drone inside 1.2 m of anyone (decided on the unrounded distance) |
+| A person closing in | soft | episodes where a person walked or ran within 1.2 m of a drone that was not moving toward them (a sprinter can outrun a retreating drone, and anyone can walk up to a drone pinned by walls and people): at most 1% of episodes without doors and 1.5% with them (Dan, 17 November: a drone in a doorway, holding a door or at a shut exit has less room to back away); their segments are not training data |
+| Training ticks | hard | no `use_for_training` tick has a stuck drone or a drone inside 1.2 m of anyone (decided on the unrounded distance) |
 | Flicker | soft | a template that flips for one tick and back: under 0.5% of ticks |
 | Swaps | soft | follower slots swapping: under 0.2% of ticks |
 | Jitter | soft | slot movement while nothing changed: 95th percentile under 0.5 m |
@@ -492,7 +633,7 @@ Size and quality:
   | Hold, all causes | 18.7% (35% before the fixes) |
   | Estimate error while in sight | 0.17 m median, 0.43 m 95th percentile |
   | Estimates from a false positive | 1.3% of ticks with an estimate |
-  | Ticks fit for training (`sft`) | 82.7% |
+  | Ticks fit for training (`use_for_training`) | 82.7% |
 
 - **Perception:** the records' latest camera frames hold 67,359 true and 248 false detections. 44 of the false ones were confident enough to count, and 4 searches ended on one.
 - **What the team knew:** at 33% of ticks the person was in sight, at 15% only an estimate from the last 4 s was known, and at 52% his position was unknown.
@@ -535,7 +676,7 @@ Size and quality:
 
 | Measure | Eight families (`indoor2`) | Office only (`indoor1`) |
 |---|---|---|
-| Ticks fit for training (`sft`) | 85.4% | 82.7% |
+| Ticks fit for training (`use_for_training`) | 85.4% | 82.7% |
 | Stuck drones | 3.9% of drone-ticks | 4.3% |
 | Hold, all causes | 18.1% | 18.7% |
 | Template flicker / follower swaps | 0.16% / 0.15% of ticks | 0.08% / 0.08% |
@@ -593,7 +734,7 @@ Size and quality:
 
 | Measure | People and realism (`indoor3`) | Eight families (`indoor2`) |
 |---|---|---|
-| Ticks fit for training (`sft`) | 95.0% | 85.4% |
+| Ticks fit for training (`use_for_training`) | 95.0% | 85.4% |
 | Stuck drones (share of drone-ticks) | 0.8% | 3.9% |
 | Held back by the safety layer near a person (yielding) | 4.3% | counted as stuck |
 | Queuing for a doorway | 1.6% | 2.0% |
@@ -695,4 +836,5 @@ Per floor family (`quality_report.js`). No family had a label rule break, an epi
 6. **NN1's inputs:** we assume NN1 consumes perception outputs, not raw frames: person detections with confidence, the scanned map, search coverage and camera views, plus the order and team state. Rendering and detector training would be a separate perception and sim-to-real workstream. Is that the split you want, and should the floor plan be an input, or should NN1 work map-free?
 7. **Held-out floor families:** shop and irregular floors are test only, a quarter of the indoor episodes. Are those the right families to hold out, or should a whole family be held out per release instead?
 8. **Cuts and resolution:** which cuts do you want (NN1 on perception outputs, the detector on frames and boxes, end-to-end), and at what frame resolution and rate for NN1 and for the detector?
-9. **Person attributes:** which person attributes should NN1 see (for example posture, mobility aid, apparent height, group membership), and which stay metric-only in `truth`?
+9. **Person attributes:** which person attributes should NN1 see (for example posture, mobility aid, apparent height, group membership), and which stay metric-only in `ground_truth`?
+10. **Doors:** if the POC adds doors that open and close, the scanned map changes during an episode, since a closed door reads as a wall. Should NN1 see door states as their own input, or only through the map? And should the operator be able to order a drone to wait at a door until someone opens it?
